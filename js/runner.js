@@ -39,7 +39,7 @@
     });
   }
 
-  function print(kind, text) {
+  function print(kind, text, iconId) {
     if (!out) return;
     if (muted) return;
     count++;
@@ -48,15 +48,23 @@
       line('sys', '输出过多已暂停（800 行上限）。若代码陷入死循环，请关闭本页或用任务管理器结束标签页。');
       return;
     }
-    line(kind, text);
+    line(kind, text, iconId);
     out.scrollTop = out.scrollHeight;
   }
 
-  function line(kind, text) {
+  /* 返回值前缀用图标，不用文本箭头。图标与文字同一行，基线对齐。 */
+  function line(kind, text, iconId) {
     if (!out) return;
     var d = document.createElement('div');
     d.className = 'out ' + kind;
-    d.textContent = text;
+    if (iconId && U.svg) {
+      var ic = U.svg(iconId, 11);
+      ic.setAttribute('class', 'out-icon');
+      d.appendChild(ic);
+    }
+    var t = document.createElement('span');
+    t.textContent = text;
+    d.appendChild(t);
     out.appendChild(d);
   }
 
@@ -124,10 +132,10 @@
       try { return fn(); } catch (e) { line('err', (e && e.name ? e.name + ': ' : '') + (e && e.message ? e.message : String(e))); }
     });
     if (r && typeof r.then === 'function') {
-      r.then(function (v) { if (v !== undefined) print('ret', '← ' + fmt(v)); },
+      r.then(function (v) { if (v !== undefined) print('ret', fmt(v), 'i-return'); },
         function (e) { print('err', (e && e.name ? e.name + ': ' : '') + (e && e.message ? e.message : String(e))); });
     } else if (r !== undefined) {
-      print('ret', '← ' + fmt(r));
+      print('ret', fmt(r), 'i-return');
     }
   }
 
@@ -139,8 +147,8 @@
       try { return fn(); } catch (e) { line('err', (e && e.name ? e.name + ': ' : '') + (e && e.message ? e.message : String(e))); }
     });
     if (r && typeof r.then === 'function') {
-      r.then(function (v) { print('ret', '← ' + fmt(v)); }, function (e) { print('err', String(e && e.message || e)); });
-    } else if (r !== undefined) print('ret', '← ' + fmt(r));
+      r.then(function (v) { print('ret', fmt(v), 'i-return'); }, function (e) { print('err', String(e && e.message || e)); });
+    } else if (r !== undefined) print('ret', fmt(r), 'i-return');
   }
 
   var NO_RUNTIME = {

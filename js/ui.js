@@ -36,7 +36,8 @@
         var t = U.el('div', { class: 'tab' + (p === active ? ' active' : '') });
         var name = U.el('span', { class: 'tname', text: U.basename(p) });
         name.title = p;
-        var dot = U.el('span', { class: 'tdot', text: '●' });
+        var dot = U.el('span', { class: 'tdot' });
+        dot.appendChild(U.svg('i-dot', 9));
         var x = U.el('button', { class: 'tclose', title: '关闭' });
         x.appendChild(U.svg('i-close', 12));
         t.appendChild(name); t.appendChild(dot); t.appendChild(x);
@@ -187,9 +188,15 @@
         var label = mode === 'cmd' ? it.label : it;
         var d = U.el('div', { class: 'pal-item' + (idx === sel ? ' sel' : '') });
         if (mode === 'cmd') {
+          var ic = U.el('span', { class: 'pal-icon' });
+          if (it.icon) ic.appendChild(U.svg(it.icon, 14));
+          d.appendChild(ic);
           d.appendChild(U.el('span', { class: 'pal-cmd', text: label }));
           d.appendChild(U.el('span', { class: 'pal-key', text: it.hint || '' }));
         } else {
+          var ic2 = U.el('span', { class: 'pal-icon' });
+          ic2.appendChild(U.svg('i-file', 14));
+          d.appendChild(ic2);
           d.appendChild(U.el('span', { class: 'pal-cmd', text: U.basename(label) }));
           d.appendChild(U.el('span', { class: 'pal-key', text: label }));
         }
@@ -235,16 +242,16 @@
 
   function cmdItems() {
     var out = [
-      { label: '新建文件', hint: '', act: function () { hooks.cmd && hooks.cmd('new-file'); } },
-      { label: '新建文件夹', hint: '', act: function () { hooks.cmd && hooks.cmd('new-folder'); } },
-      { label: '保存当前文件', hint: 'Ctrl+S', act: function () { hooks.cmd && hooks.cmd('save'); } },
-      { label: '运行当前文件', hint: 'Ctrl+Enter', act: function () { hooks.cmd && hooks.cmd('run'); } },
-      { label: '导出全部文件（ZIP）', hint: '', act: function () { hooks.cmd && hooks.cmd('export'); } },
-      { label: '导入文件或 ZIP', hint: '', act: function () { hooks.cmd && hooks.cmd('import'); } },
-      { label: '切换深浅主题', hint: '', act: function () { hooks.cmd && hooks.cmd('theme'); } },
-      { label: '显示 / 隐藏底部面板', hint: 'Ctrl+`', act: function () { hooks.cmd && hooks.cmd('panel'); } },
-      { label: '清空运行输出', hint: '', act: function () { hooks.cmd && hooks.cmd('clear'); } },
-      { label: '关于 Code', hint: '', act: function () { UI.about(); } }
+      { label: '新建文件', hint: '', icon: 'i-plus', act: function () { hooks.cmd && hooks.cmd('new-file'); } },
+      { label: '新建文件夹', hint: '', icon: 'i-folder-plus', act: function () { hooks.cmd && hooks.cmd('new-folder'); } },
+      { label: '保存当前文件', hint: 'Ctrl+S', icon: 'i-save', act: function () { hooks.cmd && hooks.cmd('save'); } },
+      { label: '运行当前文件', hint: 'Ctrl+Enter', icon: 'i-run', act: function () { hooks.cmd && hooks.cmd('run'); } },
+      { label: '导出全部文件（ZIP）', hint: '', icon: 'i-download', act: function () { hooks.cmd && hooks.cmd('export'); } },
+      { label: '导入文件或 ZIP', hint: '', icon: 'i-upload', act: function () { hooks.cmd && hooks.cmd('import'); } },
+      { label: '切换深浅主题', hint: '', icon: 'i-sun', act: function () { hooks.cmd && hooks.cmd('theme'); } },
+      { label: '显示 / 隐藏底部面板', hint: 'Ctrl+`', icon: 'i-split', act: function () { hooks.cmd && hooks.cmd('panel'); } },
+      { label: '清空运行输出', hint: '', icon: 'i-eraser', act: function () { hooks.cmd && hooks.cmd('clear'); } },
+      { label: '关于 Code', hint: '', icon: 'i-info', act: function () { UI.about(); } }
     ];
     return out;
   }

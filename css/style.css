@@ -455,3 +455,24 @@ svg { width: 18px; height: 18px; display: block; }
 .field select:disabled, .field input:disabled {
   opacity: .5; cursor: not-allowed;
 }
+
+/* ---------- 图标位（先画后标：图标一律自绘 SVG，不使用字符或表情） ---------- */
+.brand-mark svg { width: 19px; height: 19px; color: var(--accent); display: block; }
+.prompt svg { width: 13px; height: 13px; color: var(--accent); display: block; }
+.tdot svg { width: 9px; height: 9px; color: var(--accent); display: block; }
+#breadcrumb svg { width: 11px; height: 11px; color: var(--fg-3); display: inline-block; vertical-align: -1px; margin: 0 2px; flex: 0 0 auto; }
+.tree-row .tw svg { color: var(--fg-3); }
+
+/* 顶栏菜单项与命令面板项：图标 + 文字 */
+.top-menu button { display: flex; align-items: center; gap: 8px; }
+.top-menu button svg { width: 15px; height: 15px; color: var(--fg-2); flex: 0 0 auto; }
+.pal-item { align-items: center; }
+.pal-icon { flex: 0 0 auto; display: flex; align-items: center; color: var(--fg-3); }
+.pal-icon svg { width: 14px; height: 14px; }
+.pt { display: inline-flex; align-items: center; gap: 4px; }
+.pt svg { width: 13px; height: 13px; }
+#btn-clear svg, #btn-stop svg { width: 12px; height: 12px; }
+
+/* 输出行的返回值图标：与文字基线对齐 */
+.out-icon { width: 11px; height: 11px; color: var(--accent); display: inline-block; vertical-align: -1px; margin-right: 5px; }
+.out.ret .out-icon { color: var(--accent); }

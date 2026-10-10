@@ -70,7 +70,14 @@
       el.ta.disabled = false;
       el.ta.scrollTop = cur.scroll || 0;
       try { el.ta.setSelectionRange(cur.sel[0], cur.sel[1]); } catch (e) { }
-      el.crumb.innerHTML = U.esc(path.split('/').join('  ›  '));
+      /* 面包屑分隔符用图标，不用文本箭头 */
+      el.crumb.innerHTML = '';
+      path.split('/').forEach(function (seg, i, arr) {
+        if (i) el.crumb.appendChild(U.svg('i-chevron-right', 11));
+        var b = document.createElement('b');
+        b.textContent = seg;
+        el.crumb.appendChild(b);
+      });
       paint(); renderGutter(); syncScroll();
       emit('cursor', caretInfo());
       return text;

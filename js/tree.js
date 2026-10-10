@@ -73,12 +73,12 @@
         html += '<div class="tree-row' + (n.path === selPath ? ' sel' : '') + '" data-path="' + U.esc(n.path) + '"' +
           ' style="padding-left:' + pad + 'px" role="treeitem" tabindex="0">';
         if (isDir) {
-          html += '<span class="tw" data-tw="1"><svg><use href="#i-fold"/></svg></span>';
+          html += '<span class="tw" data-tw="1"><svg><use href="#i-chevron-right"/></svg></span>';
         } else html += '<span class="tw"></span>';
         html += '<span class="ic">' + icon(n.kind, open) + '</span>';
         html += '<span class="name">' + U.esc(n.name) + '</span>';
         html += '<span class="row-actions">' +
-          '<button class="icon-btn sm" data-ra="rename" title="重命名" aria-label="重命名"><svg><use href="#i-fold"/></svg></button>' +
+          '<button class="icon-btn sm" data-ra="rename" title="重命名" aria-label="重命名"><svg><use href="#i-rename"/></svg></button>' +
           '<button class="icon-btn sm" data-ra="del" title="删除" aria-label="删除"><svg><use href="#i-trash"/></svg></button>' +
           '</span></div>';
         if (isDir && open) walk(n.path, depth + 1);

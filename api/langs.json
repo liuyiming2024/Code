@@ -1,0 +1,88 @@
+{
+  "languages": [
+    {
+      "name": "JavaScript",
+      "ext": [
+        "js",
+        "mjs",
+        "cjs"
+      ],
+      "run": true
+    },
+    {
+      "name": "JSON",
+      "ext": [
+        "json"
+      ],
+      "run": false
+    },
+    {
+      "name": "Python",
+      "ext": [
+        "py"
+      ],
+      "run": false,
+      "note": "当前版本无内置运行时，可编辑与着色"
+    },
+    {
+      "name": "C / C++",
+      "ext": [
+        "c",
+        "h",
+        "cpp",
+        "hpp",
+        "cc"
+      ],
+      "run": false,
+      "note": "当前版本无内置运行时"
+    },
+    {
+      "name": "HTML",
+      "ext": [
+        "html",
+        "htm"
+      ],
+      "run": true,
+      "note": "在 sandbox 隔离框架里预览"
+    },
+    {
+      "name": "CSS",
+      "ext": [
+        "css"
+      ],
+      "run": false
+    },
+    {
+      "name": "Markdown",
+      "ext": [
+        "md",
+        "markdown"
+      ],
+      "run": false
+    },
+    {
+      "name": "YAML",
+      "ext": [
+        "yml",
+        "yaml"
+      ],
+      "run": false
+    },
+    {
+      "name": "SQL",
+      "ext": [
+        "sql"
+      ],
+      "run": false
+    },
+    {
+      "name": "Shell",
+      "ext": [
+        "sh",
+        "bash"
+      ],
+      "run": false
+    }
+  ],
+  "note": "run=true 表示可在页面内直接执行。Python / C++ 需要内置解释器分发物（十 MB 量级），与本项目「零依赖、拿到就能跑」的约束冲突，暂不支持。"
+}

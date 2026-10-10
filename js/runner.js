@@ -61,7 +61,11 @@
   }
 
   function clear() { if (out) out.innerHTML = ''; count = 0; muted = false; }
-  function stop() { muted = true; printSys('已停止接收输出（正在运行的同步代码仍会跑完）'); }
+  /* 停止：先打印再关开关。写反了提示会被自己的 muted 判断吞掉，界面零反应。 */
+  function stop() {
+    if (!muted) line('sys', '已停止接收输出。注意：同步代码无法中断，正在跑的循环仍会跑完——若页面已卡死，只能关闭标签页。');
+    muted = true;
+  }
   function printSys(t) { if (!muted) line('sys', t); }
 
   function fmt(v, depth) {

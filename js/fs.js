@@ -35,7 +35,7 @@
       ['hello.js', '// 点「运行」或按 Ctrl+Enter 执行\nfunction greet(name) {\n  return "你好，" + name + "！";\n}\n\nfor (var i = 1; i <= 3; i++) {\n  console.log(i, greet("第 " + i + " 位访客"));\n}\n\nconsole.log("当前时间：", new Date().toLocaleString());\n'],
       ['index.html', '<!doctype html>\n<html lang="zh-CN">\n<head>\n<meta charset="utf-8">\n<title>示例页面</title>\n<style>\n  body { font-family: system-ui, sans-serif; padding: 40px; }\n  h1 { color: #1f6feb; }\n</style>\n</head>\n<body>\n  <h1>HTML 预览示例</h1>\n  <p>切到编辑区上方的「预览」即可看到结果。</p>\n  <button onclick="alert(\'预览里的脚本也能跑\')">点我</button>\n</body>\n</html>\n'],
       ['notes/todo.md', '# 待办\n\n- [x] 搭好文件树\n- [ ] 把自己的工程导进来\n- [ ] 试试控制台\n'],
-      ['notes/python-note.py', '# 说明：当前版本内置了 JavaScript 运行与 HTML 预览。\n# Python 运行需要在设置里配置，默认未启用。\nprint("hello")\n']
+      ['notes/python-note.py', '# Python 暂未内置运行时：本工具不伪造执行，这个文件的 print 不会有任何输出。\n# 可以正常编辑、着色与保存；需要真跑起来请用 .js 文件。\nprint("hello")\n']
     ];
     var chain = Promise.resolve();
     SAMPLES.forEach(function (s) { chain = chain.then(function () { return create(s[0], 'file', s[1]); }); });

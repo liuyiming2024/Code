@@ -134,14 +134,28 @@
     var p = ed.current();
     if (!p) return;
     ed.save().then(function () { })
-      .catch(function () { })
-      .then(function () { });
+      .catch(function (err) {
+        /* 保存失败必须让人看见：否则用户以为存住了，关掉页面才发现没了 */
+        U.toast('保存失败：' + (err && err.message || err), 'err');
+        UI.status({ left: '保存失败 —— 请立刻导出 ZIP 备份' });
+        U.modal({
+          title: '保存失败',
+          body: '<p class="about-p">写入浏览器存储时出错：<b>' + U.esc(String(err && err.message || err)) + '</b></p>' +
+                '<p class="about-p">可能是存储空间已满，或浏览器禁用了本站存储。' +
+                '未保存的内容还在编辑区里，但<b>刷新页面就会丢失</b>。</p>' +
+                '<p class="about-p">建议现在就点「导出 ZIP 备份」把文件存到磁盘。</p>',
+          actions: [
+            { label: '知道了' },
+            { label: '立刻导出备份', primary: true, onClick: function () { setTimeout(doExport, 0); } }
+          ]
+        });
+      });
   }
 
   function onSaved(path) {
     delete dirty[path];
     refreshTabs();
-    UI.status({ left: '已保存 ' + path });
+    UI.status({ left: '已保存到本机浏览器 · ' + path });
   }
 
   function onCursor(c) {
@@ -390,8 +404,10 @@
       ed.refresh();
     });
     on('#set-sync', 'change', function () {
-      store.set('syncEnabled', this.value === 'on');
-      U.toast(this.value === 'on' ? '同步开关已打开（需填地址与密钥，当前版本尚未接线）' : '同步已关闭');
+      /* 未实现前不允许打开：能填能开却无反馈，会让用户以为上云了从而不再备份 */
+      this.value = 'off';
+      store.set('syncEnabled', false);
+      U.toast('云端同步尚未实现，当前版本不会同步任何数据', 'err');
     });
     ['#set-sync-url', '#set-sync-key'].forEach(function (s) {
       on(s, 'change', function () {

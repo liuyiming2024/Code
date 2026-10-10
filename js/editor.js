@@ -208,7 +208,11 @@
     try { cur.sel = [el.ta.selectionStart, el.ta.selectionEnd]; } catch (e) { }
     if (cur.saved === cur.content) return;
     cur.saved = cur.content;
-    fs.write(cur.path, cur.content).then(function () { emit('save', cur.path); }).catch(function () { });
+    /* 写入失败必须向外传播：静默吞掉会让用户以为存住了，实际丢了。
+       由调用方（app.js）负责告警并给出导出备份的出路。 */
+    return fs.write(cur.path, cur.content).then(function () {
+      emit('save', cur.path);
+    });
   }
 
   function replaceRange(start, end, text, selStart, selEnd) {

@@ -131,12 +131,13 @@
           <select id="set-ws"><option value="off">关闭</option><option value="on">开启</option></select>
         </div>
         <hr>
-        <div class="field"><label>云端同步（可选）</label>
-          <select id="set-sync"><option value="off">关闭：只存本机浏览器</option><option value="on">开启：连接数据库</option></select>
+        <div class="field"><label>云端同步（尚未实现）</label>
+          <select id="set-sync" disabled title="尚未实现"><option value="off">关闭：只存本机浏览器（当前唯一可用模式）</option></select>
         </div>
-        <div class="field"><input id="set-sync-url" type="text" placeholder="数据库地址（留空则不同步）" autocomplete="off"></div>
-        <div class="field"><input id="set-sync-key" type="text" placeholder="公开密钥" autocomplete="off"></div>
-        <p class="hint">同步默认关闭。开启后文件会写入你自己的数据库；本仓库不含任何密钥。</p>
+        <div class="field"><input id="set-sync-url" type="text" placeholder="数据库地址（尚未实现，暂不可用）" autocomplete="off" disabled></div>
+        <div class="field"><input id="set-sync-key" type="text" placeholder="公开密钥（尚未实现，暂不可用）" autocomplete="off" disabled></div>
+        <p class="hint">云端同步<b>尚未实现</b>，界面此处仅为预留位置，当前不会同步任何数据。
+        文件只存在这台设备的浏览器里，换设备或清缓存都会丢失，请用「导出 ZIP」自行备份。</p>
         <div class="row"><button class="btn" id="btn-reset">恢复默认设置</button></div>
       </div>
     </div>

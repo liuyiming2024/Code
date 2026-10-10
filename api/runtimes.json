@@ -1,0 +1,86 @@
+{
+  "updated": "2026-10-10",
+  "source": "https://github.com/liuyiming2024/assets/releases/latest",
+  "usage": [
+    "只在用户主动要运行某语言时才下载，之后存进 Cache Storage，离线也能用。",
+    "加载必须放 Web Worker，主线程加载会白屏好几秒。",
+    "首次下载需要联网，界面必须说清这一点。"
+  ],
+  "note": "本清单只列 Release 里确实存在的文件。抓取过但发布失败的不列，避免用户点了下载却 404。",
+  "runtimes": [
+    {
+      "id": "sqlite",
+      "name": "SQLite",
+      "license": "MIT",
+      "desc": "完整 SQLite 引擎编译到 WASM，支持 join / 子查询 / CTE / 窗口函数 / 全文搜索",
+      "files": [
+        {
+          "name": "sql-wasm.js",
+          "size": 48788,
+          "sha256": "694ca5b36aa3e6e71f417819d7df390b65343665fcfa5c69015ca33d93d291b3",
+          "url": "https://github.com/liuyiming2024/assets/releases/download/latest/sql-wasm.js"
+        },
+        {
+          "name": "sql-wasm.wasm",
+          "size": 659806,
+          "sha256": "0734155c83e493983d1f2ff5b09a4fab6e35a32e9449c7e4e545756439f62d73",
+          "url": "https://github.com/liuyiming2024/assets/releases/download/latest/sql-wasm.wasm"
+        }
+      ]
+    },
+    {
+      "id": "quickjs",
+      "name": "QuickJS",
+      "license": "MIT",
+      "desc": "QuickJS ES2025 引擎，用于在独立堆里隔离执行不可信代码",
+      "files": [
+        {
+          "name": "quickjs.wasm",
+          "size": 503134,
+          "sha256": "105c3bed22d457e43e3d1c3c1c6959fda62a8fe06f0fc8a985303c3a2be72232",
+          "url": "https://github.com/liuyiming2024/assets/releases/download/latest/quickjs.wasm"
+        }
+      ]
+    },
+    {
+      "id": "ruby",
+      "name": "Ruby",
+      "license": "MIT",
+      "desc": "CRuby 3.3 编译到 WASM（官方 ruby.wasm 项目）",
+      "files": [
+        {
+          "name": "ruby+stdlib.wasm",
+          "size": 35204534,
+          "sha256": "1d8aea2daa127d73306615e08bbaae55c4af6fee036b0ecfe9720e04591db01e",
+          "url": "https://github.com/liuyiming2024/assets/releases/download/latest/ruby%2Bstdlib.wasm"
+        }
+      ]
+    }
+  ],
+  "planned": [
+    {
+      "id": "pyodide",
+      "name": "Pyodide（完整 CPython）",
+      "license": "MPL-2.0",
+      "why": "抓取成功但发布到 Release 失败，目前取不到。Python 现在用自研子集顶着。",
+      "files": ["pyodide.js", "python_stdlib.zip"],
+      "size": 2356539
+    },
+    {
+      "id": "lua",
+      "name": "Lua 5.4（Wasmley）",
+      "license": "MIT",
+      "why": "尚未抓取发布，目前取不到。",
+      "files": ["lua.wasm"],
+      "size": 200000
+    },
+    {
+      "id": "php",
+      "name": "php-wasm",
+      "license": "Apache-2.0",
+      "why": "抓取成功但发布失败，目前取不到。",
+      "files": ["php-web.mjs.wasm"],
+      "size": 17289452
+    }
+  ]
+}

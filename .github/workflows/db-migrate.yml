@@ -1,13 +1,17 @@
-name: 数据库迁移
+name: 数据库迁移（已迁至 Chat 仓库）
 
-# 手动触发：Actions → 数据库迁移 → Run workflow
+# ⚠ 迁移的实际执行地点是 **Chat 仓库** 的「执行 Code 云盘建表」。
+#   本仓库这条留着只是备用校验，**不要再拿它建表**。
 #
-# 为什么用它：
-#   Supabase SQL Editor 需要手动粘贴，长脚本容易截断、报错不好定位。
-#   把 SQL 放进仓库版本化，这里一键执行，日志可回看、可重跑。
+# 为什么挪走：
+#   Code 与 Chat 连同一个 Supabase 项目，但两边各存了一份 SUPABASE_DB_URL。
+#   Chat 那份有效，Code 这份当初照抄私有库 凭据.md 的旧值，密码已经不对。
+#   而且 GitHub 的 Secret 只能写不能读 —— 拿不到 Chat 的正确值，
+#   也就没法"复制一份过来"修好它。所以只能让执行走 Chat 那边。
 #
-# 配置：仓库 Settings → Secrets → Actions 添加 SUPABASE_DB_URL。
-# 连接串的取值记在私有库，不写在这里。
+# 因此：本条跑失败（报 password authentication failed）是**已知状态**，
+# 不是数据库出问题。真要修，去 Settings → Secrets 更新 SUPABASE_DB_URL，
+# 与 Chat 仓库的保持一致。
 
 on:
   workflow_dispatch:
@@ -69,20 +73,12 @@ jobs:
           if [ "$RC" -ne 0 ] && grep -q "password authentication failed" migrate-log.txt; then
             echo "" | tee -a migrate-log.txt
             echo "::error::数据库密码认证失败 —— SUPABASE_DB_URL 里的密码不对" | tee -a migrate-log.txt
-            echo "排查：本仓库的 Secret 必须与 Chat 仓库的 SUPABASE_DB_URL 完全一致" | tee -a migrate-log.txt
-            echo "（同一个 Supabase 项目，两边用同一个连接串）" | tee -a migrate-log.txt
-            echo "更新位置：Settings → Secrets and variables → Actions → SUPABASE_DB_URL" | tee -a migrate-log.txt
-            echo "注意：私有库 凭据.md 里记的连接串已过时 —— 照抄它必然认证失败。" | tee -a migrate-log.txt
+            echo "这是已知状态：Code 仓库的 Secret 当初照抄了私有库旧的凭据.md" | tee -a migrate-log.txt
+            echo "建表请去 **Chat 仓库** → Actions → 执行 Code 云盘建表（那边凭据有效）" | tee -a migrate-log.txt
             echo "" | tee -a migrate-log.txt
-            echo "⚠ 密码拿不到，也改不动，所以别在这个仓库里死磕：" | tee -a migrate-log.txt
-            echo "   · Secret 只能写不能读 → 拿不到 Chat 在用的正确值，没法复制过来" | tee -a migrate-log.txt
-            echo "   · Supabase 托管版 postgres 不是 superuser →" | tee -a migrate-log.txt
-            echo "       create role ... superuser  /  alter role postgres  都 permission denied" | tee -a migrate-log.txt
-            echo "     密码只能在 Supabase 控制台重置（Project Settings → Database）" | tee -a migrate-log.txt
-            echo "" | tee -a migrate-log.txt
-            echo "✅ 不用等密码：云盘建表已改由 Chat 仓库统一执行 ——" | tee -a migrate-log.txt
-            echo "   liuyiming2024/Chat → Actions →「执行 Code 云盘建表」→ Run workflow" | tee -a migrate-log.txt
-            echo "   那份用的是 Chat 的有效凭据，脚本与本仓库 cloud.sql 同一份且全幂等。" | tee -a migrate-log.txt
+            echo "若想把这条修好（可选）：Settings → Secrets and variables → Actions" | tee -a migrate-log.txt
+            echo "→ SUPABASE_DB_URL → 填与 Chat 仓库完全一致的连接串" | tee -a migrate-log.txt
+            echo "（GitHub 的 Secret 只能写不能读，所以只能由你手动从 Chat 那边复制过来）" | tee -a migrate-log.txt
           fi
           exit $RC
 

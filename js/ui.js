@@ -58,6 +58,31 @@
       UI.tabs.render(); UI.tabs.persist();
     },
     closeOthers: function (path) { tabs = [path]; active = path; UI.tabs.render(); UI.tabs.persist(); },
+    /* 按序号切到第 N 个标签（Alt+1..9）。越界就忽略 ——
+       按 Alt+9 但只开了 3 个标签时什么都不做，比跳到最后一个更不容易误操作。 */
+    pick: function (i) {
+      if (typeof i !== 'number' || i < 0 || i >= tabs.length) return;
+      var p = tabs[i];
+      if (p === active) return;
+      active = p;
+      UI.tabs.render();
+      UI.tabs.persist();
+      hooks.select && hooks.select(p);
+    },
+    /* 相对切换：Ctrl+Tab 向后、Ctrl+Shift+Tab 向前，到头回绕。
+       回绕而不是停住 —— 只有两三个标签时，"到头就停"会让人以为坏了。 */
+    cycle: function (dir) {
+      if (!tabs.length) return;
+      var i = tabs.indexOf(active);
+      if (i < 0) i = 0;
+      var n = (i + (dir > 0 ? 1 : -1) + tabs.length) % tabs.length;
+      UI.tabs.pick(n);
+    },
+    /* 关闭当前标签（Ctrl+W） */
+    closeCurrent: function () {
+      if (!active) return;
+      hooks.close && hooks.close(active);
+    },
     select: function (path) {
       if (tabs.indexOf(path) < 0) tabs.push(path);
       active = path; UI.tabs.render(); UI.tabs.persist();
@@ -314,19 +339,22 @@
 
   function cmdItems() {
     var out = [
-      { label: '新建文件', hint: '', icon: 'i-plus', act: function () { hooks.cmd && hooks.cmd('new-file'); } },
-      { label: '新建文件夹', hint: '', icon: 'i-folder-plus', act: function () { hooks.cmd && hooks.cmd('new-folder'); } },
+      { label: '新建文件', hint: 'Ctrl+N', icon: 'i-plus', act: function () { hooks.cmd && hooks.cmd('new-file'); } },
+      { label: '新建文件夹', hint: 'Ctrl+Shift+N', icon: 'i-folder-plus', act: function () { hooks.cmd && hooks.cmd('new-folder'); } },
       { label: '保存当前文件', hint: 'Ctrl+S', icon: 'i-save', act: function () { hooks.cmd && hooks.cmd('save'); } },
       { label: '运行当前文件', hint: 'Ctrl+Enter', icon: 'i-run', act: function () { hooks.cmd && hooks.cmd('run'); } },
-      { label: '导出全部文件（ZIP）', hint: '', icon: 'i-download', act: function () { hooks.cmd && hooks.cmd('export'); } },
-      { label: '导入文件或 ZIP', hint: '', icon: 'i-upload', act: function () { hooks.cmd && hooks.cmd('import'); } },
+      { label: '导出全部文件（ZIP）', hint: 'Ctrl+E', icon: 'i-download', act: function () { hooks.cmd && hooks.cmd('export'); } },
+      { label: '导入文件或 ZIP', hint: 'Ctrl+O', icon: 'i-upload', act: function () { hooks.cmd && hooks.cmd('import'); } },
       /* E-048：以前写死 'i-sun'，而顶栏真按钮是动态的（浅色显示月亮）。
          同一个操作两个图标，其中一个永远是错的：浅色下命令面板显示太阳
          （=切到浅色），点了却切回深色。按当前主题取，与顶栏保持一致。 */
-      { label: '切换深浅主题', hint: '', icon: currentThemeIcon(), act: function () { hooks.cmd && hooks.cmd('theme'); } },
+      { label: '切换深浅主题', hint: 'Ctrl+G', icon: currentThemeIcon(), act: function () { hooks.cmd && hooks.cmd('theme'); } },
       { label: '显示 / 隐藏底部面板', hint: 'Ctrl+`', icon: 'i-split', act: function () { hooks.cmd && hooks.cmd('panel'); } },
+      { label: '关闭当前标签', hint: 'Ctrl+W', icon: 'i-close', act: function () { hooks.cmd && hooks.cmd('close-tab'); } },
+      { label: '搜索文件内容', hint: 'Ctrl+F', icon: 'i-search', act: function () { hooks.cmd && hooks.cmd('search'); } },
+      { label: '打开设置', hint: 'Ctrl+,', icon: 'i-gear', act: function () { hooks.cmd && hooks.cmd('settings'); } },
       { label: '清空运行输出', hint: '', icon: 'i-eraser', act: function () { hooks.cmd && hooks.cmd('clear'); } },
-      { label: '扩展中心（下载运行时）', hint: '', icon: 'i-download', act: function () { UI.extensions(); } },
+      { label: '扩展中心（下载运行时）', hint: 'Ctrl+D', icon: 'i-download', act: function () { UI.extensions(); } },
       /* E-030：命令面板里也要有，否则手机端（没有 Ctrl 组合键）无处可关 */
       { label: '关闭预览', hint: '', icon: 'i-close', act: function () { hooks.cmd && hooks.cmd('close-preview'); } },
       /* 撤销导入：只在有快照时出现 —— 没有可撤销的东西还摆着，是另一种误导 */
@@ -418,6 +446,14 @@
         '不需要下载，已经能直接用。</p>' +
         '<p class="about-p ext-note">下载的东西存进<b>你自己浏览器</b>的缓存里，不上传任何服务器。' +
         '<b>首次下载需要联网</b>，下完之后离线也能用。</p>' +
+        /* 多语言的真实状态写在列表上方。
+           "未下载"会被理解成"下载后就能用" —— 而这六种按需运行时
+           端到端一次都没跑通过（开发环境访问 Release 下载被挡，403），
+           只有结构断言、没有一次真实执行。
+           放在 #ext-list 之外，因为 render() 会清空列表。 */
+        '<p class="ext-warn">这些按需运行时尚未经端到端验证：' +
+          '下载与加载链路只做过结构断言，实际能否跑出结果一次都没验过。' +
+          '建议先试体积最小的 SQLite（约 0.7 MB），它通了就说明整条链路是好的。</p>' +
         '<div id="ext-list" class="ext-list"></div>',
       actions: [{ label: '关闭', primary: true }]
     });

@@ -892,3 +892,16 @@ body.has-vkb .mobile-bar { display: none; }   /* 互斥：有键盘就不显示�
 
 /* E-037：状态栏的运行预告。不许含糊 —— 需要下载多大、要不要联网都要说。 */
 #st-hint { color: var(--fg-3); max-width: 34em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* 云盘传输进度条。按字节走，不再用"第 3/10 个"那种在大文件上纹丝不动的计数。 */
+.prog {
+  height: 6px; width: 100%; margin: 6px 0 4px;
+  background: var(--bg-3, #2a2e35); border-radius: 3px; overflow: hidden;
+}
+.prog-bar {
+  height: 100%; min-width: 2px;
+  background: var(--accent, #6aa9ff);
+  transition: width .18s ease-out;
+}
+.prog-txt { font-size: 12px; color: var(--fg-2); line-height: 1.6; }
+.prog-txt b { color: var(--fg); }

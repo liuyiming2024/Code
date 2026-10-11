@@ -240,9 +240,17 @@
     });
   }
 
+  /* 保存当前文件。返回 Promise，成功/失败如实反映。
+     以前返回 undefined —— 调用方无从知道到底存没存上，
+     于是"已保存"只能是句祈祷。E-017 的两处谎报（Ctrl+S 与自动保存）
+     根子都在这里：下面不给结果，上面就只能瞎说。 */
   function flushAll() {
     var p = ed.current();
-    if (p) ed.save();
+    if (!p) return Promise.resolve({ saved: 0 });
+    var r;
+    try { r = ed.save(); } catch (e) { return Promise.reject(e); }
+    /* ed.save() 在没有当前文档时返回 undefined，直接 .then 会抛 */
+    return Promise.resolve(r).then(function () { return { saved: 1 }; });
   }
 
   function newFile() {
@@ -589,7 +597,18 @@
     switch (name) {
       case 'new-file': newFile(); break;
       case 'new-folder': newFolder(); break;
-      case 'save': flushAll(); U.toast('已保存'); break;
+      /* 同一处谎报的第三份拷贝：命令面板里"保存当前文件"走这条路径。
+         修了快捷键那一处、修了 editor 那一处，这一处漏了 ——
+         用户从命令面板保存时依然会看到假的"已保存"。
+         一个谎撒在三处，修两处等于没修。 */
+      case 'save':
+        Promise.resolve().then(function () { return flushAll(); })
+          .then(function (r) {
+            if (r && r.failed) { onSaveFail(r.err || new Error('部分文件保存失败')); return; }
+            U.toast('已保存');
+          })
+          .catch(onSaveFail);
+        break;
       case 'run': doRun(); break;
       case 'export': doExport(); break;
       case 'import': doImport(); break;
@@ -601,6 +620,36 @@
       /* E-041：refresh 以前根本没有这个 case —— 就算按钮绑上了也是死的 */
       /* 撤销上次导入：快照只在会话内有效，有才显示这个命令 */
       case 'undo-import': undoImport(); break;
+      /* 快捷键接过来的这几个（KEYS 表里引用），以前命令面板有、command 里没有 */
+      /* 直接调 closePath —— 这里用 hooks.close 是拿不到的：
+         hooks 是传给 UI.init 的回调对象，在 command() 的作用域里不存在。
+         写成 hooks.close(cp) 时它恒为 undefined，于是走 else 分支，
+         而 UI.tabs.closeCurrent 又反过来调 hooks.close —— 死路一条，
+         表现为"按 Ctrl+W 毫无反应"。 */
+      case 'close-tab': {
+        var cp = ed.current();
+        if (cp) closePath(cp);
+        break;
+      }
+      /* 搜索框在侧栏的搜索面板里，面板默认隐藏 ——
+         直接 focus 一个隐藏元素不会生效（焦点不会过去），
+         表现为"按 Ctrl+F 毫无反应"。所以先切到搜索面板再聚焦。 */
+      case 'search': {
+        try { UI.panel.show && UI.panel.show('search'); } catch (e) { }
+        var btn = document.querySelector('[data-view="search"], [data-act="search"]');
+        if (btn) btn.click();
+        setTimeout(function () {
+          var sb = U.$('#search-input');
+          if (sb) { try { sb.focus(); sb.select(); } catch (e) { } }
+        }, 60);
+        break;
+      }
+      case 'settings': {
+        var sg = document.querySelector('[data-act="settings"], [data-view="settings"]');
+        if (sg) sg.click();
+        break;
+      }
+      case 'ext': UI.extensions(); break;
       /* E-030：预览必须有关闭出口。按钮、命令面板、Esc 三条路都给上。 */
       case 'close-preview':
         if (runner.hidePreview) runner.hidePreview();
@@ -793,12 +842,42 @@
     /* 传输进度：大文件逐个上传要走很久，没有任何反馈的话
        用户会以为卡死了然后刷新，结果前功尽弃。
        所以每传一个都更新状态栏。 */
-    var progress = function (done, total, name) {
+    /* 真进度条：按字节百分比走，并显示已传 / 总量。
+       以前是"传输中 3/10"（文件序号），传一个大文件时数字纹丝不动，
+       看起来和卡死没有区别 —— 而用户一旦判定卡死就会刷新，前功尽弃。
+       另外进度只写在设置面板的 #cloud-state 里，面板没打开时用户完全看不到，
+       所以同时打到状态栏（任何界面下都可见）。
+       总字节未知（total=0）时退回文件数，并如实说明"总量未知"。 */
+    var progress = function (d) {
+      var done = (d && typeof d === 'object') ? d.done : d;
+      var total = (d && typeof d === 'object') ? d.total : arguments[1];
+      var name = (d && typeof d === 'object') ? d.name : arguments[2];
+      var idx = (d && typeof d === 'object') ? d.index : 0;
+      var cnt = (d && typeof d === 'object') ? d.count : 0;
+
+      var pct = (total > 0) ? Math.min(100, Math.round(done / total * 100)) : -1;
+      var sizeTxt = (total > 0)
+        ? fmtBytes(done) + ' / ' + fmtBytes(total) + '（' + pct + '%）'
+        : (cnt ? '第 ' + idx + ' / ' + cnt + ' 个（总量未知）' : '');
+
+      var html = '<div class="prog"><div class="prog-bar"' +
+        (pct >= 0 ? ' style="width:' + pct + '%"' : '') + '></div></div>' +
+        '<div class="prog-txt"><b>' + (pct >= 0 ? pct + '%' : '传输中') + '</b> ' +
+        sizeTxt + '<br>' + esc(String(name || '')).slice(0, 60) + '</div>';
+
       var el = U.$('#cloud-state');
-      if (!el) return;
-      el.innerHTML = '<b>传输中 ' + done + '/' + total + '</b><br>' +
-        String(name).replace(/</g, '&lt;');
+      if (el) el.innerHTML = html;
+      var sb = U.$('#st-left');
+      if (sb) sb.textContent = '传输中… ' + (pct >= 0 ? pct + '%' : '');
     };
+
+    function fmtBytes(n) {
+      n = Number(n) || 0;
+      if (n < 1024) return n + ' B';
+      if (n < 1024 * 1024) return (n / 1024).toFixed(1) + ' KB';
+      return (n / 1024 / 1024).toFixed(1) + ' MB';
+    }
+    function esc(t) { return String(t).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'); }
 
     on('#btn-cloud-push', 'click', function () {
       /* E-020：下载弹确认、上传却不弹 —— 同一条原则只守了一侧。
@@ -1025,16 +1104,79 @@
     bindSettings();
 
     /* 快捷键 */
+    /* 快捷键表。
+       问题：命令面板有 28 个条目，以前只接了 6 个快捷键 ——
+       剩下 22 个只能用鼠标点、或在命令面板里搜。
+       对键盘用户来说那 22 个等于不存在：他们不会去点一个要靠鼠标才够得着的入口。
+       所以这里把能接的都接上，并让键位在命令面板的 hint 里看得见。 */
+    var KEYS = [
+      { k: 'p', shift: false, run: function () { UI.palette('file'); } },
+      { k: 'p', shift: true, run: function () { UI.palette('cmd'); } },
+      { k: 'enter', shift: false, run: function () { doRun(); } },
+      { k: '`', shift: false, run: function () { UI.panel.open(!UI.panel.isOpen()); } },
+      { k: 'b', shift: false, run: function () { UI.toggleSide(); } },
+      /* 以下为新增：命令面板里有、却没有键位的那些 */
+      { k: 'n', shift: false, run: function () { command('new-file'); } },
+      { k: 'n', shift: true, run: function () { command('new-folder'); } },
+      { k: 'o', shift: false, run: function () { command('import'); } },
+      { k: 'e', shift: false, run: function () { command('export'); } },
+      { k: 'w', shift: false, run: function () { command('close-tab'); } },
+      { k: ',', shift: false, run: function () { command('settings'); } },
+      { k: 'g', shift: false, run: function () { command('theme'); } },
+      { k: 'd', shift: false, run: function () { command('ext'); } },
+      /* 不用 Ctrl+/ —— 那是编辑器的"切换行注释"，两条命令抢一个键时
+         注释会赢（绑在 textarea 上，先收到事件），搜索命令永远触发不了。
+         Ctrl+F 是查找的事实标准，浏览器页面查找在这里让位给文件内查找。 */
+      { k: 'f', shift: false, run: function () { command('search'); } }
+    ];
+
     document.addEventListener('keydown', function (e) {
       var mod = e.ctrlKey || e.metaKey;
-      if (!mod) return;
       var k = e.key.toLowerCase();
-      if (k === 'p' && !e.shiftKey) { e.preventDefault(); UI.palette('file'); }
-      else if (k === 'p' && e.shiftKey) { e.preventDefault(); UI.palette('cmd'); }
-      else if (k === 'enter') { e.preventDefault(); doRun(); }
-      else if (k === 's') { e.preventDefault(); flushAll(); U.toast('已保存'); }
-      else if (e.key === '`') { e.preventDefault(); UI.panel.open(!UI.panel.isOpen()); }
-      else if (k === 'b') { e.preventDefault(); UI.toggleSide(); }
+
+      /* Alt + 数字：切到第 N 个标签。
+         不用 Ctrl+数字 —— 那被浏览器占去跳标签页了。 */
+      if (e.altKey && !mod && /^[1-9]$/.test(e.key)) {
+        e.preventDefault();
+        if (UI.tabs && UI.tabs.pick) UI.tabs.pick(parseInt(e.key, 10) - 1);
+        return;
+      }
+
+      /* Ctrl+Tab / Ctrl+Shift+Tab：左右切标签。
+         浏览器会抢这两个键，但在编辑器里"切文件"优先于"切浏览器标签页"，
+         所以拦下来。 */
+      if (mod && e.key === 'Tab') {
+        e.preventDefault();
+        if (UI.tabs && UI.tabs.cycle) UI.tabs.cycle(e.shiftKey ? -1 : 1);
+        return;
+      }
+
+      if (!mod) return;
+
+      /* E-017：这里以前是 flushAll(); U.toast('已保存') —— 无条件、不接 promise。
+         上一轮我只修了 editor.js 里的同一处，漏了这个：
+         同一个谎撒在两个地方，修一个等于没修。
+         IndexedDB 写失败（配额满、隐私模式）时用户依然看到"已保存"，
+         然后关标签页 —— 数据就这么没了。 */
+      if (k === 's') {
+        e.preventDefault();
+        Promise.resolve().then(function () { return flushAll(); })
+          .then(function (r) {
+            if (r && r.failed) { onSaveFail(r.err || new Error('部分文件保存失败')); return; }
+            U.toast('已保存');
+          })
+          .catch(onSaveFail);
+        return;
+      }
+
+      for (var i = 0; i < KEYS.length; i++) {
+        var it = KEYS[i];
+        if (it.k === k && !!it.shift === !!e.shiftKey) {
+          e.preventDefault();
+          try { it.run(); } catch (err) { }
+          return;
+        }
+      }
     });
 
     /* 离开前保存 */

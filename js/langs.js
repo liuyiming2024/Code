@@ -132,8 +132,16 @@
       }
       return lang.caveat ? (lang.desc + '；' + lang.caveat) : lang.desc;
     }
-    if (rtReady(lang)) return '已就绪（本机缓存，离线可用）';
-    return '需要下载 ' + fmtSize(rtSize(lang.wasm && lang.wasm.id)) + '，首次需联网';
+    if (rtReady(lang)) {
+      /* 已缓存也不等于能用：这六种按需运行时端到端一次都没跑通过
+         （开发环境访问 Release 下载被挡）。"已就绪"是真的下好了，
+         但"下好了就能跑"是我们没验证过的推断 —— 而用户看到"已就绪"
+         只会理解成后者。所以把未验证这件事说在前面。 */
+      return '已下载到本机缓存（离线可用）。注意：该运行时的实际执行' +
+        '尚未经端到端验证，首次运行如遇问题请反馈';
+    }
+    return '需要下载 ' + fmtSize(rtSize(lang.wasm && lang.wasm.id)) +
+      '，首次需联网。注意：下载后能否正常运行尚未经端到端验证';
   }
 
   function rtSize(id) {

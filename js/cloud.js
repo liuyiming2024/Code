@@ -246,6 +246,8 @@
    * 为什么逐个串行而不并发：
    *   一是免费版后端有并发限制，二是中途失败时已经传了多少一目了然。
    */
+  function txt_len(t) { try { return t == null ? 0 : String(t).length; } catch (e) { return 0; } }
+
   function pushAll(onProgress) {
     var files = [];
     try {
@@ -255,8 +257,30 @@
 
     if (!files.length) return Promise.resolve({ pushed: 0, failed: 0, total: 0 });
 
+    /* 进度按字节算，不按文件数。
+       以前回调的是 (第几个/共几个)，传一个 2 MB 大文件时
+       状态栏会一直停在"传输中 3/10"不动 —— 用户看到的是卡死，
+       于是刷新，前功尽弃。文件数进度对小文件够用，对大文件毫无意义，
+       而这里恰恰是大文件最需要反馈。
+       所以先量总字节，回调带上"已传字节 / 总字节"。 */
     var pushed = 0, failed = 0, lastErr = '';
-    var i = 0;
+    var i = 0, doneBytes = 0;
+    var totalBytes = 0;
+    try {
+      files.forEach(function (r) {
+        var t = (global.Code.fs && global.Code.fs.read) ? global.Code.fs.read(r.path) : '';
+        totalBytes += (t == null ? 0 : String(t).length);
+      });
+    } catch (e) { totalBytes = 0; }
+
+    function report(name) {
+      if (!onProgress) return;
+      onProgress({
+        done: doneBytes, total: totalBytes,
+        index: i, count: files.length, name: name
+      });
+    }
+
     function step() {
       if (i >= files.length) {
         return Promise.resolve({ pushed: pushed, failed: failed, total: files.length, lastErr: lastErr });
@@ -268,10 +292,11 @@
           return (global.Code.fs && global.Code.fs.read) ? global.Code.fs.read(p) : '';
         })
         .then(function (txt) {
-          if (onProgress) onProgress(i, files.length, p);
-          return fileSave(p, txt == null ? '' : String(txt));
-        })
-        .then(function () { pushed++; }, function (e) {
+          report(p);
+          var len = txt_len(txt);
+          return fileSave(p, txt == null ? '' : String(txt))
+            .then(function () { pushed++; doneBytes += len; report(p); });
+        }, function (e) {
           failed++; lastErr = String((e && e.message) || e);
         })
         .then(step);
@@ -285,7 +310,17 @@
       if (!arr.length) return { pulled: 0, failed: 0, total: 0 };
 
       var pulled = 0, failed = 0, lastErr = '';
-      var i = 0;
+      var i = 0, doneBytes = 0;
+      /* 与 pushAll 同一套口径：按字节算。size 是云端记的字节数，
+         取不到就按 0 计入 —— 宁可进度条走得慢一点，也不要报一个假数字。 */
+      var totalBytes = 0;
+      arr.forEach(function (r) { totalBytes += Number(r && r.size) || 0; });
+
+      function report(name) {
+        if (!onProgress) return;
+        onProgress({ done: doneBytes, total: totalBytes, index: i, count: arr.length, name: name });
+      }
+
       function step() {
         if (i >= arr.length) {
           return Promise.resolve({ pulled: pulled, failed: failed, total: arr.length, lastErr: lastErr });
@@ -294,15 +329,17 @@
         i++;
         var p = item && item.path;
         if (!p) return step();
+        report(p);
         return fileGet(p).then(function (r) {
           var content = (r && r.content != null) ? r.content : '';
           if (global.Code.fs && global.Code.fs.write) {
-            return global.Code.fs.write(p, content);
+            return global.Code.fs.write(p, content)
+              .then(function () { doneBytes += txt_len(content); });
           }
           return null;
         }).then(function () {
           pulled++;
-          if (onProgress) onProgress(i, arr.length, p);
+          report(p);
         }, function (e) {
           failed++; lastErr = String((e && e.message) || e);
         }).then(step);

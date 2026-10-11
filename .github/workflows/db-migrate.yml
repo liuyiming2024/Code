@@ -72,7 +72,17 @@ jobs:
             echo "排查：本仓库的 Secret 必须与 Chat 仓库的 SUPABASE_DB_URL 完全一致" | tee -a migrate-log.txt
             echo "（同一个 Supabase 项目，两边用同一个连接串）" | tee -a migrate-log.txt
             echo "更新位置：Settings → Secrets and variables → Actions → SUPABASE_DB_URL" | tee -a migrate-log.txt
-            echo "注意：私有库 凭据.md 里记的连接串可能已过时，以 Chat 仓库实际在用的为准" | tee -a migrate-log.txt
+            echo "注意：私有库 凭据.md 里记的连接串已过时 —— 照抄它必然认证失败。" | tee -a migrate-log.txt
+            echo "" | tee -a migrate-log.txt
+            echo "⚠ 密码拿不到，也改不动，所以别在这个仓库里死磕：" | tee -a migrate-log.txt
+            echo "   · Secret 只能写不能读 → 拿不到 Chat 在用的正确值，没法复制过来" | tee -a migrate-log.txt
+            echo "   · Supabase 托管版 postgres 不是 superuser →" | tee -a migrate-log.txt
+            echo "       create role ... superuser  /  alter role postgres  都 permission denied" | tee -a migrate-log.txt
+            echo "     密码只能在 Supabase 控制台重置（Project Settings → Database）" | tee -a migrate-log.txt
+            echo "" | tee -a migrate-log.txt
+            echo "✅ 不用等密码：云盘建表已改由 Chat 仓库统一执行 ——" | tee -a migrate-log.txt
+            echo "   liuyiming2024/Chat → Actions →「执行 Code 云盘建表」→ Run workflow" | tee -a migrate-log.txt
+            echo "   那份用的是 Chat 的有效凭据，脚本与本仓库 cloud.sql 同一份且全幂等。" | tee -a migrate-log.txt
           fi
           exit $RC
 

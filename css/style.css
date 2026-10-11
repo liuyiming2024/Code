@@ -652,3 +652,17 @@ body:not(.mb-collapsed) #workbench { padding-bottom: 42vh; }
 @media (pointer: fine) {
   .mobile-bar { display: none !important; }
 }
+
+/* ---------- 云盘 ---------- */
+.cloud-state {
+  padding: 10px 12px;
+  margin-bottom: 10px;
+  background: var(--bg-3);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  font-size: 12.5px;
+  line-height: 1.7;
+  color: var(--fg-2);
+}
+.cloud-state b { color: var(--fg); }
+#view-cloud .hint { margin-top: 8px; }

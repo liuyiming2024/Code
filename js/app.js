@@ -56,6 +56,9 @@
         cmd: command
       });
       bind();
+      /* 启动时探一次云盘状态。失败不能影响编辑器 ——
+         没登录是常态，不能因为云端连不上就拦着人写代码。 */
+      try { if (UI.refreshCloud) UI.refreshCloud(); } catch (e) { }
       ed.on('change', onChange);
       ed.on('cursor', onCursor);
       ed.on('save', onSaved);
@@ -465,9 +468,7 @@
     var map = {
       '#set-theme': p.theme, '#set-fontsize': p.fontSize, '#set-tabsize': p.tabSize,
       '#set-indent': p.indentMode, '#set-wrap': p.wordWrap ? 'on' : 'off',
-      '#set-ws': p.showWS ? 'on' : 'off',
-      '#set-sync': p.syncEnabled ? 'on' : 'off',
-      '#set-sync-url': p.syncUrl, '#set-sync-key': p.syncKey
+      '#set-ws': p.showWS ? 'on' : 'off'
     };
     if (Code.ai) {
       var a = Code.ai.load();
@@ -482,6 +483,110 @@
     Object.keys(map).forEach(function (k) {
       var el = U.$(k);
       if (el) el.value = map[k];
+    });
+  }
+
+  /* ================= 云盘 ================= */
+  function bindCloud() {
+    var on = function (sel, evt, fn) {
+      var el = U.$(sel);
+      if (el) el.addEventListener(evt, fn);
+    };
+    if (!Code.cloud) return;
+
+    on('#btn-cloud-login', 'click', function () {
+      var nick = (U.$('#cloud-nick') || {}).value || '';
+      var pwd = (U.$('#cloud-pwd') || {}).value || '';
+      if (!nick.trim() || !pwd) { U.toast('请填昵称与密码', 'err'); return; }
+      U.toast('登录中…');
+      Code.cloud.login(nick.trim(), pwd)
+        .then(function () { U.toast('已登录'); if (UI.refreshCloud) UI.refreshCloud(); })
+        .catch(function (e) { U.toast(String(e.message || e), 'err'); });
+    });
+
+    on('#btn-cloud-register', 'click', function () {
+      var nick = (U.$('#cloud-nick') || {}).value || '';
+      var pwd = (U.$('#cloud-pwd') || {}).value || '';
+      if (!nick.trim() || !pwd) { U.toast('请填昵称与密码', 'err'); return; }
+      U.toast('注册中…');
+      Code.cloud.register(nick.trim(), pwd)
+        .then(function () {
+          /* 注册后多数站点要求审核，不自动登录 */
+          U.toast('注册成功。若站点需审核，请等管理员通过后再登录');
+          if (UI.refreshCloud) UI.refreshCloud();
+        })
+        .catch(function (e) { U.toast(String(e.message || e), 'err'); });
+    });
+
+    on('#btn-cloud-redeem', 'click', function () {
+      var t = (U.$('#cloud-ticket') || {}).value || '';
+      if (!t.trim()) { U.toast('请粘贴票据码', 'err'); return; }
+      U.toast('兑换中…');
+      Code.cloud.redeem(t.trim())
+        .then(function (j) {
+          U.toast('已登录：' + ((j && j.nick) || '成功'));
+          var el = U.$('#cloud-ticket'); if (el) el.value = '';
+          if (UI.refreshCloud) UI.refreshCloud();
+        })
+        .catch(function (e) { U.toast(String(e.message || e), 'err'); });
+    });
+
+    on('#btn-cloud-logout', 'click', function () {
+      Code.cloud.logout()
+        .then(function () { if (UI.refreshCloud) UI.refreshCloud(); })
+        .catch(function () { if (UI.refreshCloud) UI.refreshCloud(); });
+    });
+
+    on('#btn-cloud-push', 'click', function () {
+      U.toast('上传中…');
+      Code.cloud.pushAll()
+        .then(function (r) {
+          U.toast('已上传 ' + (r && r.pushed != null ? r.pushed : '') + ' 个文件');
+          if (UI.refreshCloud) UI.refreshCloud();
+        })
+        .catch(function (e) { U.toast(String(e.message || e), 'err'); });
+    });
+
+    on('#btn-cloud-pull', 'click', function () {
+      /* 覆盖本地同名文件，先问一次 —— 这一步会改用户电脑上的东西 */
+      U.modal({
+        title: '从云端下载',
+        body: '<p class="about-p">会用云端内容<b>覆盖本地同名文件</b>。' +
+          '本地有而云端没有的文件不受影响。</p>' +
+          '<p class="about-p">确定继续？</p>',
+        actions: [
+          { label: '取消', primary: true },
+          {
+            label: '下载并覆盖', onClick: function () {
+              U.toast('下载中…');
+              Code.cloud.pullAll()
+                .then(function (r) {
+                  U.toast('已下载 ' + (r && r.pulled != null ? r.pulled : '') + ' 个文件');
+                  if (UI.refreshCloud) UI.refreshCloud();
+                })
+                .catch(function (e) { U.toast(String(e.message || e), 'err'); });
+            }
+          }
+        ]
+      });
+    });
+
+    on('#btn-cloud-reset', 'click', function () {
+      U.modal({
+        title: '清空云盘',
+        body: '<p class="about-p">会删除<b>云端全部文件</b>，不可恢复。</p>' +
+          '<p class="about-p">本地文件不受影响。确定继续？</p>',
+        actions: [
+          { label: '取消', primary: true },
+          {
+            label: '确认清空', onClick: function () {
+              Code.cloud.cloudReset()
+                .then(function () { U.toast('云盘已清空'); if (UI.refreshCloud) UI.refreshCloud(); })
+                .catch(function (e) { U.toast(String(e.message || e), 'err'); });
+            }
+          }
+        ]
+      });
     });
   }
 
@@ -509,17 +614,12 @@
       store.set('showWS', this.value === 'on');
       ed.refresh();
     });
-    on('#set-sync', 'change', function () {
-      /* 未实现前不允许打开：能填能开却无反馈，会让用户以为上云了从而不再备份 */
-      this.value = 'off';
-      store.set('syncEnabled', false);
-      U.toast('云端同步尚未实现，当前版本不会同步任何数据', 'err');
+    on('#btn-goto-cloud', 'click', function () {
+      UI.setView('cloud');
+      try { store.set('sideView', 'cloud'); } catch (e) { }
+      if (UI.refreshCloud) UI.refreshCloud();
     });
-    ['#set-sync-url', '#set-sync-key'].forEach(function (s) {
-      on(s, 'change', function () {
-        store.set(s === '#set-sync-url' ? 'syncUrl' : 'syncKey', this.value);
-      });
-    });
+    bindCloud();
     bindAi();
 
     on('#btn-reset', 'click', function () {

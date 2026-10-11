@@ -69,6 +69,10 @@
 
   /* ================= 侧栏 ================= */
   UI.setView = function (name) {
+    /* 切到云盘就刷一次状态：登录态可能已在别处变化 */
+    if (name === 'cloud' && Code.cloud) {
+      try { setTimeout(function () { UI.refreshCloud(); }, 0); } catch (e) { }
+    }
     ['files', 'search', 'run', 'settings'].forEach(function (v) {
       var e = U.$('#view-' + v);
       if (e) e.classList.toggle('hidden', v !== name);
@@ -429,6 +433,46 @@
       row.__state.textContent = '运行时管理模块未加载（js/runtimes.js），无法下载';
       row.__state.className = 'ext-state bad';
     }
+  };
+
+  /* ================= 云盘状态 =================
+     未登录是常态，不是错误 —— 不能每次打开都弹"连接失败"。
+     查不到就显示成"未登录"，用户想用自然会去登录。 */
+  UI.refreshCloud = function () {
+    var st = U.$('#cloud-state');
+    var setSt = U.$('#set-cloud-state');
+    var loginBox = U.$('#cloud-login-box');
+    var opsBox = U.$('#cloud-ops-box');
+    if (!st || !Code.cloud) return;
+
+    function show(text, logged) {
+      st.innerHTML = text;
+      if (setSt) setSt.innerHTML = text;
+      if (loginBox) loginBox.classList.toggle('hidden', !!logged);
+      if (opsBox) opsBox.classList.toggle('hidden', !logged);
+    }
+
+    /* 没有会话就不必发请求：省一次往返，也不会出现"请先登录"的红字 */
+    if (!Code.cloud.token()) {
+      show('<b>未登录</b><br>文件只存在这台设备上。登录后可存到云端，换设备能取回。', false);
+      return;
+    }
+
+    show('（正在获取…）', false);
+    Code.cloud.me(true).then(function (m) {
+      var mb = function (n) { return (n / 1048576).toFixed(2) + ' MB'; };
+      var shared = Code.cloud.isSharedSession()
+        ? '<br><span class="hint">（已沿用 Chat 的登录态）</span>' : '';
+      show('<b>已登录：' + (m.nick || '?') + '</b>' +
+        '<br>云端 ' + (m.files || 0) + ' 个文件，' + mb(m.used || 0) + ' / ' + mb(m.quota || 0) +
+        shared, true);
+    }).catch(function (e) {
+      var msg = String((e && e.message) || e);
+      /* 会话失效就清掉，避免一直显示"已登录"却什么都用不了 */
+      if (/失效|未登录|请先登录/.test(msg)) Code.cloud.dropSession();
+      show('<b>未登录</b>' + (/失效/.test(msg) ? '（登录已失效）' : '') +
+        '<br>文件只存在这台设备上。', false);
+    });
   };
 
   /* ================= AI 问答 =================

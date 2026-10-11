@@ -79,6 +79,10 @@
       U.$('#st-left').textContent = '初始化失败：' + err.message;
     });
 
+    /* 移动端辅助键条。手机输入法没有 Tab / Ctrl / 方向键，
+       不补这些键根本写不了代码。非触摸设备会自动跳过。 */
+    try { if (Code.mobileBar) Code.mobileBar.init(); } catch (e) { }
+
     /* 注册离线缓存。就算失败也只是没有"断网可用"和"装到桌面"，
        编辑器本身照常工作 —— 所以必须在 fs.init 之外，不受其成败影响。 */
     try { if (Code.pwa) Code.pwa.register(); } catch (e) { }

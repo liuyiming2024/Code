@@ -537,3 +537,118 @@ svg { width: 18px; height: 18px; display: block; }
 /* 安装按钮：只在浏览器允许安装时才显示（由 pwa.js 控制） */
 #btn-install { display: none; }
 #btn-install.can { display: inline-flex; }
+
+/* ================= 移动端辅助键条 =================
+   只在触摸设备上由 mobile-bar.js 动态插入。
+   手机输入法没有 Tab / Ctrl / 方向键，不补这些键写不了代码。
+
+   位置：固定在底部，默认展开。收起后只留一个小把手。
+
+   两个针对性处理：
+     1. 用 env(safe-area-inset-bottom) 避开 iPhone 底部横条，
+        否则最下面一排键点不到。
+     2. 按钮高度做到 44px（iOS 最小可点尺寸），密集排列也不误触。 */
+
+.mobile-bar {
+  position: fixed;
+  left: 0; right: 0; bottom: 0;
+  z-index: 60;
+  background: var(--bg-2);
+  border-top: 1px solid var(--line);
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+  box-shadow: 0 -4px 16px rgba(0, 0, 0, .22);
+  user-select: none;
+  -webkit-user-select: none;
+  touch-action: manipulation;
+}
+
+.mb-tabs {
+  display: flex; gap: 2px;
+  padding: 4px 6px 0;
+}
+
+.mb-tab {
+  flex: 1;
+  min-height: 30px;
+  background: none; border: none;
+  color: var(--fg-3);
+  font-size: 12px; font-family: var(--font-ui);
+  border-radius: 5px; cursor: pointer;
+}
+.mb-tab.on {
+  background: var(--bg-3);
+  color: var(--fg);
+  font-weight: 600;
+}
+
+.mb-body {
+  display: flex; flex-wrap: wrap; gap: 4px;
+  padding: 5px 6px 6px;
+  max-height: 33vh; overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+.mb-key {
+  flex: 0 0 auto;
+  min-width: 40px;
+  min-height: 40px;
+  padding: 0 6px;
+  background: var(--bg-3);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  color: var(--fg);
+  font-family: var(--font-mono);
+  font-size: 15px;
+  cursor: pointer;
+  display: inline-flex; align-items: center; justify-content: center;
+}
+.mb-key.wide { flex: 0 0 auto; min-width: 64px; }
+.mb-key:active {
+  background: var(--accent);
+  color: var(--accent-fg);
+}
+
+/* 命令组的键文字更长，用界面字体 */
+.mb-body .mb-key { font-family: var(--font-mono); }
+
+.mb-hint {
+  padding: 0 10px;
+  font-size: 11.5px;
+  color: var(--warn);
+  min-height: 0;
+  transition: opacity .2s;
+  pointer-events: none;
+}
+
+.mb-toggle {
+  position: absolute;
+  top: 3px; right: 4px;
+  width: 26px; height: 26px;
+  display: flex; align-items: center; justify-content: center;
+  background: none; border: none;
+  color: var(--fg-3); cursor: pointer;
+  border-radius: 5px;
+}
+
+/* 收起：只留一条把手 */
+.mobile-bar.off .mb-tabs,
+.mobile-bar.off .mb-body,
+.mobile-bar.off .mb-hint {
+  display: none;
+}
+.mobile-bar.off { padding-bottom: calc(env(safe-area-inset-bottom, 0px) + 2px); }
+.mobile-bar.off .mb-toggle {
+  position: static;
+  width: 100%; height: 26px;
+}
+
+/* 收起后给底部内容让出空间 */
+body.mb-collapsed #workbench { padding-bottom: 0; }
+
+/* 展开时把编辑区顶上去，别被键条盖住 */
+body:not(.mb-collapsed) #workbench { padding-bottom: 42vh; }
+
+/* 桌面永远不显示 —— 有物理键盘时这是干扰 */
+@media (pointer: fine) {
+  .mobile-bar { display: none !important; }
+}

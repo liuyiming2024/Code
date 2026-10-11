@@ -37,6 +37,27 @@
   var CPP_BI = ['std', 'cout', 'cin', 'endl', 'vector', 'string', 'map', 'set', 'size_t',
     'printf', 'scanf', 'malloc', 'free', 'memcpy', 'strlen'];
 
+  var LUA_KW = ['and', 'break', 'do', 'else', 'elseif', 'end', 'false', 'for',
+    'function', 'goto', 'if', 'in', 'local', 'nil', 'not', 'or', 'repeat',
+    'return', 'then', 'true', 'until', 'while'];
+  var LUA_BI = ['print', 'pairs', 'ipairs', 'type', 'tostring', 'tonumber',
+    'require', 'table', 'string', 'math', 'io', 'os'];
+  var PHP_KW = ['abstract', 'and', 'array', 'as', 'break', 'callable', 'case',
+    'catch', 'class', 'clone', 'const', 'continue', 'declare', 'default', 'do',
+    'echo', 'else', 'elseif', 'empty', 'enddeclare', 'endfor', 'endforeach',
+    'endif', 'endswitch', 'endwhile', 'enum', 'extends', 'final', 'finally',
+    'fn', 'for', 'foreach', 'function', 'global', 'goto', 'if', 'implements',
+    'include', 'include_once', 'instanceof', 'insteadof', 'interface', 'isset',
+    'list', 'match', 'namespace', 'new', 'or', 'print', 'private', 'protected',
+    'public', 'readonly', 'require', 'require_once', 'return', 'static',
+    'switch', 'throw', 'trait', 'try', 'unset', 'use', 'var', 'while', 'xor',
+    'yield'];
+  var RUBY_KW = ['BEGIN', 'END', 'alias', 'and', 'begin', 'break', 'case',
+    'class', 'def', 'defined?', 'do', 'else', 'elsif', 'end', 'ensure', 'false',
+    'for', 'if', 'in', 'module', 'next', 'nil', 'not', 'or', 'redo', 'rescue',
+    'retry', 'return', 'self', 'super', 'then', 'true', 'undef', 'unless',
+    'until', 'when', 'while', 'yield'];
+
   var SQL_KW = ['SELECT', 'FROM', 'WHERE', 'INSERT', 'INTO', 'VALUES', 'UPDATE', 'SET',
     'DELETE', 'CREATE', 'TABLE', 'DROP', 'ALTER', 'ADD', 'JOIN', 'LEFT', 'RIGHT', 'INNER',
     'OUTER', 'ON', 'GROUP', 'BY', 'ORDER', 'LIMIT', 'OFFSET', 'AS', 'AND', 'OR', 'NOT',
@@ -142,6 +163,46 @@
       { re: /\$\{?\w+\}?/y, cls: 'tk-att' },
       { re: /\b\d+\b/y, cls: 'tk-num' },
       { re: /[|&;()<>]/y, cls: 'tk-pun' }
+    ],
+    lua: [
+      { re: /--\[\[[\s\S]*?\]\]/y, cls: 'tk-com' },
+      { re: /--[^\n]*/y, cls: 'tk-com' },
+      { re: /\[\[[\s\S]*?\]\]/y, cls: 'tk-str' },
+      { re: /"(?:\\.|[^"\\\n])*"/y, cls: 'tk-str' },
+      { re: /'(?:\\.|[^'\\\n])*'/y, cls: 'tk-str' },
+      words(LUA_KW, 'tk-key'),
+      words(LUA_BI, 'tk-typ'),
+      { re: /\b0[xX][0-9a-fA-F]+\b|\b\d+(?:\.\d+)?(?:[eE][+-]?\d+)?\b/y, cls: 'tk-num' },
+      { re: /[A-Za-z_][\w]*(?=\s*[({])/y, cls: 'tk-fun' },
+      { re: /[{}()\[\];,.]/y, cls: 'tk-pun' },
+      { re: /[+\-*/%=<>~^#:]+/y, cls: 'tk-op' }
+    ],
+    php: [
+      { re: /#[^\n]*/y, cls: 'tk-com' },
+      { re: /\/\/[^\n]*/y, cls: 'tk-com' },
+      { re: /\/\*[\s\S]*?\*\//y, cls: 'tk-com' },
+      { re: /"(?:\\.|[^"\\])*"/y, cls: 'tk-str' },
+      { re: /'[^'\\\n]*'/y, cls: 'tk-str' },
+      words(PHP_KW, 'tk-key'),
+      { re: /\$[A-Za-z_][\w]*/y, cls: 'tk-att' },
+      { re: /\b\d+(?:\.\d+)?\b/y, cls: 'tk-num' },
+      { re: /[A-Za-z_][\w]*(?=\s*\()/y, cls: 'tk-fun' },
+      { re: /[{}()\[\];,.]/y, cls: 'tk-pun' },
+      { re: /[+\-*/%=<>!&|^~?:.]+/y, cls: 'tk-op' }
+    ],
+    ruby: [
+      { re: /#[^\n]*/y, cls: 'tk-com' },
+      { re: /=begin[\s\S]*?=end/y, cls: 'tk-com' },
+      { re: /"(?:\\.|[^"\\])*"/y, cls: 'tk-str' },
+      { re: /'[^'\\\n]*'/y, cls: 'tk-str' },
+      words(RUBY_KW, 'tk-key'),
+      { re: /:[A-Za-z_][\w]*[?!]?/y, cls: 'tk-att' },
+      { re: /@[A-Za-z_][\w]*|@@[A-Za-z_][\w]*/y, cls: 'tk-att' },
+      { re: /\b[A-Z][\w]*\b/y, cls: 'tk-typ' },
+      { re: /\b\d+(?:\.\d+)?\b/y, cls: 'tk-num' },
+      { re: /[A-Za-z_][\w]*[?!]?(?=\s*[({])/y, cls: 'tk-fun' },
+      { re: /[{}()\[\];,.|]/y, cls: 'tk-pun' },
+      { re: /[+\-*/%=<>!&|^~?:]+/y, cls: 'tk-op' }
     ],
     text: []
   };

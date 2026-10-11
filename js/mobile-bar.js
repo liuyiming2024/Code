@@ -284,6 +284,11 @@
     bar.appendChild(toggle);
 
     document.body.appendChild(bar);
+    /* 键盘条在就给 body 打标记，占位规则挂在这个类上而不是媒体查询上。
+       为什么：键盘条的出现条件是"触摸设备"，跟屏幕宽度无关 ——
+       iPad（768px 宽）也有键盘条，但它的宽度不匹配窄屏媒体查询，
+       结果就是键盘条浮在内容上面盖住最后几行。 */
+    document.body.classList.add('has-mb');
     showGroup(0);
   }
 
@@ -330,6 +335,10 @@
   /* 只在触摸设备上装 */
   function init() {
     if (!isTouch()) return false;
+    /* 打上 touch 标记：触摸目标的大小该由"是不是触摸设备"决定，
+       而不是屏幕宽度 —— iPad 有 768px 宽，不匹配窄屏查询，
+       但手指一样点不准 30px 的按钮。 */
+    try { document.body.classList.add('touch'); } catch (e) { }
     if (bar) return true;
     if (document.readyState === 'loading') {
       document.addEventListener('DOMContentLoaded', function () { build(); setCollapsed(loadCollapsed()); });

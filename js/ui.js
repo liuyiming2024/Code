@@ -91,6 +91,9 @@
     var side = U.$('#sidebar');
     var off = side.classList.toggle('collapsed');
     U.$('#activitybar').classList.toggle('nobar', false);
+    /* 抽屉模式：开了才显示遮罩。直接 toggle 时同步一次，
+       否则会出现"抽屉开着但没有遮罩，点别处关不掉"的状态。 */
+    document.body.classList.toggle('side-open', !off && isNarrow());
     return off;
   };
 
@@ -142,9 +145,18 @@
   UI.applyPrefs = function (p) {
     document.documentElement.style.setProperty('--font-size', p.fontSize + 'px');
     UI.applyTheme(p.theme);
-    UI.panel.open(!!p.panelOpen);
-    if (p.panelHeight) UI.panel.setHeight(p.panelHeight);
-    if (p.sideWidth) U.$('#sidebar').style.width = p.sideWidth + 'px';
+    /* 窄屏不用桌面拖出来的尺寸：那是在宽屏下调的，搬到手机上会把编辑区挤没。
+       这里干脆不写内联样式，让 CSS 的媒体查询说了算。
+       （CSS 那边也留了 !important 兜底 —— 两道保险，因为内联样式优先级更高，
+         只要有一处漏写就会表现为"手机上侧栏特别宽"这种很难查的问题。 */
+    if (!isNarrow()) {
+      UI.panel.open(!!p.panelOpen);
+      if (p.panelHeight) UI.panel.setHeight(p.panelHeight);
+      if (p.sideWidth) U.$('#sidebar').style.width = p.sideWidth + 'px';
+    } else {
+      /* 窄屏默认不展开面板 —— 140px 在 667px 高的屏上占比太大 */
+      UI.panel.open(false);
+    }
   };
 
   /* ================= 复制 ================= */
@@ -610,9 +622,61 @@
   };
 
   UI.toggleSideForce = function (hidden) {
-    U.$('#sidebar').classList.toggle('collapsed', !!hidden);
+    setSide(!hidden);
   };
   UI.sideCollapsed = function () { return U.$('#sidebar').classList.contains('collapsed'); };
+
+  /* ---------- 移动端：侧栏改抽屉 ----------
+     窄屏下侧栏浮在内容之上（CSS 已处理），这里负责开合状态与遮罩。
+     桌面行为完全不变 —— 只有 isNarrow() 为真时才走这套。 */
+  /* 本文件的 IIFE 没有入参，所以只能用 window —— 写 global 会 ReferenceError。
+     之前这里写成 global 外面又套了 try/catch 兜底，结果错误被静默吃掉，
+     函数恒定返回 false，移动端整套布局一次都没生效过。
+     教训：防御性 catch 只用来接"预期内的异常"，
+     不能拿它兜底变量名写错这类逻辑错误 —— 那会把真故障伪装成正常分支。 */
+  /* 窄屏 = 宽度不够 **或** 高度不够（横屏手机）。
+     只判宽度的话，852×393 的横屏手机会走桌面布局，侧栏挤掉 250px，
+     编辑区只剩不到两成高度。 */
+  function isNarrow() {
+    try {
+      return !!(window.matchMedia &&
+        window.matchMedia('(max-width: 720px), (max-height: 480px)').matches);
+    } catch (e) { return false; }
+  }
+  UI.isNarrow = isNarrow;
+
+  function setSide(open) {
+    var sb = U.$('#sidebar');
+    if (!sb) return;
+    sb.classList.toggle('collapsed', !open);
+    document.body.classList.toggle('side-open', !!open && isNarrow());
+  }
+
+  /* 窄屏时默认把抽屉关上：一进来就该看到代码，不是文件树。
+     这条只对窄屏生效，不影响桌面 —— 否则用户上手机再回电脑会发现侧栏没了。 */
+  UI.initMobileLayout = function () {
+    if (!isNarrow()) return;
+    if (isNarrow() && !U.$('#sidebar').classList.contains('collapsed')) {
+      setSide(false);
+    }
+    /* 面板默认收起：190px 在手机上吃掉太多，要用再展开 */
+    if (UI.panel && UI.panel.isOpen && UI.panel.isOpen()) UI.panel.open(false);
+
+    var scrim = U.$('#side-scrim');
+    if (scrim && !scrim.__bound) {
+      scrim.__bound = true;
+      scrim.addEventListener('click', function () { setSide(false); });
+    }
+  };
+
+  /* 窗口从窄变宽（手机横屏/平板）时清掉遮罩状态，别留下幽灵遮罩 */
+  try {
+    window.addEventListener('resize', function () {
+      if (!isNarrow() && document.body.classList.contains('side-open')) {
+        document.body.classList.remove('side-open');
+      }
+    });
+  } catch (e) { }
 
   Code.ui = UI;
 })();

@@ -63,6 +63,9 @@
       ed.on('cursor', onCursor);
       ed.on('save', onSaved);
       UI.setView(prefs.sideView || 'files');
+      /* 移动端布局：窄屏默认收起侧栏与面板。
+         必须在 setView 之后 —— 否则它设置的视图会被后面的逻辑改回去。 */
+      try { if (UI.initMobileLayout) UI.initMobileLayout(); } catch (e) { }
       refreshTree();
       refreshTargets();
       applySettingsToUI(prefs);
@@ -650,13 +653,41 @@
         var a = b.getAttribute('data-act');
         if (a === 'about') UI.about();
         else if (a === 'extensions') UI.extensions();
+        else if (a === 'palette') UI.palette('cmd');
         else command(a);
       };
     });
     var br = U.$('#btn-run'); if (br) br.onclick = doRun;
     var bt = U.$('#btn-theme'); if (bt) bt.onclick = toggleTheme;
+    /* 顶栏菜单：以前这个按钮绑的是 toggleSide，而 #top-menu 没有任何代码
+       给它加 open 类 —— 那 7 个菜单项（新建、导出、导入、扩展中心、关于…）
+       从来没有出现在界面上，是死 UI。
+       桌面还能靠 Ctrl+Shift+P 走命令面板绕过去，手机上连快捷键都没有，
+       等于这些功能在手机上完全不可达。所以这里让它真正打开菜单。
+       侧栏切换另有入口：活动栏图标 + Ctrl+B。 */
     var bm = U.$('#btn-menu');
-    if (bm) bm.onclick = function () { UI.toggleSide(); };
+    var menuEl = U.$('#top-menu');
+    function closeMenu() { if (menuEl) menuEl.classList.remove('open'); }
+    function toggleMenu() {
+      if (!menuEl) return;
+      menuEl.classList.toggle('open');
+    }
+    if (bm) {
+      bm.onclick = function (e) {
+        e.stopPropagation();
+        toggleMenu();
+      };
+    }
+    /* 点别处关掉；菜单内的项点完也关 */
+    document.addEventListener('click', function (e) {
+      if (!menuEl) return;
+      if (menuEl.contains(e.target) || (bm && bm.contains(e.target))) return;
+      closeMenu();
+    });
+    U.$$('#top-menu [data-act]').forEach(function (b) {
+      var prev = b.onclick;
+      b.onclick = function () { closeMenu(); if (prev) prev(); };
+    });
 
     /* 运行视图 */
     var r2 = U.$('#btn-run2'); if (r2) r2.onclick = doRun;

@@ -392,16 +392,115 @@ svg { width: 18px; height: 18px; display: block; }
 #toast.err { border-color: var(--danger); color: var(--danger); }
 #toast.ok { border-color: var(--ok); }
 
-/* ---------- 窄屏 ---------- */
+/* ================= 移动端适配 =================
+
+   实测（Playwright 真机视口）暴露的问题，逐条对应下面的改动：
+
+   | 问题 | 实测数据 | 这里的处理 |
+   |---|---|---|
+   | 编辑区几乎没高度 | iPhone SE 上 275×72，仅占屏高 11% | 侧栏改抽屉、面板默认收起、键盘条占位改小 |
+   | 侧栏吃掉 2/3 屏宽 | 375px 屏上侧栏 250px | 抽屉式覆盖，不再挤压编辑区 |
+   | 键盘条占位过大 | `42vh` ≈ 280px，比键盘条本身高 3 倍 | 改成实际高度 |
+
+   另外修了一个真 bug：`ui.js` 会把用户拖过的侧栏宽度写成**内联样式**，
+   内联优先级高于这里的媒体查询，导致桌面拖宽后手机上永远是 250px。
+   所以下面侧栏宽度用了 `!important` 并注明原因。 */
+
 @media (max-width: 720px) {
-  :root { --side-w: 190px; --act-w: 40px; }
+  :root { --side-w: 200px; --act-w: 44px; --topbar-h: 44px; }
+
+  /* ---- 侧栏：抽屉式 ----
+     不再挤压编辑区，而是浮在内容之上 + 半透明遮罩。
+     375px 的屏上，挤压式会让编辑区只剩 100 多 px，没法用。 */
+  #sidebar {
+    position: absolute !important;
+    left: var(--act-w); top: 0; bottom: 0;
+    z-index: 55;
+    height: auto;
+    /* 覆盖 ui.js 写的内联宽度（用户桌面拖宽后手机上会一直是那个值） */
+    width: min(var(--side-w), calc(100vw - var(--act-w) - 40px)) !important;
+    box-shadow: 0 0 24px rgba(0, 0, 0, .45);
+  }
+  /* 拖动条在抽屉模式下没有意义 —— 宽度由上面锁定 */
+  #side-resizer { display: none; }
+
+  /* 遮罩：点它关抽屉。没有它，抽屉开着时看不出后面还能点。 */
+  #side-scrim {
+    position: absolute; inset: 0 0 0 var(--act-w);
+    z-index: 54;
+    background: rgba(0, 0, 0, .45);
+    opacity: 0; pointer-events: none;
+    transition: opacity .18s;
+  }
+  body.side-open #side-scrim { opacity: 1; pointer-events: auto; }
+
+  /* ---- 顶栏：手机上放不下那么多字 ---- */
   .brand-name { display: none; }
-  #panel { height: 150px; }
-  #tabsbar .tab { min-width: 90px; }
+  #btn-run span { display: none; }        /* 运行按钮只留图标 */
+  #btn-run { padding: 0 10px; }
+
+  /* ---- 标签页：别再撑满，窄一点能多露几个 ---- */
+  #tabsbar .tab { min-width: 0; max-width: 130px; }
+
+  /* ---- 文件树：行高够大才点得准 ---- */
+  .tree-row { min-height: 38px; font-size: 13.5px; }
+
+  /* ---- 底部面板：手机上给个更矮的默认值 ----
+     同样用 !important —— `ui.js` 的 setHeight() 会把用户拖过的高度写成内联样式，
+     内联优先于媒体查询，桌面拖到 190px 后手机上就永远 190px。 */
+  #panel { height: 140px !important; }
+
+  /* ---- 键盘条占位 ----
+     原来是 42vh（iPhone SE 上 280px），比键盘条本身（约 86px）高 3 倍多，
+     是编辑区只剩 72px 的主因之一。改成略高于实际高度即可。 */
 }
-@media (max-width: 520px) {
-  #sidebar { position: absolute; z-index: 50; height: 100%; box-shadow: var(--shadow); }
+
+/* ---- 触摸目标大小：挂在 body.touch 上，而不是屏宽查询里 ----
+     判断依据应该是"用什么在操作"，不是"屏幕多宽"。
+     iPad 有 768px 宽，不匹配窄屏查询，但手指一样点不准 30px 的按钮。
+     顶栏高度在窄屏下已提到 44px，触摸设备上按钮跟着放大到 40px。 */
+body.touch .icon-btn { width: 40px; height: 40px; }
+body.touch .icon-btn svg { width: 20px; height: 20px; }
+body.touch .btn { min-height: 34px; padding: 0 10px; }
+body.touch .tree-row { min-height: 38px; }
+body.touch #tabsbar .tab { min-height: 34px; }
+body.touch #activitybar { --act-w: 46px; }
+body.touch #activitybar .act-btn { width: 40px; height: 40px; }
+body.touch .menu-item { padding: 9px 12px; font-size: 14px; }
+/* 标签的关闭叉默认是 14×18，手指根本点不准。
+   放大到 28×28 —— 它嵌在 34px 高的标签里，再大会把标签撑变形。 */
+body.touch .tclose { width: 28px; height: 28px; }
+body.touch .tclose svg { width: 15px; height: 15px; }
+
+/* ---- 键盘条占位：只看键盘条在不在，不看屏宽 ----
+   iPad 这类宽屏触摸设备也有键盘条，但它不匹配上面的窄屏查询，
+   占位规则放那里的话键盘条会盖住内容底部。 */
+body.has-mb #workbench { padding-bottom: 104px; }
+body.has-mb.mb-collapsed #workbench { padding-bottom: 32px; }
+
+/* 横屏手机：高度很紧张，侧栏同样走抽屉、面板更矮。
+   852×393 这种横屏不匹配 max-width:720px，必须单独覆盖，
+   否则侧栏照常挤掉 250px，编辑区只剩不到 20% 高度。 */
+@media (max-height: 480px) and (max-width: 900px) {
+  #sidebar {
+    position: absolute !important;
+    left: var(--act-w); top: 0; bottom: 0; z-index: 55; height: auto;
+    width: min(var(--side-w), calc(100vw - var(--act-w) - 40px)) !important;
+  }
+  #side-resizer { display: none; }
+  #panel { height: 100px !important; }
+  body.has-mb #workbench { padding-bottom: 92px; }
 }
+
+/* 更窄的屏：再压一点 */
+@media (max-width: 480px) {
+  #tabsbar .tab { max-width: 110px; font-size: 12px; }
+  .brand { display: none; }               /* 品牌名已隐藏，整块省掉 */
+  #panel { height: 120px !important; }
+}
+
+/* 横屏手机：高度很紧张，面板再矮些 */
+
 
 /* ---------- 右键菜单 ---------- */
 .menu {

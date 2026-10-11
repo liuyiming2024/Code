@@ -373,6 +373,80 @@
     if (sel) sel.value = next;
   }
 
+  /* ================= AI 设置 =================
+     密钥只写 localStorage。仓库里没有，也不经过任何中间服务器。 */
+  function renderAiHint() {
+    var h = U.$('#ai-hint');
+    if (!h || !Code.ai) return;
+    var a = Code.ai.load();
+    var p = Code.ai.preset(a.preset);
+    var txt = '';
+    if (p && p.note) txt += p.note;
+    if (p && p.keyURL) {
+      txt += ' <a href="' + p.keyURL + '" target="_blank" rel="noopener">去拿密钥</a>';
+    }
+    if (!a.apiKey || !a.enabled) {
+      txt += '<br><b>未启用</b>：填入密钥并开启后，才会出现 AI 相关入口。';
+    }
+    h.innerHTML = txt;
+  }
+
+  function bindAi() {
+    if (!Code.ai) return;
+    var sel = U.$('#set-ai-preset');
+    if (sel) {
+      Code.ai.PRESETS.forEach(function (p) {
+        var o = document.createElement('option');
+        o.value = p.id; o.textContent = p.name;
+        sel.appendChild(o);
+      });
+      sel.addEventListener('change', function () {
+        var p = Code.ai.preset(this.value);
+        if (!p) return;
+        /* 选预置就自动带出地址和模型名，省得手抄错。自定义那项留空给人填。 */
+        Code.ai.save({ preset: p.id, baseURL: p.baseURL, model: p.model });
+        var b = U.$('#set-ai-base'), m = U.$('#set-ai-model');
+        if (b) b.value = p.baseURL;
+        if (m) m.value = p.model;
+        renderAiHint();
+      });
+    }
+    var on = function (id, evt, fn) { var e = U.$(id); if (e) e.addEventListener(evt, fn); };
+    on('#set-ai-enabled', 'change', function () {
+      Code.ai.save({ enabled: this.value === 'on' });
+      renderAiHint();
+      U.toast(this.value === 'on' ? 'AI 已开启（需已填密钥）' : 'AI 已关闭');
+    });
+    ['#set-ai-base', '#set-ai-model', '#set-ai-key'].forEach(function (id) {
+      on(id, 'change', function () {
+        Code.ai.save(id === '#set-ai-base' ? { baseURL: this.value.trim() }
+          : id === '#set-ai-model' ? { model: this.value.trim() }
+          : { apiKey: this.value.trim() });
+        renderAiHint();
+      });
+    });
+    on('#btn-ai-test', 'click', function () {
+      if (!Code.ai.ready()) { U.toast('请先填入密钥并开启', 'err'); return; }
+      U.toast('测试中…');
+      Code.ai.chat([{ role: 'user', content: '回复两个字：可用' }], { timeout: 30000 })
+        .then(function (r) {
+          U.toast('连接成功：' + String(r.text || '').slice(0, 40));
+        })
+        .catch(function (e) {
+          U.toast(String(e && e.message || e).split('\n')[0], 'err');
+        });
+    });
+    on('#btn-ai-clear', 'click', function () {
+      Code.ai.clearKey();
+      var k = U.$('#set-ai-key'); if (k) k.value = '';
+      var en = U.$('#set-ai-enabled'); if (en) en.value = 'off';
+      renderAiHint();
+      U.toast('密钥已删除');
+    });
+  }
+
+  Code.bindAiHint = renderAiHint;
+
   /* ================= 设置 ================= */
   function applySettingsToUI(p) {
     var map = {
@@ -382,6 +456,16 @@
       '#set-sync': p.syncEnabled ? 'on' : 'off',
       '#set-sync-url': p.syncUrl, '#set-sync-key': p.syncKey
     };
+    if (Code.ai) {
+      var a = Code.ai.load();
+      var put = function (sel, v) { var e = U.$(sel); if (e) e.value = v; };
+      put('#set-ai-enabled', a.enabled ? 'on' : 'off');
+      put('#set-ai-preset', a.preset || 'zhipu');
+      put('#set-ai-base', a.baseURL || '');
+      put('#set-ai-model', a.model || '');
+      put('#set-ai-key', a.apiKey || '');
+      renderAiHint();
+    }
     Object.keys(map).forEach(function (k) {
       var el = U.$(k);
       if (el) el.value = map[k];
@@ -423,6 +507,8 @@
         store.set(s === '#set-sync-url' ? 'syncUrl' : 'syncKey', this.value);
       });
     });
+    bindAi();
+
     on('#btn-reset', 'click', function () {
       U.modal({
         title: '恢复默认设置',

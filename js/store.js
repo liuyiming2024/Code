@@ -20,7 +20,8 @@
     autorun: false,
     syncEnabled: false,       // 可选：把工程同步到外部数据库，默认关闭
     syncUrl: '',
-    syncKey: ''
+    syncKey: '',
+    snippets: true           // Tab 展开代码片段
   };
 
   var prefs = Object.assign({}, DEFAULTS);

@@ -252,10 +252,33 @@
       { label: '显示 / 隐藏底部面板', hint: 'Ctrl+`', icon: 'i-split', act: function () { hooks.cmd && hooks.cmd('panel'); } },
       { label: '清空运行输出', hint: '', icon: 'i-eraser', act: function () { hooks.cmd && hooks.cmd('clear'); } },
       { label: '扩展中心（下载运行时）', hint: '', icon: 'i-download', act: function () { UI.extensions(); } },
+      /* 没配密钥就不渲染 AI 入口 —— 渲染了点下去报错是误导 */
+      (Code.ai && Code.ai.ready()
+        ? { label: 'AI 解释选中代码', hint: '', icon: 'i-info', act: function () { UI.aiAsk('explain'); } }
+        : null),
+      (Code.ai && Code.ai.ready()
+        ? { label: 'AI 改写选中代码', hint: '', icon: 'i-return', act: function () { UI.aiAsk('rewrite'); } }
+        : null),
+      (Code.ai && !Code.ai.ready()
+        ? { label: '配置 AI 密钥（当前未启用）', hint: '', icon: 'i-key', act: function () { UI.openSettings('ai'); } }
+        : null),
       { label: '关于 Code', hint: '', icon: 'i-info', act: function () { UI.about(); } }
     ];
-    return out;
+    return out.filter(Boolean);
   }
+
+  /* 打开设置并滚到 AI 区块 */
+  UI.openSettings = function (which) {
+    var btn = document.querySelector('[data-act="settings"], [data-view="settings"]');
+    if (btn) btn.click();
+    var target = which === 'ai' ? U.$('#set-ai-enabled') : null;
+    if (target) {
+      setTimeout(function () {
+        try { target.scrollIntoView({ block: 'center' }); } catch (e) { }
+        target.focus();
+      }, 60);
+    }
+  };
 
   UI.about = function () {
     U.modal({
@@ -407,6 +430,85 @@
       row.__state.className = 'ext-state bad';
     }
   };
+
+  /* ================= AI 问答 =================
+     结果只显示在面板上，不回写文件——改代码要用户自己确认再粘贴。 */
+  UI.aiAsk = function (mode) {
+    if (!Code.ai || !Code.ai.ready()) {
+      U.modal({
+        title: 'AI 尚未启用',
+        body: '<p class="about-p">请先在设置里填入密钥并开启。密钥只存在这台设备上。</p>',
+        actions: [{ label: '知道了', primary: true }]
+      });
+      return;
+    }
+    var sel = '';
+    try {
+      var ed = Code.editor;
+      if (ed && ed.sel) {
+        var r = ed.sel();
+        var v = ed.value ? ed.value() : '';
+        sel = (r[1] > r[0]) ? v.slice(r[0], r[1]) : '';
+      }
+    } catch (e) { sel = ''; }
+    if (!sel) {
+      U.modal({
+        title: mode === 'explain' ? 'AI 解释代码' : 'AI 改写代码',
+        body: '<p class="about-p">请先选中一段代码，再执行此命令。</p>',
+        actions: [{ label: '知道了', primary: true }]
+      });
+      return;
+    }
+
+    var lang = '';
+    try { lang = U.langOf(Code.editor.path()) || ''; } catch (e) { }
+
+    var body =
+      '<div class="ai-src"><pre>' + esc(sel.slice(0, 4000)) + '</pre></div>' +
+      (mode === 'rewrite'
+        ? '<div class="field"><input id="ai-instr" type="text" placeholder="改成什么样？例如：用 for 循环重写" autocomplete="off"></div>'
+        : '') +
+      '<div class="ai-out"><pre id="ai-result">（等待回复…）</pre></div>';
+
+    U.modal({
+      title: mode === 'explain' ? 'AI 解释代码' : 'AI 改写代码',
+      body: body,
+      actions: [
+        { label: '关闭' },
+        {
+          label: '发送', primary: true, onClick: function () {
+            var out = U.$('#ai-result');
+            if (!out) return;
+            out.textContent = '（请求中…）';
+            var p;
+            if (mode === 'rewrite') {
+              var instr = (U.$('#ai-instr') || {}).value || '优化这段代码';
+              p = Code.ai.rewrite(sel, instr, lang);
+            } else {
+              p = Code.ai.explain(sel, lang);
+            }
+            p.then(function (r) {
+              out.textContent = r.text || '（返回为空）';
+            }).catch(function (e) {
+              out.textContent = '失败：' + String(e && e.message || e);
+            });
+            return false;   /* 不关对话框，让结果留在屏幕上 */
+          }
+        }
+      ]
+    });
+    /* 打开后自动发一次解释（改写要等用户填要求） */
+    if (mode === 'explain') {
+      setTimeout(function () {
+        var btn = document.querySelector('.modal .btn-primary');
+        if (btn) btn.click();
+      }, 30);
+    }
+  };
+
+  function esc(s) {
+    return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  }
 
   /* ================= 初始化 ================= */
   UI.init = function (h) {

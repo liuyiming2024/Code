@@ -66,6 +66,10 @@
       if (text == null) text = '';
       cur = docOf(path);
       cur.content = text;
+      /* 打开文件就检测它自己的缩进风格，只对这一个文件生效。
+         检测不出来会返回 null，那时继续用用户原本的偏好。 */
+      if (Code.styleAdapt) Code.styleAdapt.apply(path, text);
+      endSnippet();
       el.ta.value = text;
       el.ta.disabled = false;
       el.ta.scrollTop = cur.scroll || 0;
@@ -222,6 +226,11 @@
     });
   }
 
+  /* 光标移动或改动文本都结束片段会话 —— 跳错位置比不跳更糟 */
+  function dropSnippetOnEdit() {
+    if (snipSession) endSnippet();
+  }
+
   function replaceRange(start, end, text, selStart, selEnd) {
     var v = cur.content;
     cur.content = v.slice(0, start) + text + v.slice(end);
@@ -243,8 +252,14 @@
   }
 
   function spaces(n) { return new Array(((n | 0) || 4) + 1).join(' '); }
-  /* 缩进方式：tab / space / smart（沿用当前行首字符） */
+  /* 缩进单元：**当前文件的风格优先于全局偏好**。
+     打开别人的文件时，它用 tab 你就跟着用 tab，别把人家的格式改乱。
+     检测不到的情况才回落到用户在偏好里选的。 */
   function indentUnit() {
+    var st = (Code.styleAdapt && cur) ? Code.styleAdapt.of(cur.path) : null;
+    if (st && st.mode === 'tab') return '\t';
+    if (st && st.mode === 'space' && st.size) return spaces(st.size);
+
     var p = store.prefs;
     if (p.indentMode === 'tab') return '\t';
     if (p.indentMode === 'space') return spaces(p.tabSize);
@@ -260,6 +275,67 @@
     if (lang === 'sql') return '--';
     if (lang === 'html' || lang === 'markdown') return null;
     return '//';
+  }
+
+  /* ---------- Tab 片段展开 ----------
+     展开后光标落在第一个占位上（选中，方便直接改写）。
+     再按 Tab 跳下一个占位；一旦用户改动了文本就结束会话，
+     因为偏移会失效 —— 与其跳错位置，不如老实缩进。 */
+  var snipSession = null;
+
+  function endSnippet() { snipSession = null; }
+
+  function trySnippet() {
+    if (!Code.snippets || !cur) return false;
+    var p = store.prefs;
+    if (p.snippets === false) return false;
+    var ta = el.ta, pos = ta.selectionStart;
+    if (pos !== ta.selectionEnd) return false;   /* 有选区时不展开 */
+
+    /* 会话进行中：跳下一个占位 */
+    if (snipSession) {
+      var len = cur.content.length;
+      if (len !== snipSession.len) { endSnippet(); return false; }
+      var next = snipSession.stops[snipSession.idx];
+      if (!next) { endSnippet(); return false; }
+      snipSession.idx++;
+      try { el.ta.setSelectionRange(next.start, next.end); } catch (e) { }
+      paint();
+      return true;
+    }
+
+    var lang = U.langOf(cur.path);
+    var hit = Code.snippets.expand(lang, cur.content, pos);
+    if (!hit) return false;
+
+    var unit = indentUnit();
+    /* 运算符间距也跟着文件走：x==y 的文件里别插入 x == y */
+    var fst = Code.styleAdapt ? Code.styleAdapt.of(cur.path) : null;
+    var r = hit.render(unit, fst && fst.spacing);
+    pushUndo(false);
+    /* 替换触发词 */
+    var base = hit.start;
+    var after = cur.content.slice(hit.end);
+    var newText = cur.content.slice(0, base) + r.text + after;
+    /* tabstop 的绝对位置 = 插入点 + 模板内偏移 */
+    var stops = (r.stops || []).map(function (t) {
+      return { n: t.n, start: base + t.start, end: base + t.end };
+    });
+    replaceRange(base, hit.end, r.text);
+    /* replaceRange 已改了内容，这里重新算一遍长度 */
+    snipSession = {
+      stops: stops, idx: 0,
+      len: newText.length
+    };
+    /* 选中第一个占位 */
+    if (stops.length) {
+      snipSession.idx = 1;
+      try { el.ta.setSelectionRange(stops[0].start, stops[0].end); } catch (e) { }
+    } else {
+      endSnippet();
+    }
+    paint();
+    return true;
   }
 
   function onKey(e) {
@@ -278,6 +354,8 @@
       e.preventDefault();
       if (s !== en && cur.content.slice(s, en).indexOf('\n') >= 0) return blockIndent(e.shiftKey ? -1 : 1);
       if (e.shiftKey) return;
+      /* 先试片段展开：敲 for 再按 Tab 直接出骨架 */
+      if (trySnippet()) return;
       pushUndo(false);
       replaceRange(s, en, indentUnit());
       return;
@@ -414,7 +492,18 @@
     init: init, open: open, close: close, current: current, value: value, setValue: setValue,
     applyPrefs: applyPrefs, on: on, undo: undo, redo: redo, save: flushSave,
     focus: function () { el.ta.focus(); },
+    endSnippet: endSnippet,
     caret: caretInfo,
+    /* 片段展开需要：读选区、精确替换、手动压撤销栈 */
+    sel: function () {
+      if (!cur) return [0, 0];
+      return [el.ta.selectionStart, el.ta.selectionEnd];
+    },
+    replace: function (a, b, text, sa, se) { replaceRange(a, b, text, sa, se); },
+    pushUndo: pushUndo,
+    /* 缩进单元，片段里用它而不是硬编码空格 */
+    indentUnit: indentUnit,
+    path: function () { return cur ? cur.path : ''; },
     refresh: function () { measure(); paint(); renderGutter(); },
     el: function () { return el; }
   };

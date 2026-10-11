@@ -75,6 +75,10 @@
       <path d="M12 15.5V4.5M7.5 9L12 4.5 16.5 9" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/>
       <path d="M4.5 19.5h15" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/>
     </symbol>
+    <symbol id="i-key" viewBox="0 0 24 24">
+      <circle cx="8" cy="12" r="3.6" fill="none" stroke="currentColor" stroke-width="1.7"/>
+      <path d="M11.6 12H20M17 12v3.2M14.4 12v2.4" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/>
+    </symbol>
     <symbol id="i-info" viewBox="0 0 24 24">
       <circle cx="12" cy="12" r="8.4" fill="none" stroke="currentColor" stroke-width="1.7"/>
       <path d="M12 10.6v6.2M12 7.7v.5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
@@ -179,6 +183,23 @@
           <select id="set-ws"><option value="off">关闭</option><option value="on">开启</option></select>
         </div>
         <hr>
+        <div class="field"><label>AI 辅助（需自备密钥）</label>
+          <select id="set-ai-enabled"><option value="off">关闭</option><option value="on">开启</option></select>
+        </div>
+        <div class="field"><label>服务商</label>
+          <select id="set-ai-preset"></select>
+        </div>
+        <div class="field"><input id="set-ai-base" type="text" placeholder="接口地址" autocomplete="off" spellcheck="false"></div>
+        <div class="field"><input id="set-ai-model" type="text" placeholder="模型名" autocomplete="off" spellcheck="false"></div>
+        <div class="field"><input id="set-ai-key" type="password" placeholder="API Key（只存本机）" autocomplete="off" spellcheck="false"></div>
+        <p class="hint" id="ai-hint"></p>
+        <div class="row">
+          <button class="btn" id="btn-ai-test">测试连接</button>
+          <button class="btn" id="btn-ai-clear">删除密钥</button>
+        </div>
+        <p class="hint">密钥只保存在<b>这台设备的浏览器</b>里，请求直连你选的服务商，本项目不经手。
+        想彻底清除：点「删除密钥」。</p>
+        <hr>
         <div class="field"><label>云端同步（尚未实现）</label>
           <select id="set-sync" disabled title="尚未实现"><option value="off">关闭：只存本机浏览器（当前唯一可用模式）</option></select>
         </div>
@@ -251,6 +272,8 @@
 <script src="js/store.js"></script>
 <script src="js/fs.js"></script>
 <script src="js/highlight.js"></script>
+<script src="js/snippets.js"></script>
+<script src="js/style-adapt.js"></script>
 <script src="js/editor.js"></script>
 <!-- 按需运行时（前辈的 Worker 方案）：runtimes.js 主线程侧 + rt-worker.js 执行侧 -->
 <script src="js/runtimes.js"></script>
@@ -259,6 +282,7 @@
 <script src="js/pylite.js"></script>
 <script src="js/cpplite.js"></script>
 <script src="js/runner.js"></script>
+<script src="js/ai.js"></script>
 <script src="js/api.js"></script>
 <script src="js/tree.js"></script>
 <script src="js/ui.js"></script>

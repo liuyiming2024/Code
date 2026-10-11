@@ -499,3 +499,16 @@ svg { width: 18px; height: 18px; display: block; }
 .ext-bar .btn.small { padding: 3px 10px; font-size: 12px; }
 .ext-prog { margin-top: 8px; height: 4px; border-radius: 2px; background: var(--bg-3); overflow: hidden; }
 .ext-prog i { display: block; height: 100%; width: 0; background: var(--accent); transition: width .18s linear; }
+
+/* ---------- AI 问答 ---------- */
+.ai-src, .ai-out { margin-bottom: 10px; }
+.ai-src pre, .ai-out pre {
+  max-height: 180px; overflow: auto; margin: 0;
+  background: var(--bg-2); border: 1px solid var(--line);
+  border-radius: 6px; padding: 10px 12px;
+  font-family: var(--font-mono); font-size: 12.5px; line-height: 1.6;
+  white-space: pre-wrap; word-break: break-word;
+}
+.ai-src pre { max-height: 140px; color: var(--fg-2); }
+.ai-out pre { max-height: 260px; color: var(--fg); }
+#ai-hint a { color: var(--accent); }

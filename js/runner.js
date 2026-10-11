@@ -2,7 +2,9 @@
    原则：算力只在本机浏览器内发生，代码与数据都不上传。
    - JavaScript：浏览器原生执行，主线程 new Function，捕获 console 与异常。
    - HTML：在本页 iframe（sandbox 限制为允许脚本）里预览，并回传其 console。
-   - 其余语言：不做伪造执行，明确提示"当前未内置运行时"。
+   - 其余语言：交给 js/rt-worker.js 里的真实运行时（SQLite / Python / Lua /
+     PHP / Ruby / C++），资源按需下载并缓存。
+   - 下载与执行都在 Worker 里，主线程只显示进度。
    已知限制：无限循环无法中断（浏览器主线程没有抢占），README 已写明。 */
 (function (global) {
   'use strict';
@@ -151,10 +153,8 @@
     } else if (r !== undefined) print('ret', fmt(r), 'i-return');
   }
 
-  var NO_RUNTIME = {
-    python: '当前环境未内置 Python 运行时。引入外部解释器会引入第三方分发物并显著增大体积，\n本项目暂不内置；.py 文件可正常编辑、着色与保存，但不会执行。',
-    cpp: '当前环境未内置 C++ 编译器。浏览器内编译需要引入外部工具链，本项目暂不内置；\n.cpp / .c / .h 文件可正常编辑、着色与保存，但不会执行。'
-  };
+  /* 这些有真实运行时，交给 Worker 执行。 */
+  var HAS_RT = { sql: 1, python: 1, lua: 1, php: 1, ruby: 1, cpp: 1 };
 
   function run(path, code, lang) {
     count = 0; muted = false; t0 = (global.performance ? performance.now() : Date.now());
@@ -162,16 +162,55 @@
     line('sys', '运行 ' + path + '（本机浏览器内执行，不联网）');
     if (lang === 'javascript') {
       runJS(code);
-    } else if (lang === 'html') {
+      return finish();
+    }
+    if (lang === 'html') {
       preview(path, code);
       line('sys', '已在编辑区右侧打开预览。');
-    } else if (NO_RUNTIME[lang]) {
-      line('warn', NO_RUNTIME[lang]);
-    } else {
-      line('warn', '该类型没有可执行运行时：' + (U.LANG_LABEL[lang] || lang) + '。可编辑、着色与保存。');
+      return finish();
     }
+    if (HAS_RT[lang] && Code.runtimes) {
+      return runRemote(lang, code);
+    }
+    line('warn', '该类型没有可执行运行时：' + (U.LANG_LABEL[lang] || lang) + '。可编辑、着色与保存。');
+    return finish();
+  }
+
+  function finish() {
     var ms = ((global.performance ? performance.now() : Date.now()) - t0).toFixed(1);
     printSys('结束，用时 ' + ms + ' ms');
+    return Promise.resolve();
+  }
+
+  /* 走 Worker 的运行时。进度条走 printSys，不静默。 */
+  function runRemote(lang, code) {
+    var label = Code.runtimes.label(lang);
+    line('sys', '准备 ' + label + ' 运行时（约 ' + Code.runtimes.sizeHint(lang) +
+      '，预计 ' + Code.runtimes.hint(lang) + '）…');
+    line('sys', '首次需要联网下载，之后会缓存在本机，断网也能用。');
+    return new Promise(function (resolve) {
+      var lastPct = -1;
+      Code.runtimes.run(lang, code, {
+        progress: function (d) {
+          if (d.pct === undefined) return;
+          // 每 10% 报一次，别刷屏
+          var p = Math.floor(d.pct / 10) * 10;
+          if (p === lastPct) return;
+          lastPct = p;
+          printSys('下载中… ' + p + '%' + (d.file ? '（' + d.file + '）' : ''));
+        },
+        ready: function () { printSys('运行时就绪，开始执行。'); },
+        done: function (d) {
+          if (d.error) line('err', String(d.error));
+          else if (d.text) d.text.split('\n').forEach(function (l) { print('out', l); });
+          finish().then(resolve);
+        },
+        fail: function (d) {
+          line('err', '运行时失败：' + (d.error || '未知原因'));
+          finish().then(resolve);
+        }
+      });
+    });
   }
 
   function preview(path, code) {
@@ -200,6 +239,8 @@
   Code.runner = {
     init: init, run: run, preview: preview, hidePreview: hidePreview,
     clear: clear, stop: stop, evalExpr: evalExpr, print: print, printSys: printSys,
-    hasRuntime: function (lang) { return lang === 'javascript' || lang === 'html'; }
+    hasRuntime: function (lang) {
+      return lang === 'javascript' || lang === 'html' || !!HAS_RT[lang];
+    }
   };
 })(window);

@@ -19,11 +19,13 @@
     html: 'html', htm: 'html', css: 'css',
     md: 'markdown', markdown: 'markdown',
     yml: 'yaml', yaml: 'yaml', sql: 'sql',
-    sh: 'shell', bash: 'shell', txt: 'text'
+    sh: 'shell', bash: 'shell', txt: 'text',
+    lua: 'lua', rb: 'ruby', php: 'php'
   };
   var LANG_NAME = {
     javascript: 'JavaScript', python: 'Python', cpp: 'C++', html: 'HTML', css: 'CSS',
-    json: 'JSON', markdown: 'Markdown', yaml: 'YAML', sql: 'SQL', shell: 'Shell', text: '纯文本'
+    json: 'JSON', markdown: 'Markdown', yaml: 'YAML', sql: 'SQL', shell: 'Shell',
+    lua: 'Lua', ruby: 'Ruby', php: 'PHP', text: '纯文本'
   };
   function langOf(path) {
     var ext = (path.split('.').pop() || '').toLowerCase();

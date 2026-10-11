@@ -270,6 +270,15 @@
           <div id="set-cloud-state" class="hint">（未登录）</div>
         </div>
         <div class="row"><button class="btn" id="btn-goto-cloud">前往云盘</button></div>
+        <hr>
+        <div class="field"><label>内置键盘</label>
+          <select id="set-vkb">
+            <option value="off">关闭：用系统输入法</option>
+            <option value="on">开启：用 Code 自带的键盘</option>
+          </select>
+        </div>
+        <p class="hint">内置键盘专为写代码设计：有 Tab、符号不用翻页、
+        不会自动纠错改你的变量名。开启后系统输入法不再弹出。</p>
         <p class="hint">云盘<b>可选</b>：不登录时文件只存在这台设备的浏览器里，
         换设备或清缓存会丢失，请用「导出 ZIP」自行备份。</p>
         <div class="row"><button class="btn" id="btn-reset">恢复默认设置</button></div>
@@ -287,8 +296,11 @@
         <div id="gutter" aria-hidden="true"></div>
         <div id="code-area">
           <pre id="highlight" aria-hidden="true"></pre>
+          <!-- inputmode=none：告诉浏览器别弹系统输入法。
+               内置键盘开启时由 vkeyboard.js 接管输入；
+               部分安卓 WebView 不认这个属性，那里靠按下瞬间置 readonly 兜底。 -->
           <textarea id="editor" spellcheck="false" autocomplete="off" autocapitalize="off" wrap="off"
-                    aria-label="代码编辑区"></textarea>
+                    inputmode="none" aria-label="代码编辑区"></textarea>
         </div>
       </div>
       <div id="preview" class="hidden"><iframe id="preview-frame" title="预览" sandbox="allow-scripts"></iframe></div>
@@ -354,6 +366,7 @@
 <script src="js/tree.js"></script>
 <script src="js/ui.js"></script>
 <script src="js/mobile-bar.js"></script>
+<script src="js/vkeyboard.js"></script>
 <script src="js/pwa.js"></script>
 <script src="js/app.js"></script>
 </body>

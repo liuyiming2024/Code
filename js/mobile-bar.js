@@ -214,7 +214,7 @@
       case 'save':
         if (Code.app && Code.app.exportZip) { /* 没有独立保存接口就用 toast 提示已自动保存 */ }
         hint('内容会自动保存');
-        if (Code.ui && Code.ui.toast) Code.ui.toast('已自动保存');
+        if (Code.ui && Code.util.toast) Code.util.toast('已自动保存');
         return;
       case 'run':
         if (Code.app && Code.app.run) { try { Code.app.run(); } catch (e) { } }

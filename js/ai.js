@@ -233,8 +233,8 @@
       var info = billingText(model);
       var body = '<p class="about-p">' + info.text + '</p>' +
         '<p class="about-p">型号：<code>' + String(model).replace(/</g, '&lt;') + '</code></p>';
-      if (window.Code && window.Code.ui && window.Code.ui.modal) {
-        window.Code.ui.modal({
+      if (window.Code && window.Code.ui && window.Code.util.modal) {
+        window.Code.util.modal({
           title: st === 'paid' ? '这个型号要花钱' : '计费情况不明',
           body: body,
           actions: [

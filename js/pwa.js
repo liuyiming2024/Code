@@ -88,8 +88,8 @@
       : '请在浏览器菜单里找「安装此站点」或「添加到桌面」。' +
         '（桌面版 Chrome / Edge 地址栏右侧通常有安装图标）';
     try {
-      if (Code.ui && Code.ui.modal) {
-        Code.ui.modal({
+      if (Code.ui && Code.util.modal) {
+        Code.util.modal({
           title: '如何安装',
           body: '<p class="about-p">' + msg + '</p>',
           actions: [{ label: '知道了', primary: true }]
@@ -157,8 +157,8 @@
     };
 
     try {
-      if (Code.ui && Code.ui.modal) {
-        Code.ui.modal({
+      if (Code.ui && Code.util.modal) {
+        Code.util.modal({
           title: '有新版本',
           body: '<p class="about-p">新版本已在后台准备好。刷新后生效。</p>' +
             '<p class="about-p">当前正在编辑的内容会先保存，刷新不影响文件。</p>',

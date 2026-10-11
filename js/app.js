@@ -87,6 +87,15 @@
 
     /* 移动端辅助键条。手机输入法没有 Tab / Ctrl / 方向键，
        不补这些键根本写不了代码。非触摸设备会自动跳过。 */
+    /* 内置键盘：上次开过就还是开着。放在 editor 就绪之后 ——
+       键盘的所有输入都走 editor 接口，编辑器没好就没法插入。 */
+    try {
+      if (Code.vkb) {
+        if (Code.vkb.loadOn && Code.vkb.loadOn()) Code.vkb.setOn(true);
+        else if (Code.vkb.maybeOffer) setTimeout(Code.vkb.maybeOffer, 1200);
+      }
+    } catch (e) { }
+
     try { if (Code.mobileBar) Code.mobileBar.init(); } catch (e) { }
 
     /* 注册离线缓存。就算失败也只是没有"断网可用"和"装到桌面"，
@@ -489,6 +498,18 @@
     });
   }
 
+  /* ================= 内置键盘 ================= */
+  function bindVkb() {
+    var sel = U.$('#set-vkb');
+    if (!sel) return;
+    sel.addEventListener('change', function () {
+      var v = this.value === 'on';
+      try { localStorage.setItem('code_vkb_on', v ? 'on' : 'off'); } catch (e) { }
+      if (Code.vkb) Code.vkb.setOn(v);
+      U.toast(v ? '内置键盘已开启' : '已切回系统输入法');
+    });
+  }
+
   /* ================= 云盘 ================= */
   function bindCloud() {
     var on = function (sel, evt, fn) {
@@ -540,14 +561,26 @@
         .catch(function () { if (UI.refreshCloud) UI.refreshCloud(); });
     });
 
+    /* 传输进度：大文件逐个上传要走很久，没有任何反馈的话
+       用户会以为卡死了然后刷新，结果前功尽弃。
+       所以每传一个都更新状态栏。 */
+    var progress = function (done, total, name) {
+      var el = U.$('#cloud-state');
+      if (!el) return;
+      el.innerHTML = '<b>传输中 ' + done + '/' + total + '</b><br>' +
+        String(name).replace(/</g, '&lt;');
+    };
+
     on('#btn-cloud-push', 'click', function () {
       U.toast('上传中…');
-      Code.cloud.pushAll()
+      Code.cloud.pushAll(function (d, t, n) { progress(d, t, n); })
         .then(function (r) {
-          U.toast('已上传 ' + (r && r.pushed != null ? r.pushed : '') + ' 个文件');
+          var msg = '已上传 ' + (r && r.pushed != null ? r.pushed : 0) + ' 个文件';
+          if (r && r.failed) msg += '，失败 ' + r.failed + ' 个' + (r.lastErr ? '（' + r.lastErr + '）' : '');
+          U.toast(msg, r && r.failed ? 'err' : 'ok');
           if (UI.refreshCloud) UI.refreshCloud();
         })
-        .catch(function (e) { U.toast(String(e.message || e), 'err'); });
+        .catch(function (e) { U.toast(String(e.message || e), 'err'); if (UI.refreshCloud) UI.refreshCloud(); });
     });
 
     on('#btn-cloud-pull', 'click', function () {
@@ -562,9 +595,11 @@
           {
             label: '下载并覆盖', onClick: function () {
               U.toast('下载中…');
-              Code.cloud.pullAll()
+              Code.cloud.pullAll(function (d, t, n) { progress(d, t, n); })
                 .then(function (r) {
-                  U.toast('已下载 ' + (r && r.pulled != null ? r.pulled : '') + ' 个文件');
+                  var msg = '已下载 ' + (r && r.pulled != null ? r.pulled : 0) + ' 个文件';
+                  if (r && r.failed) msg += '，失败 ' + r.failed + ' 个';
+                  U.toast(msg, r && r.failed ? 'err' : 'ok');
                   if (UI.refreshCloud) UI.refreshCloud();
                 })
                 .catch(function (e) { U.toast(String(e.message || e), 'err'); });
@@ -623,6 +658,7 @@
       if (UI.refreshCloud) UI.refreshCloud();
     });
     bindCloud();
+    bindVkb();
     bindAi();
 
     on('#btn-reset', 'click', function () {

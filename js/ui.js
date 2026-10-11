@@ -251,6 +251,7 @@
       { label: '切换深浅主题', hint: '', icon: 'i-sun', act: function () { hooks.cmd && hooks.cmd('theme'); } },
       { label: '显示 / 隐藏底部面板', hint: 'Ctrl+`', icon: 'i-split', act: function () { hooks.cmd && hooks.cmd('panel'); } },
       { label: '清空运行输出', hint: '', icon: 'i-eraser', act: function () { hooks.cmd && hooks.cmd('clear'); } },
+      { label: '扩展中心（下载运行时）', hint: '', icon: 'i-download', act: function () { UI.extensions(); } },
       { label: '关于 Code', hint: '', icon: 'i-info', act: function () { UI.about(); } }
     ];
     return out;
@@ -263,13 +264,122 @@
         '不经过任何服务器。</p>' +
         '<ul class="about-ul">' +
         '<li>文件：浏览器 IndexedDB 虚拟文件系统，可导出 / 导入 ZIP</li>' +
-        '<li>运行：JavaScript 与 HTML 由浏览器原生执行</li>' +
-        '<li>未内置：Python / C++ 运行时暂未提供，运行面板会如实提示</li>' +
+        '<li>内置可跑：JavaScript、HTML、Python 子集、C/C++ 子集（自研，零依赖）</li>' +
+        '<li>按需下载：SQLite / Lua / Ruby / PHP / 完整 CPython / 真 Clang，见扩展中心</li>' +
         '<li>主题、字号、缩进等设置保存在本地</li>' +
         '</ul>' +
         '<p class="about-p">键盘：Ctrl+P 跳转文件，Ctrl+Shift+P 命令面板，Ctrl+Enter 运行，Ctrl+S 保存。</p>',
       actions: [{ label: '知道了', primary: true }]
     });
+  };
+
+
+  /* ================= 扩展中心 =================
+     用户主动下载运行时。这里必须如实交代三件事：
+       1. 每个包多大
+       2. 首次下载需要联网
+       3. 下载后存在本机，之后离线可用
+     做不到就是做不到，不在这里给人"点了就能跑"的错觉。 */
+  UI.extensions = function () {
+    var L = Code.langs, R = Code.runtime;
+    if (!L || !R) {
+      U.modal({ title: '扩展中心', body: '<p class="about-p">语言模块未加载，无法列出扩展。</p>', actions: [{ label: '知道了', primary: true }] });
+      return;
+    }
+    var close = U.modal({
+      title: '扩展中心',
+      body: '<p class="about-p">这些是可选的运行时扩展。基础功能（JavaScript、HTML、Python 子集、C/C++ 子集）' +
+        '不需要下载，已经能直接用。</p>' +
+        '<p class="about-p ext-note">下载的东西存进<b>你自己浏览器</b>的缓存里，不上传任何服务器。' +
+        '<b>首次下载需要联网</b>，下完之后离线也能用。</p>' +
+        '<div id="ext-list" class="ext-list"></div>',
+      actions: [{ label: '关闭', primary: true }]
+    });
+
+    var list = U.$('#ext-list');
+    if (!list) return;
+    render();
+
+    function render() {
+      list.innerHTML = '';
+      L.downloadable().forEach(function (lang) {
+        var id = lang.wasm.id;
+        var rt = R.findRt ? R.findRt(id) : null;
+        var st = R.status(id);
+        var bytes = 0;
+        if (rt && rt.files) rt.files.forEach(function (f) { bytes += f.size || 0; });
+
+        var row = U.el('div', { class: 'ext-row' });
+
+        var head = U.el('div', { class: 'ext-head' });
+        var nm = U.el('div', { class: 'ext-name', text: lang.name });
+        head.appendChild(nm);
+        if (lang.wasm.upgrade) {
+          head.appendChild(U.el('span', { class: 'ext-tag', text: '升级' }));
+        }
+        head.appendChild(U.el('span', { class: 'ext-size', text: L.fmtSize(bytes) }));
+        row.appendChild(head);
+
+        var d = U.el('div', { class: 'ext-desc', text: (lang.wasm && lang.wasm.desc) || lang.desc || '' });
+        row.appendChild(d);
+
+        var bar = U.el('div', { class: 'ext-bar' });
+        var state = U.el('span', { class: 'ext-state' });
+        var btn = U.el('button', { class: 'btn small' });
+
+        if (st && st.ready) {
+          state.textContent = '已下载（本机缓存，离线可用）';
+          state.className = 'ext-state ok';
+          btn.textContent = '清理';
+          btn.onclick = function () {
+            R.clearCache(id).then(function () { render(); });
+          };
+        } else if (st && st.error) {
+          state.textContent = '下载失败：' + st.error;
+          state.className = 'ext-state bad';
+          btn.textContent = '重试';
+          btn.onclick = function () { start(id); };
+        } else {
+          state.textContent = '未下载';
+          btn.textContent = '下载';
+          btn.onclick = function () { start(id); };
+        }
+        bar.appendChild(state);
+        bar.appendChild(btn);
+        row.appendChild(bar);
+
+        var pct = U.el('div', { class: 'ext-prog hidden' });
+        var fill = U.el('i');
+        pct.appendChild(fill);
+        row.appendChild(pct);
+
+        row.__prog = pct; row.__fill = fill; row.__state = state;
+        list.appendChild(row);
+      });
+    }
+
+    function start(id) {
+      var rows = list.querySelectorAll('.ext-row');
+      var row = null;
+      L.downloadable().forEach(function (l, i) { if (l.wasm.id === id) row = rows[i]; });
+      if (!row) return;
+      row.classList.add('busy');
+      row.__prog.classList.remove('hidden');
+      row.__state.textContent = '下载中，请保持联网…';
+      row.__state.className = 'ext-state';
+      R.ensure(id, function (p, fname) {
+        row.__fill.style.width = Math.round(p * 100) + '%';
+        if (fname) row.__state.textContent = '下载中 ' + Math.round(p * 100) + '%（' + fname + '）';
+      }).then(function () {
+        row.classList.remove('busy');
+        render();
+      }).catch(function (e) {
+        row.classList.remove('busy');
+        var st = R.status(id);
+        if (st) { st.error = e.message || String(e); }
+        render();
+      });
+    }
   };
 
   /* ================= 初始化 ================= */

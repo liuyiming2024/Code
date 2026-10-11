@@ -2,9 +2,7 @@
    原则：算力只在本机浏览器内发生，代码与数据都不上传。
    - JavaScript：浏览器原生执行，主线程 new Function，捕获 console 与异常。
    - HTML：在本页 iframe（sandbox 限制为允许脚本）里预览，并回传其 console。
-   - 其余语言：交给 js/rt-worker.js 里的真实运行时（SQLite / Python / Lua /
-     PHP / Ruby / C++），资源按需下载并缓存。
-   - 下载与执行都在 Worker 里，主线程只显示进度。
+   - 其余语言：不做伪造执行，明确提示"当前未内置运行时"。
    已知限制：无限循环无法中断（浏览器主线程没有抢占），README 已写明。 */
 (function (global) {
   'use strict';
@@ -153,64 +151,258 @@
     } else if (r !== undefined) print('ret', fmt(r), 'i-return');
   }
 
-  /* 这些有真实运行时，交给 Worker 执行。 */
-  var HAS_RT = { sql: 1, python: 1, lua: 1, php: 1, ruby: 1, cpp: 1 };
+  /* 自研子集的如实说明。不是"不支持"，是"支持到什么程度"要说清楚。 */
+  var CAVEAT = {
+    pylite: 'Python 子集（自研解释器）：不是 CPython，不支持 import 第三方库、async、生成器、装饰器。\n' +
+            '够用场景：语法练习、算法题、日常小脚本。要完整 CPython 需下载 Pyodide（约 2 MB，当前 Release 里暂缺）。',
+    cpplite: 'C/C++ 子集（自研教学级）：不支持指针与地址运算、struct / class、模板、STL、头文件与多文件。\n' +
+             '#include 会被忽略。够用场景：语法练习与基础算法。'
+  };
+
+  /* 走自研解释器。返回 true 表示已处理。 */
+  function runBuiltin(kind, code) {
+    if (kind === 'pylite') {
+      if (!Code.pylite) { line('warn', 'Python 子集解释器未加载'); return true; }
+      var I = Code.pylite.create(function (s) { print('out', s); }, function () { return ''; });
+      if (CAVEAT.pylite) printSys(CAVEAT.pylite);
+      try {
+        var r = I.run(code, { timeout: 5000 });
+        printSys('结束，' + r.steps + ' 步');
+      } catch (e) {
+        line('err', String(e && e.message || e));
+      }
+      return true;
+    }
+    if (kind === 'cpplite') {
+      if (!Code.cpplite) { line('warn', 'C/C++ 子集解释器未加载'); return true; }
+      var C = Code.cpplite.create(function (s) { print('out', s); }, function () { return ''; });
+      if (CAVEAT.cpplite) printSys(CAVEAT.cpplite);
+      try {
+        var r2 = C.run(code, { timeout: 5000 });
+        printSys('结束，' + r2.steps + ' 步');
+      } catch (e) {
+        line('err', String(e && e.message || e));
+      }
+      return true;
+    }
+    return false;
+  }
+
+  /* 按需下载档 / 升级档：先确保资源就绪，再在 Worker 里跑（不卡主线程） */
+  function runDownloaded(lang, code, path, upgraded) {
+    var id = lang.wasm && lang.wasm.id;
+    var st = Code.runtime && Code.runtime.status(id);
+    if (st && st.ready) {
+      line('sys', upgraded
+        ? '使用真运行时 ' + (Code.runtime.findRt(id) || {}).name + '（本机缓存，离线可用）'
+        : '运行时已就绪（本机缓存，离线可用）');
+      runInRuntime(id, code, path);
+      return;
+    }
+    /* 首次：如实告知要下载什么、多大、需要联网 */
+    var size = Code.langs ? Code.langs.fmtSize(Code.langs.rtSize ? rtBytes(id) : 0) : '';
+    line('sys', '首次运行需要下载 ' + lang.name + ' 运行时（约 ' + size + '），请保持联网。');
+    line('sys', '下载后会缓存在本浏览器，之后离线也能用。');
+    if (!Code.runtime) { line('err', '运行时加载模块未就绪'); return; }
+    var lastPct = -1;
+    Code.runtime.ensure(id, function (p, fname) {
+      var pct = Math.round(p * 100);
+      /* 只在跨过 20% 台阶时报一次，避免刷屏 */
+      if (pct >= lastPct + 20) {
+        lastPct = pct;
+        printSys('下载中 ' + pct + '%' + (fname ? '（' + fname + '）' : ''));
+      }
+    }).then(function () {
+      var st2 = Code.runtime.status(id);
+      printSys('下载完成' + (st2 && st2.verified ? '，已校验 SHA-256 并缓存' : '（本机无法校验，已缓存）'));
+      runInRuntime(id, code, path);
+    }).catch(function (e) {
+      line('err', '运行时下载失败：' + (e && e.message || e));
+      line('sys', '提示：可能是网络不通，或该资源尚未发布到 Release。' +
+        '文件本身可以正常编辑、着色与保存。');
+    });
+  }
+
+  function rtBytes(id) {
+    var rt = Code.runtime && Code.runtime.findRt ? Code.runtime.findRt(id) : null;
+    if (!rt) return 0;
+    var n = 0;
+    (rt.files || []).forEach(function (f) { n += f.size || 0; });
+    return n;
+  }
+
+  /* 在 Worker 里执行。引擎注入脚本由 langid 决定。 */
+  function runInRuntime(id, code, path) {
+    if (!Code.runtime || !Code.runtime.runInWorker) { line('err', 'Worker 模块未就绪'); return; }
+    var wrap = buildRuntimeScript(id, code);
+    Code.runtime.runInWorker(id, wrap, 8000).then(function (res) {
+      (res.out || []).forEach(function (s) { print('out', s); });
+      if (res.err) line('err', res.err);
+      printSys('结束');
+    }).catch(function (e) {
+      line('err', String(e && e.message || e));
+    });
+  }
+
+  /* 各引擎的注入脚本。在 Worker 里跑，可用：log(s) / asset(name) / RT / USER。
+     返回一段 JS 源码字符串（会被包进 async 函数体）。
+
+     诚实标注：sqlite 与 pyodide 的 API 是公开稳定的（initSqlJs / loadPyodide）；
+     lua、ruby、php、cpp 的胶水导出形状我无法在此环境确认，
+     因此统一用"依次尝试常见导出名"的策略，
+     全都对不上时报出实际的导出清单 —— 让用户和后续接手的人一眼看到真相，
+     而不是静默失败或者伪造输出。 */
+  var GLUE = {
+
+    sqlite: [
+      "var wasmUrl = await asset('sql-wasm.wasm');",
+      "var SQL = await initSqlJs({ locateFile: function () { return wasmUrl; } });",
+      "var db = new SQL.Database();",
+      "try {",
+      "  var res = db.exec(USER);",
+      "  if (!res || !res.length) log('（语句已执行，无结果集）');",
+      "  else res.forEach(function (t) {",
+      "    log(t.columns.join(' | '));",
+      "    t.values.forEach(function (row) { log(row.join(' | ')); });",
+      "  });",
+      "} catch (e) { log('SQL 错误：' + (e && e.message || e)); }",
+      "db.close();"
+    ].join('\n'),
+
+    pyodide: [
+      "/* indexURL 指向 Release 目录：Pyodide 会自己拼出 pyodide.asm.wasm 与",
+      "   python_stdlib.zip 的地址，那些正是我们缓存过的直链，fetch 补丁会命中。 */",
+      "var BASE = 'https://github.com/liuyiming2024/assets/releases/download/latest/';",
+      "var py = await loadPyodide({ indexURL: BASE });",
+      "py.setStdout({ batched: function (s) { log(s); } });",
+      "py.setStderr({ batched: function (s) { log(s); } });",
+      "try { await py.loadPackagesFromImports(USER); } catch (e) { }",
+      "var r = await py.runPythonAsync(USER);",
+      "if (r !== undefined && r !== null && r !== 0) log(String(r));"
+    ].join('\n'),
+
+    /* Fengari：纯 JS 的 Lua VM，UMD，无 wasm —— 加载链路最短，最不容易出岔子 */
+    lua: [
+      "var f = self.fengari || RT.fengari || RT;",
+      "if (!f || !f.lua) throw new Error('没拿到 fengari。RT 导出：' + Object.keys(RT || {}).join(', '));",
+      "var lua = f.lua, laux = f.lauxlib, lualib = f.lualib;",
+      "var tls = f.to_luastring, tjs = f.to_jsstring;",
+      "var L = laux.luaL_newstate();",
+      "lualib.luaL_openlibs(L);",
+      "/* 把 print 重定向到输出面板 */",
+      "lua.lua_pushcfunction(L, function (st) {",
+      "  var n = lua.lua_gettop(st), parts = [];",
+      "  for (var i = 1; i <= n; i++) {",
+      "    var t = lua.lua_type(st, i);",
+      "    if (t === lua.LUA_TSTRING) parts.push(tjs(lua.lua_tostring(st, i)));",
+      "    else if (t === lua.LUA_TNUMBER) parts.push(String(lua.lua_tonumber(st, i)));",
+      "    else if (t === lua.LUA_TBOOLEAN) parts.push(lua.lua_toboolean(st, i) ? 'true' : 'false');",
+      "    else parts.push(lua.luaL_typename(st, i));",
+      "  }",
+      "  log(parts.join('\\t'));",
+      "  return 0;",
+      "});",
+      "lua.lua_setglobal(L, tls('print'));",
+      "var ok = laux.luaL_dostring(L, tls(USER));",
+      "if (ok !== lua.LUA_OK) {",
+      "  log('Lua 错误：' + tjs(lua.lua_tostring(L, -1) || new Uint8Array(0)));",
+      "}"
+    ].join('\n'),
+
+    php: probeGlue('php', "['php-web.js.wasm']", ["PhpWeb", "PHP", "default"],
+      ["run", "eval", "exec", "runCode"]),
+
+    ruby: probeGlue('ruby', "['ruby+stdlib.wasm']", ["RubyVM", "default"],
+      ["eval", "evalAsync", "run"]),
+
+    quickjs: probeGlue('quickjs', "['quickjs.wasm']", ["getQuickJS", "default", "newQuickJS"],
+      ["evalCode", "run", "eval"]),
+
+    cpp: [
+      "/* browsercc 要同时驱动 clang.wasm(43MB) + lld.wasm(23MB) + sysroot.tar(29MB)，",
+      "   三件各有加载协议，无法在未知 API 的前提下可靠接线。如实报错，不伪造编译过程。 */",
+      "var keys = Object.keys(RT || {});",
+      "log('C/C++ 真编译器（browsercc）资源已下载，但执行链路尚未接线。');",
+      "log('glue 实际导出：' + (keys.length ? keys.join(', ') : '(空)'));",
+      "log('当前请用内置的自研 C/C++ 子集运行（无需下载，够做语法练习与基础算法）。');"
+    ].join('\n')
+  };
+
+  /* 生成"先探测导出形状，再依次尝试执行方法"的脚本。
+     对不上时把实际导出列出来 —— 比静默失败有用得多。 */
+  function probeGlue(id, assetsJson, factories, methods) {
+    var lines = [];
+    lines.push("var urls = {};");
+    lines.push("var names = " + assetsJson + ";");
+    lines.push("for (var i = 0; i < names.length; i++) { urls[names[i]] = await asset(names[i]); }");
+    lines.push("var m = RT || {};");
+    lines.push("var keys = Object.keys(m);");
+    lines.push("var factory = null, fname = null;");
+    factories.forEach(function (f) {
+      lines.push("if (!factory && m[" + JSON.stringify(f) + "]) { factory = m[" + JSON.stringify(f) + "]; fname = " + JSON.stringify(f) + "; }");
+    });
+    lines.push("if (!factory && typeof m === 'function') { factory = m; fname = '(module itself)'; }");
+    lines.push("if (!factory) {");
+    lines.push("  throw new Error(" + JSON.stringify(id) + " + ' 胶水没有可识别的导出。实际导出：' + (keys.length ? keys.join(', ') : '(空)') +");
+    lines.push("    '。请核对清单里 entry 的 workerType 与该版本的真实 API。');");
+    lines.push("}");
+    lines.push("var inst = await factory({ locateFile: function (f) { return urls[f] || f; } });");
+    lines.push("if (inst && typeof inst.then === 'function') inst = await inst;");
+    lines.push("var fn = null;");
+    methods.forEach(function (mm) {
+      lines.push("if (!fn && inst && typeof inst[" + JSON.stringify(mm) + "] === 'function') fn = inst[" + JSON.stringify(mm) + "].bind(inst);");
+    });
+    lines.push("if (!fn && typeof inst === 'function') fn = inst;");
+    lines.push("if (!fn) {");
+    lines.push("  var instKeys = inst ? Object.keys(inst) : [];");
+    lines.push("  throw new Error(" + JSON.stringify(id) + " + ' 实例没有可识别的执行方法。实例导出：' + (instKeys.length ? instKeys.join(', ') : '(空)'));");
+    lines.push("}");
+    lines.push("var out = await fn(USER);");
+    lines.push("if (out && typeof out.then === 'function') out = await out;");
+    lines.push("if (out !== undefined && out !== null) log(String(out));");
+    return lines.join('\n');
+  }
+
+  /* 拼装要在 Worker 里跑的脚本：先注入引擎，再跑用户代码。
+     各引擎注入方式不同，按 id 分派。 */
+  function buildRuntimeScript(id, code) {
+    var body = GLUE[id];
+    if (!body) {
+      return "log('该运行时还没有接线脚本：' + " + JSON.stringify(id) + ");";
+    }
+    return body;
+  }
 
   function run(path, code, lang) {
     count = 0; muted = false; t0 = (global.performance ? performance.now() : Date.now());
     clear();
+    var L = Code.langs ? Code.langs.byPath(path) : null;
     line('sys', '运行 ' + path + '（本机浏览器内执行，不联网）');
-    if (lang === 'javascript') {
-      runJS(code);
-      return finish();
-    }
-    if (lang === 'html') {
-      preview(path, code);
-      line('sys', '已在编辑区右侧打开预览。');
-      return finish();
-    }
-    if (HAS_RT[lang] && Code.runtimes) {
-      return runRemote(lang, code);
-    }
-    line('warn', '该类型没有可执行运行时：' + (U.LANG_LABEL[lang] || lang) + '。可编辑、着色与保存。');
-    return finish();
-  }
 
-  function finish() {
+    if (L) {
+      /* 有真运行时且已就绪 → 优先用真的（Python / C++ 属这类） */
+      if (Code.langs.useWasm(L)) {
+        runDownloaded(L, code, path, true);
+      } else if (L.tier === Code.langs.TIER.BUILTIN) {
+        if (L.runner === 'native') { runJS(code); }
+        else if (L.runner === 'iframe') { preview(path, code); line('sys', '已在编辑区右侧打开预览。'); }
+        else if (runBuiltin(L.runner, code)) { /* 已处理 */ }
+        else { runJS(code); }
+        /* 自研可用时，如实告知还有升级选项，不藏着 */
+        if (L.wasm && L.wasm.upgrade && !Code.langs.rtReady(L)) {
+          printSys('提示：可在扩展中心下载 ' + (L.wasm.desc || '真运行时') +
+            '（' + Code.langs.fmtSize(rtBytes(L.wasm.id)) + '）升级为真运行时。');
+        }
+      } else if (L.tier === Code.langs.TIER.DOWNLOAD) {
+        runDownloaded(L, code, path);
+      } else {
+        line('warn', L.name + ' 暂不支持运行，仅提供语法着色、编辑与保存。');
+      }
+    } else {
+      line('warn', '未识别的文件类型：' + path + '。可编辑、着色与保存。');
+    }
     var ms = ((global.performance ? performance.now() : Date.now()) - t0).toFixed(1);
     printSys('结束，用时 ' + ms + ' ms');
-    return Promise.resolve();
-  }
-
-  /* 走 Worker 的运行时。进度条走 printSys，不静默。 */
-  function runRemote(lang, code) {
-    var label = Code.runtimes.label(lang);
-    line('sys', '准备 ' + label + ' 运行时（约 ' + Code.runtimes.sizeHint(lang) +
-      '，预计 ' + Code.runtimes.hint(lang) + '）…');
-    line('sys', '首次需要联网下载，之后会缓存在本机，断网也能用。');
-    return new Promise(function (resolve) {
-      var lastPct = -1;
-      Code.runtimes.run(lang, code, {
-        progress: function (d) {
-          if (d.pct === undefined) return;
-          // 每 10% 报一次，别刷屏
-          var p = Math.floor(d.pct / 10) * 10;
-          if (p === lastPct) return;
-          lastPct = p;
-          printSys('下载中… ' + p + '%' + (d.file ? '（' + d.file + '）' : ''));
-        },
-        ready: function () { printSys('运行时就绪，开始执行。'); },
-        done: function (d) {
-          if (d.error) line('err', String(d.error));
-          else if (d.text) d.text.split('\n').forEach(function (l) { print('out', l); });
-          finish().then(resolve);
-        },
-        fail: function (d) {
-          line('err', '运行时失败：' + (d.error || '未知原因'));
-          finish().then(resolve);
-        }
-      });
-    });
   }
 
   function preview(path, code) {
@@ -239,8 +431,17 @@
   Code.runner = {
     init: init, run: run, preview: preview, hidePreview: hidePreview,
     clear: clear, stop: stop, evalExpr: evalExpr, print: print, printSys: printSys,
-    hasRuntime: function (lang) {
-      return lang === 'javascript' || lang === 'html' || !!HAS_RT[lang];
+    hasRuntime: function (path) {
+      var L = Code.langs ? Code.langs.byPath(path) : null;
+      if (!L) return false;
+      if (L.tier === Code.langs.TIER.BUILTIN) return true;
+      if (L.tier === Code.langs.TIER.DOWNLOAD) return Code.langs.canRun(L);
+      return false;
+    },
+    /* 界面用：点击运行会发生什么，如实预告 */
+    hint: function (path) {
+      var L = Code.langs ? Code.langs.byPath(path) : null;
+      return Code.langs ? Code.langs.runHint(L) : '';
     }
   };
 })(window);

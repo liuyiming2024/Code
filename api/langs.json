@@ -7,22 +7,25 @@
         "mjs",
         "cjs"
       ],
-      "run": true
+      "run": true,
+      "tier": "builtin"
     },
     {
       "name": "JSON",
       "ext": [
         "json"
       ],
-      "run": false
+      "run": false,
+      "tier": "none"
     },
     {
       "name": "Python",
       "ext": [
         "py"
       ],
-      "run": false,
-      "note": "当前版本无内置运行时，可编辑与着色"
+      "run": true,
+      "note": "自研子集解释器（非 CPython）：不支持 import 第三方库 / async / 生成器 / 装饰器",
+      "tier": "builtin"
     },
     {
       "name": "C / C++",
@@ -33,8 +36,9 @@
         "hpp",
         "cc"
       ],
-      "run": false,
-      "note": "当前版本无内置运行时"
+      "run": true,
+      "note": "自研教学级子集：不支持指针与地址运算、struct/class、模板、STL、头文件与多文件",
+      "tier": "builtin"
     },
     {
       "name": "HTML",
@@ -43,14 +47,16 @@
         "htm"
       ],
       "run": true,
-      "note": "在 sandbox 隔离框架里预览"
+      "note": "在 sandbox 隔离框架里预览",
+      "tier": "builtin"
     },
     {
       "name": "CSS",
       "ext": [
         "css"
       ],
-      "run": false
+      "run": false,
+      "tier": "none"
     },
     {
       "name": "Markdown",
@@ -58,7 +64,8 @@
         "md",
         "markdown"
       ],
-      "run": false
+      "run": false,
+      "tier": "none"
     },
     {
       "name": "YAML",
@@ -66,14 +73,17 @@
         "yml",
         "yaml"
       ],
-      "run": false
+      "run": false,
+      "tier": "none"
     },
     {
       "name": "SQL",
       "ext": [
         "sql"
       ],
-      "run": false
+      "run": false,
+      "tier": "download",
+      "note": "需下载 SQLite 引擎（约 660 KB），缓存后离线可用"
     },
     {
       "name": "Shell",
@@ -81,8 +91,10 @@
         "sh",
         "bash"
       ],
-      "run": false
+      "run": false,
+      "tier": "none"
     }
   ],
-  "note": "run=true 表示可在页面内直接执行。Python / C++ 需要内置解释器分发物（十 MB 量级），与本项目「零依赖、拿到就能跑」的约束冲突，暂不支持。"
+  "note": "run=true 表示可在页面内执行。tier 说明能力来源：builtin=内置自研或浏览器原生，零依赖离线可用；download=需按需下载 WASM 运行时（首次联网，缓存后离线）；none=仅着色与编辑。Python 与 C/C++ 为自研子集，界面与报错中均如实标注，不冒充完整实现。",
+  "runtimes": "api/runtimes.json"
 }

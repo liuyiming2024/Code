@@ -19,13 +19,11 @@
     html: 'html', htm: 'html', css: 'css',
     md: 'markdown', markdown: 'markdown',
     yml: 'yaml', yaml: 'yaml', sql: 'sql',
-    sh: 'shell', bash: 'shell', txt: 'text',
-    lua: 'lua', rb: 'ruby', php: 'php'
+    sh: 'shell', bash: 'shell', txt: 'text'
   };
   var LANG_NAME = {
     javascript: 'JavaScript', python: 'Python', cpp: 'C++', html: 'HTML', css: 'CSS',
-    json: 'JSON', markdown: 'Markdown', yaml: 'YAML', sql: 'SQL', shell: 'Shell',
-    lua: 'Lua', ruby: 'Ruby', php: 'PHP', text: '纯文本'
+    json: 'JSON', markdown: 'Markdown', yaml: 'YAML', sql: 'SQL', shell: 'Shell', text: '纯文本'
   };
   function langOf(path) {
     var ext = (path.split('.').pop() || '').toLowerCase();
@@ -355,6 +353,7 @@
       case 'panel': UI.panel.open(!UI.panel.isOpen()); break;
       case 'clear': runner.clear(); break;
       case 'about': UI.about(); break;
+      case 'extensions': UI.extensions(); break;
     }
   }
 
@@ -442,7 +441,9 @@
     U.$$('#top-menu [data-act]').forEach(function (b) {
       b.onclick = function () {
         var a = b.getAttribute('data-act');
-        if (a === 'about') UI.about(); else command(a);
+        if (a === 'about') UI.about();
+        else if (a === 'extensions') UI.extensions();
+        else command(a);
       };
     });
     var br = U.$('#btn-run'); if (br) br.onclick = doRun;

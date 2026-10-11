@@ -385,6 +385,10 @@
     if (p && p.keyURL) {
       txt += ' <a href="' + p.keyURL + '" target="_blank" rel="noopener">去拿密钥</a>';
     }
+    /* 计费状态直接告诉用户，不让他猜 */
+    var bt = Code.ai.billingText(a.model);
+    txt += '<br>' + bt.text;
+    if (p && p.warn) txt += '<br>' + p.warn;
     if (!a.apiKey || !a.enabled) {
       txt += '<br><b>未启用</b>：填入密钥并开启后，才会出现 AI 相关入口。';
     }
@@ -428,7 +432,8 @@
     on('#btn-ai-test', 'click', function () {
       if (!Code.ai.ready()) { U.toast('请先填入密钥并开启', 'err'); return; }
       U.toast('测试中…');
-      Code.ai.chat([{ role: 'user', content: '回复两个字：可用' }], { timeout: 30000 })
+      Code.ai.chat([{ role: 'user', content: '回复两个字：可用' }],
+        { timeout: 30000, skipPaidCheck: true })
         .then(function (r) {
           U.toast('连接成功：' + String(r.text || '').slice(0, 40));
         })

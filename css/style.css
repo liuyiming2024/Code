@@ -401,7 +401,6 @@ svg { width: 18px; height: 18px; display: block; }
 }
 @media (max-width: 520px) {
   #sidebar { position: absolute; z-index: 50; height: 100%; box-shadow: var(--shadow); }
-  #sidebar.hide-sm { display: none; }
 }
 
 /* ---------- 右键菜单 ---------- */

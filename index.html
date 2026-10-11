@@ -30,7 +30,6 @@
     <symbol id="i-term" viewBox="0 0 24 24"><rect x="3.5" y="4.5" width="17" height="15" rx="2.5" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M7 10l2.6 2.4L7 14.8M12.5 15h4.5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></symbol>
     <symbol id="i-warn" viewBox="0 0 24 24"><path d="M12 4.5 L20.5 19.5 H3.5 Z" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/><path d="M12 9.5v4.2M12 16.4v.6" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></symbol>
     <symbol id="i-split" viewBox="0 0 24 24"><rect x="3.5" y="4.5" width="17" height="15" rx="2" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M12 4.5v15" stroke="currentColor" stroke-width="1.6"/></symbol>
-    <symbol id="i-fold" viewBox="0 0 24 24"><path d="M7 9.5 L12 5 L17 9.5" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/><path d="M7 14.5 L12 19 L17 14.5" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></symbol>
     <symbol id="i-menu" viewBox="0 0 24 24"><path d="M4 7h16M4 12h16M4 17h16" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></symbol>
 
     <!-- 以下为界面控件专用：品牌标记、分隔符、状态点与流向箭头，全部自绘 -->
@@ -79,10 +78,6 @@
     <symbol id="i-info" viewBox="0 0 24 24">
       <circle cx="12" cy="12" r="8.4" fill="none" stroke="currentColor" stroke-width="1.7"/>
       <path d="M12 10.6v6.2M12 7.7v.5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
-    </symbol>
-    <symbol id="i-problems" viewBox="0 0 24 24">
-      <circle cx="12" cy="12" r="8.4" fill="none" stroke="currentColor" stroke-width="1.7"/>
-      <path d="M12 7.4v5.4M12 15.9v.6" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
     </symbol>
   </defs>
 </svg>
@@ -217,14 +212,12 @@
     <div id="panel">
       <div class="panel-tabs">
         <button class="pt active" data-panel="output">输出</button>
-        <button class="pt" data-panel="problems"><svg><use href="#i-problems"/></svg><span>问题</span> <span id="problems-count" class="badge">0</span></button>
         <button class="pt" data-panel="console">控制台</button>
         <div class="spacer"></div>
         <button class="icon-btn sm" id="btn-panel-clear" title="清空" aria-label="清空"><svg><use href="#i-trash"/></svg></button>
         <button class="icon-btn sm" id="btn-panel-close" title="收起面板" aria-label="收起面板"><svg><use href="#i-close"/></svg></button>
       </div>
       <div class="panel-body" id="panel-output"></div>
-      <div class="panel-body hidden" id="panel-problems"></div>
       <div class="panel-body hidden" id="panel-console"></div>
       <div class="panel-input">
         <span class="prompt"><svg><use href="#i-prompt"/></svg></span>

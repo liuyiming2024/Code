@@ -10,8 +10,16 @@
 
 打开上面的网址即可，不需要注册、不需要配置。
 
-本地使用：下载本仓库后双击 `index.html` 就行。
-本地打开与线上打开是**同一份代码、同一套存储**，行为一致。
+本地使用：下载本仓库后双击 `index.html` 即可编辑与保存。
+
+但要用**按需下载的运行时**（SQLite / Python / PHP / Ruby / C++），需要起本地服务：
+
+```
+python3 server.py          # 然后打开 http://localhost:8000/
+```
+
+因为 `file://` 下浏览器会拒绝创建 Worker。本地服务与线上是同一份实现，
+只是给了它一个正常的 http 来源。
 
 ## 能做什么
 
@@ -110,10 +118,16 @@ Python 与 C/C++ 是"**自研 + 可升级**"：子集立刻可用，
   陷入无限循环会卡住页面，需要关闭标签页。
   两个自研子集与 Worker 里的运行时带步数 / 超时上限，能被掐断。
   输出超过 800 行会自动暂停并提示。
-- **按需运行时的执行链路未经真机验证**：SQLite 与 CPython 用的是公开稳定 API，
+- **按需运行时的执行链路未经真机验证**：六种语言一次都没真跑过
+  （沙盒访问 Release 下载被网络策略挡住）。SQLite 与 CPython 用的是公开稳定 API；
   Lua / Ruby / PHP 的胶水导出形状未在此环境确认，
   对不上时会报出实际的导出清单而不是静默失败。
   C/C++ 真编译器（browsercc）资源已就位但接线未完成，会如实说明。
+- **Ruby 走动态 import()**：`ruby-wasi.js` 是 ESM，`importScripts` 加载不了，
+  改用 Worker 内的动态 `import()`。这条路径未在真机验证过。
+- **用 `file://` 双击打开时 Worker 会被拒绝**，按需下载的几种语言跑不起来。
+  请在仓库目录执行 `python3 server.py`，然后访问 `http://localhost:8000/`。
+  本地起服务与线上访问走的是同一份实现，仅来源不同。
 - **单文件不宜过大**：着色与行号是全量渲染的，
   几 MB 级的单文件会明显变卡。
 - **浏览器要求**：需要支持 IndexedDB 与 ES2020。
@@ -145,6 +159,9 @@ js/cpplite.js       C/C++ 子集解释器（自研）
 js/tree.js          文件树与工程内搜索
 js/ui.js            标签栏、面板、命令面板
 js/app.js           启动与装配
+js/runtimes.js      按需运行时的主线程侧（起 Worker、转发、进度）
+js/rt-worker.js     Worker 侧：加载与执行各运行时（classic + 动态 import）
+server.py           本地静态服务（file:// 下 Worker 被拒时的退路）
 ```
 
 ## 许可

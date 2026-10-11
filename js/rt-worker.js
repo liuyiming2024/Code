@@ -19,6 +19,12 @@
 var BASE = 'https://github.com/liuyiming2024/assets/releases/latest/download/';
 var CACHE = 'code-runtimes-v1';
 
+/* 文件名里有 + 的（ruby+stdlib.wasm）必须编码成 %2B —— Release 直链就是这么给的。
+   不统一的话下载用一个 key、清理用另一个 key，缓存会对不上。 */
+function urlOf(name) {
+  return BASE + name.replace(/\+/g, '%2B');
+}
+
 /* 每个语言需要哪些文件。预下载时按这里逐个拉，带进度。 */
 var NEED = {
   sql: ['sql-wasm.js', 'sql-wasm.wasm'],
@@ -69,7 +75,7 @@ function fromCache(url) {
 
 /* 下载单个文件，带进度。已缓存则直接跳过（不产生流量）。 */
 function grab(name, doneBytes, totalBytes) {
-  var url = BASE + name;
+  var url = urlOf(name);
   return fromCache(url).then(function (hit) {
     if (hit) return { buf: null, cached: true };
     var resp;
@@ -121,7 +127,7 @@ function prepare(lang) {
   // 先探一次总大小，好算总进度。缓存命中就不算进总量。
   return files.reduce(function (p, f) {
     return p.then(function () {
-      return fromCache(BASE + f).then(function (hit) { return hit ? 0 : null; });
+      return fromCache(urlOf(f)).then(function (hit) { return hit ? 0 : null; });
     }).then(function (skip) {
       if (skip === 0) return 0;
       return grab(f, done, 0).then(function (r) {
@@ -136,14 +142,26 @@ function prepare(lang) {
 
 function load(name) {
   // importScripts 是同步的，加载失败会抛 —— 直接冒泡出去
-  importScripts(BASE + name);
+  importScripts(urlOf(name));
+}
+
+/* ESM 胶水（ruby-wasi.js）不能走 importScripts。
+   classic worker 里可以用动态 import() 加载 ESM ——
+   这正是它与 importScripts 的关键区别，别混为一谈。 */
+function loadESM(name) {
+  if (typeof import !== 'function') {
+    return Promise.reject(new Error(
+      '当前 Worker 不支持动态 import()，无法加载 ESM 胶水 ' + name +
+      '。已知影响：Ruby 不可用，其余语言不受影响。'));
+  }
+  return import(urlOf(name));
 }
 
 /* ================= 各语言执行 ================= */
 
 function runSQL(code) {
   load('sql-wasm.js');
-  return Promise.resolve(self.initSqlJs({ locateFile: function (f) { return BASE + f; } }))
+  return Promise.resolve(self.initSqlJs({ locateFile: function (f) { return urlOf(f); } }))
     .then(function (SQL) {
       var db = new SQL.Database();
       var out = [];
@@ -218,7 +236,7 @@ function runPHP(code) {
     try {
       var PhpWeb = self.PhpWeb || (self.phpwasm && self.phpwasm.PhpWeb);
       if (!PhpWeb) throw new Error('php-web.js 未导出 PhpWeb（UMD 挂载名不符）');
-      var php = new PhpWeb({ locateFile: function (f) { return BASE + f; } });
+      var php = new PhpWeb({ locateFile: function (f) { return urlOf(f); } });
       php.addEventListener('output', function (e) { out.push(e.detail); });
       php.addEventListener('error', function (e) { out.push('[stderr] ' + e.detail); });
       php.addEventListener('ready', function () {
@@ -232,11 +250,44 @@ function runPHP(code) {
 }
 
 function runRuby(code) {
-  // ruby-wasi.js 是 ESM 构建，classic worker 的 importScripts 吃不下。
-  // 先明确报出来，不要静默失败。
-  return Promise.reject(new Error(
-    'Ruby 运行时是 ESM 构建，classic Worker 无法 importScripts。' +
-    '需要改用 module Worker 或抓 IIFE 版资源。'));
+  /* ruby-wasi.js 是 ESM，importScripts 吃不下 —— 改用动态 import()。
+     导出形状没在真机确认过，所以依次尝试常见名字；
+     全都对不上时把实际导出列出来，不静默返回空。 */
+  return loadESM('ruby-wasi.js').then(function (m) {
+    var keys = Object.keys(m || {});
+    var VM = m.RubyVM || m.default || (m.default && m.default.RubyVM);
+    if (!VM) {
+      throw new Error('ruby-wasi.js 没有可识别的导出。实际导出：' +
+        (keys.length ? keys.join(', ') : '(空)'));
+    }
+    /* 各版本构造方式不同：有的要先 new 再 await init，有的是工厂函数 */
+    return Promise.resolve()
+      .then(function () { return typeof VM === 'function' ? new VM() : VM; })
+      .then(function (vm) {
+        return (vm && typeof vm.init === 'function') ? vm.init().then(function () { return vm; }) : vm;
+      })
+      .then(function (vm) {
+        var run = null;
+        ['eval', 'evalAsync', 'run', 'runAsync'].forEach(function (k) {
+          if (!run && vm && typeof vm[k] === 'function') run = vm[k].bind(vm);
+        });
+        if (!run) {
+          throw new Error('RubyVM 实例没有可识别的执行方法。实例导出：' +
+            (vm ? Object.keys(vm).join(', ') : '(空)'));
+        }
+        return Promise.resolve(run(code)).then(function (r) {
+          /* 不同版本返回值形态不一：可能是字符串，也可能是带 output 的对象 */
+          if (r == null) return '';
+          if (typeof r === 'string') return r;
+          if (typeof r === 'object') {
+            return (r.output != null) ? String(r.output)
+              : (r.stdout != null) ? String(r.stdout)
+              : (r.value != null) ? String(r.value) : String(r);
+          }
+          return String(r);
+        });
+      });
+  });
 }
 
 function runCpp(code) {

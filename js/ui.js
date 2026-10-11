@@ -98,7 +98,7 @@
       U.$$('#panel .pt').forEach(function (b) {
         b.classList.toggle('active', b.getAttribute('data-panel') === name);
       });
-      ['output', 'problems', 'console'].forEach(function (n) {
+      ['output', 'console'].forEach(function (n) {
         U.$('#panel-' + n).classList.toggle('hidden', n !== name);
       });
       if (name === 'console') setTimeout(function () { var i = U.$('#console-input'); i && i.focus(); }, 0);

@@ -5,6 +5,12 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Code · 网页代码编辑器</title>
 <meta name="description" content="纯前端代码编辑器：本地算力、离线可用、无外部依赖。">
+<link rel="manifest" href="manifest.json">
+<meta name="theme-color" content="#1b1e23">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Code">
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
 <link rel="stylesheet" href="css/style.css">
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%231b1e23'/%3E%3Cpath d='M12 10 L6 16 L12 22' fill='none' stroke='%236aa9ff' stroke-width='2.6' stroke-linecap='round' stroke-linejoin='round'/%3E%3Cpath d='M20 10 L26 16 L20 22' fill='none' stroke='%236aa9ff' stroke-width='2.6' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
 </head>
@@ -97,6 +103,7 @@
     <button data-act="import"><svg><use href="#i-upload"/></svg><span>导入工程 ZIP</span></button>
     <button data-act="extensions"><svg><use href="#i-download"/></svg><span>扩展中心</span></button>
     <button data-act="about"><svg><use href="#i-info"/></svg><span>关于</span></button>
+      <button id="btn-install" title="安装到桌面或手机主屏"><svg><use href="#i-download"/></svg><span>安装</span></button>
   </nav>
   <div class="spacer"></div>
   <button class="btn primary" id="btn-run" title="运行（Ctrl+Enter）"><svg><use href="#i-run"/></svg><span>运行</span></button>
@@ -286,6 +293,7 @@
 <script src="js/api.js"></script>
 <script src="js/tree.js"></script>
 <script src="js/ui.js"></script>
+<script src="js/pwa.js"></script>
 <script src="js/app.js"></script>
 </body>
 </html>

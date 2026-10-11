@@ -246,6 +246,7 @@ footer a:hover { color: var(--accent); text-decoration: underline; }
     <nav>
       <a href="#features">特性</a>
       <a href="#langs">语言</a>
+      <a href="#install">安装</a>
       <a href="#privacy">隐私</a>
       <a href="#limits">限制</a>
       <button class="theme-btn" id="theme" title="切换主题" aria-label="切换主题">
@@ -272,7 +273,7 @@ footer a:hover { color: var(--accent); text-decoration: underline; }
         <svg width="15" height="15"><use href="#i-download"/></svg>源码仓库
       </a>
     </div>
-    <p class="note">MIT 许可 · 纯静态 · 无后端 · 无构建步骤</p>
+    <p class="note">MIT 许可 · 纯静态 · 无后端 · 无构建步骤 · <a href="#install" style="color:var(--accent)">可装到桌面与手机</a>，断网可用</p>
   </div>
 
   <section id="features">
@@ -332,6 +333,32 @@ footer a:hover { color: var(--accent); text-decoration: underline; }
         <tr><td>JSON / CSS / Markdown / YAML / Shell</td><td><span class="tier tier-3">仅着色</span></td><td>可编辑与保存，不执行</td></tr>
       </tbody>
     </table>
+  </section>
+
+  <section id="install">
+    <h2>装到桌面或手机</h2>
+    <p class="sub">装好之后是独立窗口，断网也能写代码。</p>
+    <div class="cards">
+      <div class="card">
+        <h3><svg width="16" height="16"><use href="#i-download"/></svg>桌面（Windows / macOS / Linux）</h3>
+        <p>用 <b>Chrome 或 Edge</b> 打开本页，点地址栏右侧的安装图标；
+           或者进了编辑器之后，点顶栏的「安装」按钮。</p>
+      </div>
+      <div class="card">
+        <h3><svg width="16" height="16"><use href="#i-download"/></svg>手机（iPhone / Android）</h3>
+        <p><b>iPhone</b>：用 <b>Safari</b> 打开，点底部「分享」→「添加到主屏幕」。
+           <b>Android</b>：Chrome 菜单里选「安装应用」。</p>
+      </div>
+      <div class="card">
+        <h3><svg width="16" height="16"><use href="#i-bolt"/></svg>离线可用</h3>
+        <p>装好之后核心文件已缓存在本机，<b>断网也能写、能跑</b>
+           （JavaScript、HTML、Python 子集、C/C++ 子集）。</p>
+      </div>
+    </div>
+    <p style="margin:16px 0 0;font-size:13.5px;color:var(--fg-2)">
+      安装<b style="color:var(--fg)">不会</b>改变数据的存放位置——文件依然只在你这台设备上。
+      它只是让你不用每次开浏览器输地址。
+    </p>
   </section>
 
   <section id="privacy">

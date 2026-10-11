@@ -512,3 +512,28 @@ svg { width: 18px; height: 18px; display: block; }
 .ai-src pre { max-height: 140px; color: var(--fg-2); }
 .ai-out pre { max-height: 260px; color: var(--fg); }
 #ai-hint a { color: var(--accent); }
+
+/* ---------- 桌面安装版（PWA window-controls-overlay）----------
+   装到桌面后窗口控制按钮会浮在右上，顶栏必须避开，
+   否则"运行""设置"这些按钮会被挡住点不到。
+   同时让顶栏可拖动，这样它才有原生标题栏的手感。 */
+@media (display-mode: window-controls-overlay) {
+  header {
+    padding-top: env(titlebar-area-height, 0px);
+    -webkit-app-region: drag;
+    app-region: drag;
+  }
+  /* 按钮和可点元素不能被拖动区吞掉点击 */
+  header button, header nav a, header select, header input {
+    -webkit-app-region: no-drag;
+    app-region: no-drag;
+  }
+  /* 右上留出控制按钮的位置，避免图标重叠 */
+  .hd nav {
+    padding-right: env(titlebar-area-width-right, 0px);
+  }
+}
+
+/* 安装按钮：只在浏览器允许安装时才显示（由 pwa.js 控制） */
+#btn-install { display: none; }
+#btn-install.can { display: inline-flex; }

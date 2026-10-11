@@ -155,19 +155,135 @@
     });
   }
 
+  /* ---------- 行高测量（自动换行时用） ----------
+   * E-032：行号以前一律按 i * lineH 排布，隐含"每行高度都等于 lineH"。
+   *   自动换行一开，一个逻辑行可能占 2~3 个视觉行高，行号仍按等行高递增，
+   *   从第 1 个长行开始整体错位，越往下错得越狠。
+   *   所以换行时用镜像元素逐行实测高度：给每行内容一个独立 div，
+   *   读它的 offsetHeight 累加出真实偏移。
+   *
+   * 为什么用镜像而不是 getClientRects()：textarea 内部无法取到每行的 rect，
+   *   只能靠一个样式完全一致的隐藏容器来量。样式不同步就会量错，
+   *   所以下面把影响换行的那几个属性都复制过去。 */
+  var mirror = null;
+
+  function ensureMirror() {
+    if (mirror) return mirror;
+    try {
+      mirror = document.createElement('div');
+      mirror.setAttribute('aria-hidden', 'true');
+      mirror.style.cssText = 'position:absolute;visibility:hidden;pointer-events:none;' +
+        'left:-9999px;top:0;z-index:-1;';
+      document.body.appendChild(mirror);
+    } catch (e) { mirror = null; }
+    return mirror;
+  }
+
+  function syncMirror() {
+    var m = ensureMirror();
+    if (!m || !el.ta) return null;
+    try {
+      var cs = window.getComputedStyle(el.ta);
+      /* 只复制会影响换行的那些属性，其余不碰 */
+      m.style.font = cs.font;
+      m.style.fontFamily = cs.fontFamily;
+      m.style.fontSize = cs.fontSize;
+      m.style.lineHeight = cs.lineHeight;
+      m.style.letterSpacing = cs.letterSpacing;
+      m.style.whiteSpace = 'pre-wrap';
+      m.style.wordBreak = cs.wordBreak;
+      m.style.overflowWrap = cs.overflowWrap;
+      m.style.padding = '0';
+      m.style.border = 'none';
+      /* 内容宽度要减掉左右内边距，否则换行位置会偏 */
+      var w = el.ta.clientWidth - parseFloat(cs.paddingLeft || 0) - parseFloat(cs.paddingRight || 0);
+      m.style.width = Math.max(10, w) + 'px';
+      m.style.boxSizing = 'content-box';
+    } catch (e) { return null; }
+    return m;
+  }
+
+  /* 返回每行的真实顶部偏移（长度 = 行数 + 1，末位是总高） */
+  function measureTops(lines) {
+    var m = syncMirror();
+    var tops = [0];
+    if (!m) return null;
+    try {
+      m.innerHTML = '';
+      var frag = document.createDocumentFragment();
+      var divs = [];
+      for (var i = 0; i < lines.length; i++) {
+        var d = document.createElement('div');
+        /* 空行也要占一行高，用 <br> 撑起来，否则会被压成 0 */
+        d.textContent = lines[i] === '' ? ' ' : lines[i];
+        frag.appendChild(d);
+        divs.push(d);
+      }
+      m.appendChild(frag);
+      for (var j = 0; j < divs.length; j++) {
+        tops.push(tops[j] + divs[j].offsetHeight);
+      }
+      return tops;
+    } catch (e) { return null; }
+  }
+
   function renderGutter() {
     if (!cur) return;
-    var total = cur.content.split('\n').length;
-    var view = Math.ceil(el.area.clientHeight / lineH) + 40;
-    var top = Math.floor(el.ta.scrollTop / lineH);
-    var start = Math.max(0, top - 20), end = Math.min(total, start + view);
+    var lines = cur.content.split('\n');
+    var total = lines.length;
     var curLine = cur.content.slice(0, el.ta.selectionStart).split('\n').length;
     var html = '';
-    if (start > 0) html += '<div style="height:' + (start * lineH) + 'px"></div>';
-    for (var i = start; i < end; i++) {
-      html += '<div' + (i + 1 === curLine ? ' class="cur"' : '') + '>' + (i + 1) + '</div>';
+
+    /* 只有换行开启时才实测 —— 不换行时每行等高，用实测纯属浪费 */
+    var wrapped = false;
+    try { wrapped = !!(el.ta && el.ta.classList && el.ta.classList.contains('wrap')); } catch (e) { }
+
+    if (!wrapped) {
+      var view = Math.ceil(el.area.clientHeight / lineH) + 40;
+      var top = Math.floor(el.ta.scrollTop / lineH);
+      var start = Math.max(0, top - 20), end = Math.min(total, start + view);
+      if (start > 0) html += '<div style="height:' + (start * lineH) + 'px"></div>';
+      for (var i = start; i < end; i++) {
+        html += '<div' + (i + 1 === curLine ? ' class="cur"' : '') + '>' + (i + 1) + '</div>';
+      }
+      if (end < total) html += '<div style="height:' + ((total - end) * lineH) + 'px"></div>';
+      el.gutter.innerHTML = html;
+      el.gutter.scrollTop = el.ta.scrollTop;
+      return;
     }
-    if (end < total) html += '<div style="height:' + ((total - end) * lineH) + 'px"></div>';
+
+    var tops = measureTops(lines);
+    if (!tops) {
+      /* 量不出来就退回等行高，并在设置旁注明可能不对齐（见 app.js） */
+      var v2 = Math.ceil(el.area.clientHeight / lineH) + 40;
+      var t2 = Math.floor(el.ta.scrollTop / lineH);
+      var s2 = Math.max(0, t2 - 20), e2 = Math.min(total, s2 + v2);
+      if (s2 > 0) html += '<div style="height:' + (s2 * lineH) + 'px"></div>';
+      for (var k = s2; k < e2; k++) {
+        html += '<div' + (k + 1 === curLine ? ' class="cur"' : '') + '>' + (k + 1) + '</div>';
+      }
+      el.gutter.innerHTML = html;
+      el.gutter.scrollTop = el.ta.scrollTop;
+      return;
+    }
+
+    /* 按实测偏移排布：行号行用绝对高度，空隙用占位块撑开 */
+    if (tops[0] !== undefined) {
+      var prevBottom = 0;
+      for (var n = 0; n < total; n++) {
+        var topn = tops[n], h = tops[n + 1] - topn;
+        if (h <= 0) h = lineH;
+        /* 超出可视区太远的跳过，避免一次生成几千个节点 */
+        var vis = el.area.clientHeight || 600;
+        if (topn > el.ta.scrollTop + vis + 800) break;
+        if (topn + h < el.ta.scrollTop - 800) { prevBottom = topn + h; continue; }
+        var gap = topn - prevBottom;
+        if (gap > 0) html += '<div style="height:' + gap + 'px"></div>';
+        html += '<div style="height:' + h + 'px;line-height:' + h + 'px"' +
+          (n + 1 === curLine ? ' class="cur"' : '') + '>' + (n + 1) + '</div>';
+        prevBottom = topn + h;
+      }
+    }
     el.gutter.innerHTML = html;
     el.gutter.scrollTop = el.ta.scrollTop;
   }
@@ -224,6 +340,23 @@
     return fs.write(cur.path, cur.content).then(function () {
       emit('save', cur.path);
     });
+  }
+
+  /* 片段会话期间 Tab 只跳占位、完全不缩进。
+     E-029：用户不知道自己进了这个模式，会以为 Tab 键坏了。
+     所以在状态栏给一句可见提示，并说明怎么退出。 */
+  function snippetHint(on) {
+    try {
+      var slot = U.$('#st-mode');
+      if (!slot) return;
+      if (on) {
+        slot.textContent = '片段模式：Tab 跳下一个空，Esc 退出';
+        slot.title = '正在片段展开中：Tab 跳到下一个占位，Esc 或移动光标退出';
+      } else {
+        slot.textContent = '本地算力';
+        slot.removeAttribute('title');
+      }
+    } catch (e) { }
   }
 
   /* 光标移动或改动文本都结束片段会话 —— 跳错位置比不跳更糟 */
@@ -283,7 +416,7 @@
      因为偏移会失效 —— 与其跳错位置，不如老实缩进。 */
   var snipSession = null;
 
-  function endSnippet() { snipSession = null; }
+  function endSnippet() { snipSession = null; snippetHint(false); }
 
   function trySnippet() {
     if (!Code.snippets || !cur) return false;
@@ -323,6 +456,7 @@
     });
     replaceRange(base, hit.end, r.text);
     /* replaceRange 已改了内容，这里重新算一遍长度 */
+    snippetHint(true);
     snipSession = {
       stops: stops, idx: 0,
       len: newText.length
@@ -341,9 +475,30 @@
   function onKey(e) {
     if (!cur) return;
     var ta = el.ta, s = ta.selectionStart, en = ta.selectionEnd;
+    /* E-029：片段会话期间 Tab 被完全接管，用户不知道怎么退出。
+       Esc 退出是最直觉的那一个，必须有。 */
+    if (e.key === 'Escape' && snipSession) { endSnippet(); e.preventDefault(); return; }
+
     var mod = e.ctrlKey || e.metaKey;
 
-    if (mod && e.key === 's') { e.preventDefault(); flushSave(); U.toast('已保存到本地库'); return; }
+    /* E-017：Ctrl+S 以前是 flushSave(); U.toast('已保存') —— 无条件、不接 promise。
+       写入失败时用户先看到"已保存"，几秒后自动保存的失败告警再弹出来，
+       同一份内容先说成功再说失败。手动保存是用户最信任的动作，
+       这时候骗他后果比自动保存更重。所以成功才弹 toast，失败立刻说。 */
+    if (mod && e.key === 's') {
+      e.preventDefault();
+      var manualPath = cur ? cur.path : '';
+      Promise.resolve()
+        .then(function () { return flushSave(); })
+        .then(function () {
+          U.toast(manualPath ? ('已保存到本地库：' + manualPath) : '已保存到本地库');
+        })
+        .catch(function (e2) {
+          U.toast('保存失败：' + String((e2 && e2.message) || e2), 'err');
+          if (Code.app && Code.app.onSaveFail) Code.app.onSaveFail(manualPath, e2);
+        });
+      return;
+    }
     if (mod && e.key === 'z' && !e.shiftKey) { e.preventDefault(); undo(); return; }
     if (mod && (e.key === 'y' || (e.key === 'z' && e.shiftKey))) { e.preventDefault(); redo(); return; }
     if (mod && e.key === '/') { e.preventDefault(); toggleComment(); return; }

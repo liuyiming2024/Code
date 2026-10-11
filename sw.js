@@ -17,44 +17,62 @@
 
 var CACHE = 'code-v1';
 
-/* 预缓存：装好就能离线打开。少而精，别把不常用的也塞进来。 */
+/* 预缓存：装好就能离线打开。少而精，别把不常用的也塞进来。
+ *
+ * ⚠ 这份清单曾经手写过，漏掉了 js/fs.js —— 结果是装到桌面后断网打开，
+ *   Code.fs 未定义、boot() 里 fs.init() 直接崩，编辑器起不来。
+ *   而 README 明写"装好是独立窗口，断网也能写、能跑"，这正是 PWA 的典型场景。
+ *   手写清单必然会再漏（每加一个脚本就要记得同步一次），
+ *   所以改成从 index.html 自动提取 —— 见下面的 deriveScripts()。
+ */
 var PRECACHE = [
   './',
   './index.html',
   './css/style.css',
-  './js/util.js',
-  './js/store.js',
-  './js/highlight.js',
-  './js/snippets.js',
-  './js/style-adapt.js',
-  './js/editor.js',
-  './js/tree.js',
-  './js/api.js',
-  './js/ai.js',
-  './js/langs.js',
-  './js/pylite.js',
-  './js/cpplite.js',
-  './js/runner.js',
-  './js/runtime.js',
-  './js/runtimes.js',
-  './js/ui.js',
-  './js/app.js',
   './icons/icon-192.png',
   './icons/icon-512.png'
 ];
 
-/* rt-worker.js 不预缓存 —— 它是 Worker 脚本，只在真正跑按需运行时才需要。
-   预缓存它会让每次安装都多下文件，而多数人根本用不到那六种语言。 */
+/* 从 index.html 里抓出所有 <script src> 与 <link href>，自动并入预缓存。
+   这样加脚本不用再记着改这里 —— 漏一个就会在离线时炸，代价太大。
+   （Worker 脚本 rt-worker.js 除外：它只在跑按需运行时才用得上。） */
+function deriveScripts(html) {
+  var out = [];
+  var re = /<script[^>]+src=["']([^"']+)["']/g, m;
+  while ((m = re.exec(html))) {
+    var u = m[1];
+    if (/rt-worker/.test(u)) continue;      /* Worker 不预缓存 */
+    if (/^https?:/.test(u)) continue;       /* 外链不管 */
+    out.push(u.charAt(0) === '.' ? u : './' + u.replace(/^\.?\//, ''));
+  }
+  var re2 = /<link[^>]+rel=["']stylesheet["'][^>]*href=["']([^"']+)["']/g, m2;
+  while ((m2 = re2.exec(html))) {
+    var u2 = m2[1];
+    if (/^https?:/.test(u2)) continue;
+    out.push(u2.charAt(0) === '.' ? u2 : './' + u2.replace(/^\.?\//, ''));
+  }
+  return out;
+}
 
 self.addEventListener('install', function (e) {
   e.waitUntil(
-    caches.open(CACHE).then(function (c) {
-      /* 单个文件失败不能让整个安装挂掉 —— 少缓存一个离线也能用，
-         装不上就彻底没有离线能力了。 */
-      return Promise.all(PRECACHE.map(function (u) {
-        return c.add(u).catch(function () { });
-      }));
-    }).then(function () {
+    /* 先取 index.html，从里面抽出所有脚本与样式，再连同基础项一起缓存。
+       自动提取是防"漏一个就离线崩"——手写清单已经漏过 fs.js 一次。 */
+    fetch('./index.html').then(function (r) { return r.text(); })
+      .catch(function () { return ''; })
+      .then(function (html) {
+        var list = PRECACHE.slice();
+        deriveScripts(html).forEach(function (u) {
+          if (list.indexOf(u) < 0) list.push(u);
+        });
+        return caches.open(CACHE).then(function (c) {
+          /* 单个文件失败不能让整个安装挂掉 —— 少缓存一个离线也能用，
+             装不上就彻底没有离线能力了。 */
+          return Promise.all(list.map(function (u) {
+            return c.add(u).catch(function () { });
+          }));
+        });
+      }).then(function () {
       /* 故意不调 skipWaiting：等页面提示用户，别在人家写代码时抢走控制权 */
       return self.skipWaiting ? null : null;
     })

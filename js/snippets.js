@@ -72,6 +72,37 @@
     return out;
   }
 
+  /* 这一行光标前的文本里，目标词是否落在字符串或注释中。
+     只做粗判断：算到目标词为止的引号奇偶，以及 // 和 # 的位置。
+     不做完整词法分析 —— 那是过度设计，而这里要的只是"别在写句子时插进来"。 */
+  function inStringOrComment(lineText, word) {
+    var idx = lineText.lastIndexOf(word);
+    if (idx < 0) idx = lineText.length;
+    var head = lineText.slice(0, idx);
+    /* 注释：// 或 # 在目标词之前 */
+    var c1 = head.indexOf('//');
+    var c2 = head.indexOf('#');
+    if (c1 >= 0 || c2 >= 0) {
+      var cp = c1 >= 0 ? (c2 >= 0 ? Math.min(c1, c2) : c1) : c2;
+      /* 但 # 也可能是 CSS 颜色或 shebang，只有它在行首或空白之后才算注释 */
+      if (c1 >= 0 && cp === c1) return true;
+      if (c2 >= 0 && cp === c2) {
+        var beforeHash = head.charAt(c2 - 1);
+        if (c2 === 0 || !beforeHash || /\s/.test(beforeHash)) return true;
+      }
+    }
+    /* 字符串：统计未转义的引号，奇数个说明此刻正处在字符串里 */
+    var dq = 0, sq = 0;
+    for (var i = 0; i < head.length; i++) {
+      var c = head.charAt(i);
+      if (c === '\\') { i++; continue; }
+      if (c === '"') dq++;
+      else if (c === "'") sq++;
+    }
+    if (dq % 2 === 1 || sq % 2 === 1) return true;
+    return false;
+  }
+
   /* 找出光标前的触发词。返回 null 表示不该展开。 */
   function triggerAt(text, pos) {
     if (pos <= 0) return null;
@@ -81,6 +112,14 @@
     /* 前面是点或字母数字之外又不是空白/行首 → 不展开（避免 a.for 之类） */
     var ch = before.charAt(m.index - 1);
     if (ch && /[.\w]/.test(ch)) return null;
+    /* E-029：在字符串或注释里敲 for + Tab 也会展开 —— 比如 print("for")。
+       写注释"for 循环"打到一半按 Tab 就冒出一段骨架，很突然。
+       所以先看这一行光标之前的部分，判断是不是处在字符串/注释里。
+       判断做得很保守：引号成奇数个才算在字符串里，行内 // 或 # 之后算注释。
+       宁可少展开一次，也不要在人家写句子时插进来。 */
+    var lineStart = before.lastIndexOf('\n') + 1;
+    var lineBefore = before.slice(lineStart);
+    if (inStringOrComment(lineBefore, m[0])) return null;
     return { word: m[0], start: m.index };
   }
 

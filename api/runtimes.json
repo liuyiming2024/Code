@@ -35,7 +35,8 @@
           "sha256": "0734155c83e493983d1f2ff5b09a4fab6e35a32e9449c7e4e545756439f62d73",
           "url": "https://github.com/liuyiming2024/assets/releases/download/latest/sql-wasm.wasm"
         }
-      ]
+      ],
+      "ready": true
     },
     {
       "id": "lua",
@@ -69,7 +70,8 @@
           "sha256": "d97c1a48364c4b4d4d391d4e2a7cbb43f5c1439e36aaeed7b43bcb58f8beb4f4",
           "url": "https://github.com/liuyiming2024/assets/releases/download/latest/lua.wasm"
         }
-      ]
+      ],
+      "ready": true
     },
     {
       "id": "pyodide",
@@ -97,7 +99,8 @@
           "sha256": "0dd443755a0244ae3052f2e0834413d68c43f362c651edd47b785ea9d26e4853",
           "url": "https://github.com/liuyiming2024/assets/releases/download/latest/python_stdlib.zip"
         }
-      ]
+      ],
+      "ready": true
     },
     {
       "id": "quickjs",
@@ -119,7 +122,8 @@
           "sha256": "105c3bed22d457e43e3d1c3c1c6959fda62a8fe06f0fc8a985303c3a2be72232",
           "url": "https://github.com/liuyiming2024/assets/releases/download/latest/quickjs.wasm"
         }
-      ]
+      ],
+      "ready": true
     },
     {
       "id": "ruby",
@@ -141,7 +145,8 @@
           "sha256": "1d8aea2daa127d73306615e08bbaae55c4af6fee036b0ecfe9720e04591db01e",
           "url": "https://github.com/liuyiming2024/assets/releases/download/latest/ruby%2Bstdlib.wasm"
         }
-      ]
+      ],
+      "ready": true
     },
     {
       "id": "php",
@@ -163,12 +168,15 @@
           "sha256": "e4f660ed9a02880114a38e686236b3ab07f7ac8c35cb1a81d4efd36dc11d3f18",
           "url": "https://github.com/liuyiming2024/assets/releases/download/latest/php-web.js.wasm"
         }
-      ]
+      ],
+      "ready": true
     },
     {
       "id": "cpp",
       "name": "C / C++（真 Clang）",
       "license": "MIT",
+      "ready": false,
+      "readyNote": "资源已就位（90.2 MB），但 C++ 真编译器（browsercc）的接线尚未完成：下载后仍不可用。在此之前 C/C++ 走内置自研子集，离线即可运行。",
       "workerType": "module",
       "entry": "cpp-index.js",
       "desc": "browsercc：真正的 Clang + LLD，浏览器内编译运行完整 C/C++（90 MB，首次很慢）",

@@ -63,6 +63,10 @@
       ed.on('cursor', onCursor);
       ed.on('save', onSaved);
       UI.setView(prefs.sideView || 'files');
+      /* E-043：manifest.json 的快捷方式带 ?action=new / ?action=extensions，
+         但以前没有任何代码读它 —— 装到桌面后右键点这两个入口，只是原样打开，
+         用户会以为自己点错了。启动后解析一次，执行完清掉参数避免刷新重复触发。 */
+      runPwaAction();
       /* 移动端布局：窄屏默认收起侧栏与面板。
          必须在 setView 之后 —— 否则它设置的视图会被后面的逻辑改回去。 */
       try { if (UI.initMobileLayout) UI.initMobileLayout(); } catch (e) { }
@@ -72,10 +76,26 @@
 
       var last = prefs.lastPath;
       var files = fs.list().filter(function (r) { return r.type === 'file'; });
-      var start = (last && fs.exists(last)) ? last
-        : (files.length ? files[0].path : null);
-      if (start) openPath(start);
-      else UI.status({ left: '空工程 —— 用左侧「新建文件」开始' });
+      var paths = files.map(function (r) { return r.path; });
+
+      /* E-039：先试着恢复上次的一整排标签，恢复不出再退回单个 lastPath。
+         开着 5 个文件刷新只剩 1 个，与"多标签正是他的工作方式"直接冲突。 */
+      var restored = null;
+      try { if (UI.tabs.restore) restored = UI.tabs.restore(paths); } catch (e) { }
+
+      if (restored) {
+        openPath(restored).then(function () {
+          /* 其余标签只入栏不逐个打开 —— 打开 5 个文件要读 5 次 IndexedDB，
+             启动会明显变慢，而用户只需要看到最后那个。 */
+          UI.tabs.persist && UI.tabs.persist();
+          refreshTabs();
+        });
+      } else {
+        var start = (last && fs.exists(last)) ? last
+          : (files.length ? files[0].path : null);
+        if (start) openPath(start);
+        else UI.status({ left: '空工程 —— 用左侧「新建文件」开始' });
+      }
 
       booted = true;
       runner.printSys('Code 已就绪。文件存在本机浏览器，代码在本机执行。');
@@ -127,6 +147,7 @@
       U.$('#run-target').value = path;
       var sel = U.$('#run-lang');
       if (sel) sel.value = lang;
+      updateRunHint(path);
       UI.status({ lang: LANG_NAME[lang] || lang, left: path });
       ed.focus();
     }).catch(function (e) { U.toast('打不开：' + e.message, 'err'); });
@@ -140,6 +161,23 @@
     var cur = UI.tabs.current();
     if (cur) openPath(cur);
     else UI.status({ left: '没有打开的文件', lang: '—', pos: '—', size: '—' });
+  }
+
+  /* E-037：langs.js 自己立的规矩是"界面必须如实显示档位，不许含糊"，
+     runHint() 也写好了，但以前全仓零调用 —— 用户点开 .sql 按运行才知道要下载
+     0.7 MB，点开 .rb 才知道是 33.6 MB。运行前完全没有预告。
+     所以把预告挂到运行按钮的 title 上，并在状态栏右侧常驻一句。 */
+  function updateRunHint(path) {
+    try {
+      var txt = (Code.runner && Code.runner.hint) ? Code.runner.hint(path || '') : '';
+      if (!txt) return;
+      ['#btn-run', '#btn-run2'].forEach(function (id) {
+        var b = U.$(id);
+        if (b) b.title = '运行（Ctrl+Enter）\n' + txt;
+      });
+      var slot = U.$('#st-hint');
+      if (slot) slot.textContent = txt;
+    } catch (e) { }
   }
 
   function refreshTabs() {
@@ -160,27 +198,33 @@
     clearTimeout(saveTimer);
     saveTimer = setTimeout(function () { flushDirty(); }, 700);
   }
+  /* 保存失败的告警只有这一处实现，手动保存（Ctrl+S）与自动保存都走它。
+     以前是自动保存修好了、Ctrl+S 那条没跟上 —— 同一份内容先报成功再报失败。
+     抽成函数就是为了让"两条路必须一致"这件事在代码里看得出来。 */
+  function onSaveFail(err) {
+    U.toast('保存失败：' + (err && err.message || err), 'err');
+    UI.status({ left: '保存失败 —— 请立刻导出 ZIP 备份' });
+    U.modal({
+      title: '保存失败',
+      body: '<p class="about-p">写入浏览器存储时出错：<b>' + U.esc(String(err && err.message || err)) + '</b></p>' +
+            '<p class="about-p">可能是存储空间已满，或浏览器禁用了本站存储。' +
+            '未保存的内容还在编辑区里，但<b>刷新页面就会丢失</b>。</p>' +
+            '<p class="about-p">建议现在就点「导出 ZIP 备份」把文件存到磁盘。</p>',
+      actions: [
+        { label: '知道了' },
+        { label: '立刻导出备份', primary: true, onClick: function () { setTimeout(doExport, 0); } }
+      ]
+    });
+  }
+
   function flushDirty() {
     clearTimeout(saveTimer);
     var p = ed.current();
     if (!p) return;
-    ed.save().then(function () { })
-      .catch(function (err) {
-        /* 保存失败必须让人看见：否则用户以为存住了，关掉页面才发现没了 */
-        U.toast('保存失败：' + (err && err.message || err), 'err');
-        UI.status({ left: '保存失败 —— 请立刻导出 ZIP 备份' });
-        U.modal({
-          title: '保存失败',
-          body: '<p class="about-p">写入浏览器存储时出错：<b>' + U.esc(String(err && err.message || err)) + '</b></p>' +
-                '<p class="about-p">可能是存储空间已满，或浏览器禁用了本站存储。' +
-                '未保存的内容还在编辑区里，但<b>刷新页面就会丢失</b>。</p>' +
-                '<p class="about-p">建议现在就点「导出 ZIP 备份」把文件存到磁盘。</p>',
-          actions: [
-            { label: '知道了' },
-            { label: '立刻导出备份', primary: true, onClick: function () { setTimeout(doExport, 0); } }
-          ]
-        });
-      });
+    /* ed.save() 在没有当前文件时会返回 undefined（flushSave 里 cur 为空直接 return）。
+       直接 .then 会抛 TypeError —— 这个崩在打开文件的路径上，会让文件打不开。
+       所以先包成 Promise。 */
+    Promise.resolve().then(function () { return ed.save(); }).catch(onSaveFail);
   }
 
   function onSaved(path) {
@@ -277,8 +321,15 @@
         {
           label: '删除', primary: true, onClick: function (close) {
             close();
-            if (UI.tabs.list().indexOf(path) >= 0) closePath(path);
-            fs.remove(path).then(function () { U.toast('已删除 ' + path); })
+            /* E-031：删除【文件夹】时其下所有标签都要关掉。
+               只关 path 本身的话，子文件标签还挂着，继续打字会把它们重建出来。 */
+            var hits = affectedTabs(path);
+            if (hits.length > 1 || (hits.length === 1 && hits[0] !== path)) {
+              dropTabs(path);
+            } else if (UI.tabs.list().indexOf(path) >= 0) {
+              closePath(path);
+            }
+            fs.remove(path).then(function () { U.toast('已删除 ' + path); refreshTabs(); })
               .catch(function (e) { U.toast(e.message, 'err'); });
           }
         }
@@ -307,7 +358,14 @@
   function doExport() {
     flushAll();
     var blob = fs.exportZip();
-    U.download('code-workspace.zip', blob);
+    /* E-044：以前固定叫 code-workspace.zip，多次导出互相覆盖或变成 (1)(2)，
+       真要恢复时只能靠文件修改时间猜顺序。而备份是本项目唯一的防丢手段。
+       所以带上日期时间，文件名本身就能排出先后。 */
+    var d = new Date();
+    var pad = function (n) { return (n < 10 ? '0' : '') + n; };
+    var stamp = '' + d.getFullYear() + pad(d.getMonth() + 1) + pad(d.getDate()) +
+      '-' + pad(d.getHours()) + pad(d.getMinutes());
+    U.download('code-workspace-' + stamp + '.zip', blob);
     U.toast('已导出 ' + fs.list().length + ' 项');
   }
 
@@ -320,10 +378,16 @@
       var files = Array.prototype.slice.call(inp.files || []);
       if (!files.length) return;
       var chain = Promise.resolve(), zips = 0, singles = 0;
+      var importFailures = [];
       files.forEach(function (f) {
         chain = chain.then(function () {
           if (/\.zip$/i.test(f.name)) {
-            return U.readFileAsArrayBuffer(f).then(fs.importZip).then(function (n) { zips += n; });
+            return U.readFileAsArrayBuffer(f).then(fs.importZip).then(function (r) {
+              /* importZip 现在返回 { imported, failed? } —— 数字是老格式，兼容 */
+              var got = (r && typeof r === 'object') ? (r.imported || 0) : (r || 0);
+              zips += got;
+              if (r && r.failed && r.failed.length) importFailures = importFailures.concat(r.failed);
+            });
           }
           if (/\.json$/i.test(f.name)) {
             return U.readFileAsText(f).then(function (t) {
@@ -338,7 +402,25 @@
         var msg = [];
         if (zips) msg.push(zips + ' 个来自压缩包');
         if (singles) msg.push(singles + ' 个文件');
-        U.toast('导入完成：' + (msg.join('，') || '0 项'));
+        /* E-036：部分成功必须说清楚 —— 只说"导入失败"会让人再导一次，
+           而成功的那批已经真实写进去了（还把同名文件覆盖了）。 */
+        if (importFailures.length) {
+          var names = importFailures.slice(0, 5).map(function (x) { return x.name; }).join('、');
+          var more = importFailures.length > 5 ? ' 等 ' + importFailures.length + ' 个' : '';
+          U.modal({
+            title: '导入部分完成',
+            body: '<p class="about-p">成功导入 <b>' + (zips + singles) + '</b> 个文件，' +
+              '<b>' + importFailures.length + '</b> 个失败。</p>' +
+              '<p class="about-p">失败的文件：' + U.esc(names + more) + '</p>' +
+              '<p class="about-p">失败原因：' + U.esc(String(importFailures[0].err || '')) + '</p>' +
+              '<p class="about-p">成功部分<b>已经写入</b>，并覆盖了同名文件。' +
+              '不要重复导入 —— 那样会把它们再覆盖一次。</p>',
+            actions: [{ label: '知道了', primary: true }]
+          });
+          U.toast('导入部分完成：成功 ' + (zips + singles) + ' 个，失败 ' + importFailures.length + ' 个', 'err');
+        } else {
+          U.toast('导入完成：' + (msg.join('，') || '0 项'));
+        }
       }).catch(function (e) { U.toast('导入失败：' + e.message, 'err'); });
     };
     inp.click();
@@ -385,6 +467,20 @@
       case 'clear': runner.clear(); break;
       case 'about': UI.about(); break;
       case 'extensions': UI.extensions(); break;
+      /* E-041：refresh 以前根本没有这个 case —— 就算按钮绑上了也是死的 */
+      /* E-030：预览必须有关闭出口。按钮、命令面板、Esc 三条路都给上。 */
+      case 'close-preview':
+        if (runner.hidePreview) runner.hidePreview();
+        U.toast('已关闭预览');
+        break;
+      case 'refresh':
+        tree.render();
+        try {
+          var sel = U.$('#run-target');
+          if (sel && sel.value) UI.status({ left: sel.value });
+        } catch (e) { }
+        U.toast('已刷新文件树');
+        break;
     }
   }
 
@@ -572,6 +668,23 @@
     };
 
     on('#btn-cloud-push', 'click', function () {
+      /* E-020：下载弹确认、上传却不弹 —— 同一条原则只守了一侧。
+         反向同样成立：用户在 A 机器写完、换到 B 机器改过、回 A 点上传，
+         B 的那一版就没了，而云端没有版本历史、不可恢复。 */
+      U.modal({
+        title: '上传到云端',
+        body: '<p class="about-p">会用<b>本地内容覆盖云端同名文件</b>。' +
+          '云端没有版本历史，覆盖后不可恢复。</p>' +
+          '<p class="about-p">如果另一台设备上改过同一批文件，那一版会被这一版顶掉。</p>' +
+          '<p class="about-p">确定继续？</p>',
+        actions: [
+          { label: '取消', primary: true },
+          { label: '上传并覆盖', onClick: function () { doCloudPush(); } }
+        ]
+      });
+    });
+
+    function doCloudPush() {
       U.toast('上传中…');
       Code.cloud.pushAll(function (d, t, n) { progress(d, t, n); })
         .then(function (r) {
@@ -581,7 +694,7 @@
           if (UI.refreshCloud) UI.refreshCloud();
         })
         .catch(function (e) { U.toast(String(e.message || e), 'err'); if (UI.refreshCloud) UI.refreshCloud(); });
-    });
+    }
 
     on('#btn-cloud-pull', 'click', function () {
       /* 覆盖本地同名文件，先问一次 —— 这一步会改用户电脑上的东西 */
@@ -681,10 +794,27 @@
     });
   }
 
+  /* PWA 快捷方式：右键桌面图标 → 新建文件 / 扩展中心 */
+  function runPwaAction() {
+    var a = '';
+    try { a = new URLSearchParams(location.search).get('action') || ''; } catch (e) { return; }
+    if (!a) return;
+    try {
+      if (a === 'new') command('new-file');
+      else if (a === 'extensions') UI.extensions();
+      /* 清掉参数：否则刷新会再触发一次（用户在"新建"里填了名又被弹一次） */
+      history.replaceState(null, '', location.pathname);
+    } catch (e) { }
+  }
+
   /* ================= 绑定 ================= */
   function bind() {
-    /* 顶栏菜单 */
-    U.$$('#top-menu [data-act]').forEach(function (b) {
+    /* E-041：側栏文件树上方的「新建文件 / 新建文件夹 / 刷新」三个按钮在
+       #side-actions 里，而以前只绑 '#top-menu [data-act]' —— 选择器选不到，
+       点了完全没反应。那是新用户最先会点的位置（一个显眼的 + 号），
+       点了没反应会让人以为编辑器坏了。
+       所以改成全量绑定，不再限定父容器。 */
+    U.$$('[data-act]').forEach(function (b) {
       b.onclick = function () {
         var a = b.getAttribute('data-act');
         if (a === 'about') UI.about();
@@ -694,6 +824,8 @@
       };
     });
     var br = U.$('#btn-run'); if (br) br.onclick = doRun;
+    var bpc = U.$('#btn-preview-close');
+    if (bpc) bpc.onclick = function () { command('close-preview'); };
     var bt = U.$('#btn-theme'); if (bt) bt.onclick = toggleTheme;
     /* 顶栏菜单：以前这个按钮绑的是 toggleSide，而 #top-menu 没有任何代码
        给它加 open 类 —— 那 7 个菜单项（新建、导出、导入、扩展中心、关于…）
@@ -739,7 +871,21 @@
     });
 
     /* 面板按钮 */
-    var pc = U.$('#btn-panel-clear'); if (pc) pc.onclick = function () { runner.clear(); };
+    /* E-045：按当前面板清对应内容。按钮常驻却只在「输出」下有效，
+       在「控制台」点它毫无反应，用户会以为工具坏了。 */
+    var pc = U.$('#btn-panel-clear');
+    if (pc) pc.onclick = function () {
+      var which = (UI.panel && UI.panel.name) || 'output';
+      if (which === 'console') {
+        if (runner.clear) runner.clear('console');
+        var cbox = U.$('#panel-console');
+        if (cbox) cbox.innerHTML = '';
+      } else if (runner.clear) {
+        runner.clear();
+        var obox = U.$('#panel-output');
+        if (obox) obox.innerHTML = '';
+      }
+    };
     var px = U.$('#btn-panel-close');
     if (px) px.onclick = function () { UI.panel.open(false); store.set('panelOpen', false); };
 
@@ -762,7 +908,8 @@
     global.addEventListener('beforeunload', function () { flushAll(); });
   }
 
-  Code.app = { boot: boot, run: doRun, open: openPath, exportZip: doExport, importPick: doImport };
+  Code.app = {
+    onSaveFail: onSaveFail, boot: boot, run: doRun, open: openPath, exportZip: doExport, importPick: doImport };
 
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot);
   else boot();

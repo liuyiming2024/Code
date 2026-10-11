@@ -211,10 +211,23 @@
         /* 交回浏览器原生的撤销 —— execCommand 在多数移动浏览器上仍可用 */
         try { document.execCommand('undo'); } catch (e) { hint('撤销不可用'); }
         return;
+      /* E-025：这个键以前是空的 if + 一句"已自动保存"——
+         占键条两格宽，用户点它期待真的存一次，而写入失败时它照样报成功，
+         等于一个按钮做了一次谎报。现在真的存一次，成功/失败说法与 Ctrl+S 一致。 */
       case 'save':
-        if (Code.app && Code.app.exportZip) { /* 没有独立保存接口就用 toast 提示已自动保存 */ }
-        hint('内容会自动保存');
-        if (Code.ui && Code.util.toast) Code.util.toast('已自动保存');
+        var ed = Code.editor;
+        if (!ed) { hint('编辑器未就绪'); return; }
+        Promise.resolve()
+          .then(function () { return ed.save(); })
+          .then(function () {
+            hint('已保存');
+            if (Code.util && Code.util.toast) Code.util.toast('已保存到本地库');
+          })
+          .catch(function (e2) {
+            hint('保存失败');
+            if (Code.app && Code.app.onSaveFail) Code.app.onSaveFail(e2);
+            else if (Code.util && Code.util.toast) Code.util.toast('保存失败', 'err');
+          });
         return;
       case 'run':
         if (Code.app && Code.app.run) { try { Code.app.run(); } catch (e) { } }

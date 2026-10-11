@@ -21,7 +21,14 @@
     syncEnabled: false,       // 可选：把工程同步到外部数据库，默认关闭
     syncUrl: '',
     syncKey: '',
-    snippets: true           // Tab 展开代码片段
+    snippets: true,          // Tab 展开代码片段
+    /* E-039：标签列表以前只在内存里，刷新后只剩最后打开的那一个。
+       开着 5 个文件改 bug 刷新一下全丢，而 PWA 装到桌面后重开是常态场景。
+       E-056：文件树展开状态同理，刷新后全部合上。
+       两者都是"工作状态"，不存就每次重来。 */
+    openTabs: [],            // 已打开的文件路径
+    activeTab: '',           // 当前激活的那个
+    treeExpanded: []         // 文件树里展开的目录路径
   };
 
   var prefs = Object.assign({}, DEFAULTS);

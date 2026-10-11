@@ -196,7 +196,29 @@
     });
   }
 
-  function logout() { return rpc('logout', {}).then(function () { dropSession(); }, function () { dropSession(); }); }
+  /* E-047：退出登录以前只清自己的 token，而共享会话（从 Chat 沿用）的 token
+     还在 localStorage 里 —— 刷新页面后又被"沿用"回来，等于退不掉。
+     用户以为退出了，实际会话还在，而云盘里存的是他的代码。
+     所以退出时若检测到是沿用态，明确告知真正退出的地方在哪。 */
+  function logout() {
+    var shared = isSharedSession();
+    return rpc('logout', {}).then(function () { dropSession(); }, function () { dropSession(); })
+      .then(function () {
+        if (shared) {
+          /* Chat 的 token 我们无权删（那是另一个应用的会话），只能如实说明 */
+          if (Code.util && Code.util.modal) {
+            Code.util.modal({
+              title: '已退出（但登录态来自 Chat）',
+              body: '<p class="about-p">Code 与 Chat 在同一域名下，共用同一份登录态。</p>' +
+                '<p class="about-p">刚才退出的是 Code 自己这一侧；' +
+                '<b>Chat 的登录信息仍在本机</b>，刷新后会被自动沿用回来，看起来像"没退出"。</p>' +
+                '<p class="about-p">要真正退出，请到 Chat 里退出登录。</p>',
+              actions: [{ label: '知道了', primary: true }]
+            });
+          }
+        }
+      });
+  }
 
   function me(force) {
     if (self && !force) return Promise.resolve(self);

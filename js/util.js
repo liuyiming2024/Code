@@ -76,7 +76,16 @@
     md: 'markdown', markdown: 'markdown',
     sh: 'shell', bash: 'shell', zsh: 'shell',
     txt: 'text', log: 'text', csv: 'text', yml: 'yaml', yaml: 'yaml',
-    sql: 'sql', java: 'java', go: 'go', rs: 'rust', php: 'php'
+    sql: 'sql', php: 'php',
+    /* E-049：Lua 与 Ruby 能跑（扩展中心可下载运行时）、着色规则也写好了，
+       唯独这里漏了两个键 —— 于是 langOf() 回退 'text'，
+       用户花 1.6 MB 下载 Lua 运行时，编辑器却当他写的是纯文本。
+       E-050：反过来，java/go/rust 在这里声明了，但 highlight.js 里
+       根本没有对应规则，状态栏却显示"Java/Go/Rust"，等于骗人。
+       既然没有着色规则，就别声明 —— 老实显示"纯文本"比假装有支持强。
+       这两条是同一个根因：语言表散在 lang / highlight / util 三处各维护各的，
+       详见下面的一致性断言（tests 里也有）。 */
+    lua: 'lua', rb: 'ruby'
   };
   U.langOf = function (path) {
     var n = U.basename(String(path || '')).toLowerCase();
@@ -87,9 +96,11 @@
   U.LANG_LABEL = {
     javascript: 'JavaScript', json: 'JSON', html: 'HTML', css: 'CSS',
     python: 'Python', cpp: 'C/C++', markdown: 'Markdown', shell: 'Shell',
-    text: '纯文本', yaml: 'YAML', sql: 'SQL', java: 'Java', go: 'Go',
-    rust: 'Rust', php: 'PHP'
+    text: '纯文本', yaml: 'YAML', sql: 'SQL', php: 'PHP',
+    lua: 'Lua', ruby: 'Ruby'
   };
+  /* 状态栏显示名只在"真有规则或真能跑"的语言里列，
+     java/go/rust 已从 EXT_MAP 移除（无着色规则），这里也不再列。 */
 
   /* 字节数按 UTF-8 计 */
   U.byteLen = function (s) {
@@ -191,7 +202,31 @@
         }
       }));
     });
-    function close() { box.classList.add('hidden'); document.removeEventListener('keydown', onKey); }
+    /* E-054：以前关闭时只隐藏、不恢复焦点。焦点留在已经隐藏的对话框元素上，
+       此时直接敲字进不了编辑器，用户会先以为卡了。
+       所以记下打开前的焦点元素，关闭时还回去；还不了就退回编辑器。
+       为什么不放进 finally：有些按钮要在 onClick 里 return false 保持打开，
+       那时不该抢焦点。 */
+    var prevFocus = null;
+    try { prevFocus = document.activeElement; } catch (e) { }
+
+    function restoreFocus() {
+      try {
+        var ed = Code && Code.editor ? Code.editor.el && Code.editor.el() : null;
+        var ta = ed && ed.ta ? ed.ta : null;
+        if (prevFocus && prevFocus.focus && document.contains(prevFocus)) {
+          prevFocus.focus({ preventScroll: true });
+        } else if (ta && ta.focus) {
+          ta.focus({ preventScroll: true });
+        }
+      } catch (e) { }
+    }
+
+    function close() {
+      box.classList.add('hidden');
+      document.removeEventListener('keydown', onKey);
+      restoreFocus();
+    }
     function onKey(e) { if (e.key === 'Escape') close(); }
     document.addEventListener('keydown', onKey);
     box.classList.remove('hidden');

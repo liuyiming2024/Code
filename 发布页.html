@@ -367,17 +367,29 @@ footer a:hover { color: var(--accent); text-decoration: underline; }
       Code 没有服务器，所以它无法收集你的东西。以下是它<b>不做</b>的事：
     </p>
     <div class="priv">
-      <div class="priv-item"><svg width="15" height="15"><use href="#i-check"/></svg>不需要注册，没有账号</div>
+      <div class="priv-item"><svg width="15" height="15"><use href="#i-check"/></svg>写代码不需要注册，没有账号</div>
       <div class="priv-item"><svg width="15" height="15"><use href="#i-check"/></svg>不上传你的代码与文件</div>
       <div class="priv-item"><svg width="15" height="15"><use href="#i-check"/></svg>没有统计、埋点与分析</div>
       <div class="priv-item"><svg width="15" height="15"><use href="#i-check"/></svg>没有 Cookie 与追踪</div>
       <div class="priv-item"><svg width="15" height="15"><use href="#i-check"/></svg>没有广告</div>
       <div class="priv-item"><svg width="15" height="15"><use href="#i-check"/></svg>不加载任何外部资源</div>
     </div>
+    <!-- E-026：这里以前写"唯一的联网时刻""除此之外不发任何网络请求"，
+         但云盘要登录、AI 会把代码发往服务商 —— 而发布页是新访客的第一屏，
+         还专门设了隐私区块来取信于人，说反了比不说更糟。 -->
     <p style="margin:20px 0 0;font-size:13.5px;color:var(--fg-2)">
-      <b style="color:var(--fg)">唯一的联网时刻</b>：你在扩展中心主动下载某个语言运行时时，
-      浏览器会向 GitHub 发起下载请求（GitHub 会看到 IP，与下载任何 GitHub 文件一样）。
-      下载完存进本机缓存，之后离线可用。除此之外页面不发任何网络请求。
+      <b style="color:var(--fg)">什么时候会联网？只有这三种，而且全部默认关闭：</b>
+    </p>
+    <ul style="margin:10px 0 0 20px;font-size:13.5px;color:var(--fg-2);line-height:1.9">
+      <li><b>扩展中心下载运行时</b>：你主动点下载时，浏览器向 GitHub 发起请求
+        （GitHub 会看到 IP，与下载任何 GitHub 文件一样）。下载完存进本机缓存，之后离线可用。</li>
+      <li><b>云盘同步</b>：需你自己注册登录，开启后才会把文件传到数据库。
+        不用就不传 —— 默认关闭。</li>
+      <li><b>AI 辅助</b>：需你自己填密钥，请求直连你选的服务商。
+        不填就没有这个入口（不是"有入口但点了报错"）。</li>
+    </ul>
+    <p style="margin:12px 0 0;font-size:13.5px;color:var(--fg-2)">
+      除以上三种，页面<b>不发任何网络请求</b>。写代码、保存、运行都在本机完成。
     </p>
     <p style="margin:12px 0 0;font-size:13.5px">
       <a href="PRIVACY.md" style="color:var(--accent)">完整隐私声明</a> ·

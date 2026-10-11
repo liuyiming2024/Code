@@ -31,11 +31,17 @@
 
   function seed() {
     var SAMPLES = [
-      ['README.md', '# 我的代码空间\n\n这是一个在浏览器里运行的在线代码编辑器。\n\n- 左侧是文件树，可以把整个工程导出成 zip\n- 中间是编辑器，支持多标签与语法高亮\n- 底部面板可以运行 JavaScript 并在控制台里交互\n\n所有内容都保存在这台设备的浏览器里。\n'],
+      /* 同样过时：这里只说"可以运行 JavaScript"，而 Python 与 C/C++ 子集现在也能跑 */
+      ['README.md', '# 我的代码空间\n\n这是一个在浏览器里运行的在线代码编辑器。\n\n- 左侧是文件树，可以把整个工程导出成 zip\n- 中间是编辑器，支持多标签与语法高亮\n- 底部面板可以运行 JavaScript、Python 子集、C/C++ 子集\n- 更多语言（SQLite / Lua / Ruby / PHP / 完整 CPython）在「扩展中心」按需下载\n\n所有内容都保存在这台设备的浏览器里。\n'],
       ['hello.js', '// 点「运行」或按 Ctrl+Enter 执行\nfunction greet(name) {\n  return "你好，" + name + "！";\n}\n\nfor (var i = 1; i <= 3; i++) {\n  console.log(i, greet("第 " + i + " 位访客"));\n}\n\nconsole.log("当前时间：", new Date().toLocaleString());\n'],
       ['index.html', '<!doctype html>\n<html lang="zh-CN">\n<head>\n<meta charset="utf-8">\n<title>示例页面</title>\n<style>\n  body { font-family: system-ui, sans-serif; padding: 40px; }\n  h1 { color: #1f6feb; }\n</style>\n</head>\n<body>\n  <h1>HTML 预览示例</h1>\n  <p>切到编辑区上方的「预览」即可看到结果。</p>\n  <button onclick="alert(\'预览里的脚本也能跑\')">点我</button>\n</body>\n</html>\n'],
       ['notes/todo.md', '# 待办\n\n- [x] 搭好文件树\n- [ ] 把自己的工程导进来\n- [ ] 试试控制台\n'],
-      ['notes/python-note.py', '# Python 暂未内置运行时：本工具不伪造执行，这个文件的 print 不会有任何输出。\n# 可以正常编辑、着色与保存；需要真跑起来请用 .js 文件。\nprint("hello")\n']
+      /* E-023：这段文案写过时了。Python 现在已是内置自研解释器（langs.js 里
+         runner: 'pylite'），print 真的会输出 hello —— 而这里还在教用户"不会有任何输出"。
+         用户第一次打开看到的第一个 .py 文件，说的却是错的事。 */
+      ['notes/python-note.py', '# Python 子集（自研解释器）：能跑 print 与基础语法。\n' +
+        '# 不支持 import 第三方库、async、生成器、装饰器。\n' +
+        '# 要完整的 CPython（含标准库）见「扩展中心」。\nprint("hello")\n']
     ];
     var chain = Promise.resolve();
     SAMPLES.forEach(function (s) { chain = chain.then(function () { return create(s[0], 'file', s[1]); }); });
@@ -283,6 +289,12 @@
     var entries = zipRead(buf);
     var chain = Promise.resolve();
     var n = 0;
+    /* E-036：单文件失败以前直接 throw，整个 chain reject，
+       而失败【之前】的文件已经真实写进去了 —— 提示却只有"导入失败"。
+       错误提示把"部分成功"说成了"整体失败"，用户会再导一次，
+       于是前面那批被覆盖第二次，而失败的依然失败。
+       所以改成收集失败明细，成功继续，最后一起如实汇报。 */
+    var failed = [];
     entries.forEach(function (e) {
       chain = chain.then(function () {
         var name = U.normPath(e.name.replace(/^\/+/, ''));
@@ -300,11 +312,16 @@
           if (cache[name]) return write(name, text);
           return create(name, 'file', text);
         }).catch(function (err) {
-          throw new Error(name + '：' + err.message);
+          failed.push({ name: name, err: String((err && err.message) || err) });
         });
       });
     });
-    return chain.then(function () { emit('import'); return n; });
+    return chain.then(function () {
+      emit('import');
+      var out = { imported: n };
+      if (failed.length) out.failed = failed;
+      return out;
+    });
   }
 
   /* ---------- 导入本地文件 / 文件夹 ---------- */

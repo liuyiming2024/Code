@@ -236,6 +236,7 @@
           <select id="set-tabsize"><option>2</option><option>4</option><option>8</option></select>
         </div>
         <div class="field"><label>自动换行</label>
+          <!-- 说明放在这里：换行后行号按实测行高排布，个别字体下仍可能差一像素 -->
           <select id="set-wrap"><option value="off">关闭</option><option value="on">开启</option></select>
         </div>
         <div class="field"><label>缩进方式</label>
@@ -303,7 +304,19 @@
                     inputmode="none" aria-label="代码编辑区"></textarea>
         </div>
       </div>
-      <div id="preview" class="hidden"><iframe id="preview-frame" title="预览" sandbox="allow-scripts"></iframe></div>
+      <!-- E-030：预览以前没有任何关闭出口 —— hidePreview() 写了却零调用，
+           跑一次 .html 后预览面板永久占住编辑区右侧，只能刷新页面。
+           刷新前若有未保存内容还要赌自动保存，这是"进得去出不来"。 -->
+      <div id="preview" class="hidden">
+        <div class="preview-bar">
+          <span class="preview-title">预览</span>
+          <button class="btn-preview-close" id="btn-preview-close" title="关闭预览（Ctrl+Shift+P → 关闭预览）">
+            <svg width="12" height="12" aria-hidden="true"><use href="#i-close"></use></svg>
+            关闭预览
+          </button>
+        </div>
+        <iframe id="preview-frame" title="预览" sandbox="allow-scripts"></iframe>
+      </div>
     </div>
 
     <div id="resizer" title="拖动调整面板高度" role="separator" aria-orientation="horizontal"></div>
@@ -332,6 +345,9 @@
   <span id="st-pos">行 1，列 1</span>
   <span id="st-lang">纯文本</span>
   <span id="st-size">0 B</span>
+  <!-- E-037：运行前如实预告（"需要下载 X MB" / "已就绪" / "暂不支持运行"），
+       以前 runHint 写了却没接到界面上 -->
+  <span id="st-hint" title="点击运行会发生什么"></span>
   <span id="st-mode">本地算力</span>
 </footer>
 

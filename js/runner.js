@@ -23,8 +23,12 @@
           if (!v.trim()) return;
           hist.push(v); hidx = hist.length;
           cinput.value = '';
-          print('echo', '> ' + v);
-          evalExpr(v);
+          /* E-040：以前一律 print() 到「输出」，于是「控制台」标签点开是空的，
+             而输入框在所有标签下都常驻，更强化了"这里该显示东西"的预期。
+             控制台会话（回显 + 求值结果）只进 #panel-console，
+             运行程序的输出仍然进「输出」——两者是不同性质的东西。 */
+          printConsole('echo', '> ' + v);
+          evalExpr(v, true);
         } else if (e.key === 'ArrowUp') {
           if (hidx > 0) { hidx--; cinput.value = hist[hidx]; e.preventDefault(); }
         } else if (e.key === 'ArrowDown') {
@@ -52,13 +56,22 @@
     out.scrollTop = out.scrollHeight;
   }
 
+  /* 控制台会话：只写 #panel-console，不进「输出」面板。
+     找不到容器就退回 print()（不能因为容器缺失就什么都不显示）。 */
+  function printConsole(kind, text, iconId) {
+    if (!cons) { print(kind, text, iconId); return; }
+    line(kind, text, iconId, cons);
+    cons.scrollTop = cons.scrollHeight;
+  }
+
   /* 返回值前缀用图标，不用文本箭头。图标与文字同一行，基线对齐。 */
   /* 各输出类型的默认图标：err/warn 必须有图形，
      否则"这行是错误还是警告"只能靠颜色分辨 —— 色弱用户分不出来。 */
   var KIND_ICON = { err: 'i-close', warn: 'i-warn', sys: 'i-info', ret: 'i-return' };
 
-  function line(kind, text, iconId) {
-    if (!out) return;
+  function line(kind, text, iconId, box) {
+    var target = box || out;
+    if (!target) return;
     var d = document.createElement('div');
     d.className = 'out ' + kind;
     if (!iconId) iconId = KIND_ICON[kind];
@@ -70,10 +83,18 @@
     var t = document.createElement('span');
     t.textContent = text;
     d.appendChild(t);
-    out.appendChild(d);
+    target.appendChild(d);
   }
 
-  function clear() { if (out) out.innerHTML = ''; count = 0; muted = false; }
+  /* E-045：以前只清 #panel-output，于是按钮常驻却只在「输出」下有效 ——
+     在「控制台」点它毫无反应，用户会以为工具坏了。
+     现在按面板名清对应的容器；传 'console' 只清控制台会话。 */
+  function clear(which) {
+    if (which === 'console') { if (cons) cons.innerHTML = ''; return; }
+    if (out) out.innerHTML = '';
+    if (cons) cons.innerHTML = '';
+    count = 0; muted = false; hist = []; hidx = -1;
+  }
   /* 停止：先打印再关开关。写反了提示会被自己的 muted 判断吞掉，界面零反应。 */
   function stop() {
     if (!muted) line('sys', '已停止接收输出。注意：同步代码无法中断，正在跑的循环仍会跑完——若页面已卡死，只能关闭标签页。');
@@ -144,7 +165,7 @@
     }
   }
 
-  function evalExpr(src) {
+  function evalExpr(src, toConsole) {
     var fn;
     try { fn = new Function('return (' + src + ')'); }
     catch (e) { try { fn = new Function(src); } catch (e2) { line('err', '语法错误：' + e2.message); return; } }
@@ -152,14 +173,39 @@
       try { return fn(); } catch (e) { line('err', (e && e.name ? e.name + ': ' : '') + (e && e.message ? e.message : String(e))); }
     });
     if (r && typeof r.then === 'function') {
-      r.then(function (v) { print('ret', fmt(v), 'i-return'); }, function (e) { print('err', String(e && e.message || e)); });
-    } else if (r !== undefined) print('ret', fmt(r), 'i-return');
+      var put = toConsole ? printConsole : print;
+      r.then(function (v) { put('ret', fmt(v), 'i-return'); }, function (e) { put('err', String(e && e.message || e)); });
+    } else if (r !== undefined) {
+      (toConsole ? printConsole : print)('ret', fmt(r), 'i-return');
+    }
   }
 
-  /* 自研子集的如实说明。不是"不支持"，是"支持到什么程度"要说清楚。 */
+  /* 自研子集的如实说明。不是"不支持"，是"支持到什么程度"要说清楚。
+   *
+   * E-024：这里原来写死"需下载 Pyodide（约 2 MB，当前 Release 里暂缺）"，
+   *   而 README 与 api/runtimes.json 都明列「Python 11.9 MB 可下载」——
+   *   同一件事两个说法，体积还差近 6 倍。用户看到"暂缺"就不会去点了。
+   *   所以改成从清单动态取：有没有、多大，都以 runtimes.json 为准，不手写。 */
+  function pyUpgradeHint() {
+    try {
+      var rt = Code.runtime && Code.runtime.findRt ? Code.runtime.findRt('pyodide') : null;
+      if (!rt) return '';
+      if (rt.ready === false) return '';
+      var bytes = 0;
+      (rt.files || []).forEach(function (f) { bytes += f.size || 0; });
+      var mb = bytes / 1048576;
+      var size = mb >= 1 ? mb.toFixed(1) + ' MB' : Math.round(bytes / 1024) + ' KB';
+      var st = Code.runtime.status ? Code.runtime.status('pyodide') : null;
+      if (st && st.ready) return '完整 CPython 已下载，可在「Python（完整）」下运行。';
+      return '要完整 CPython 可在扩展中心下载（约 ' + size + '，首次需联网）。';
+    } catch (e) {
+      return '要完整 CPython 见扩展中心。';
+    }
+  }
+
   var CAVEAT = {
     pylite: 'Python 子集（自研解释器）：不是 CPython，不支持 import 第三方库、async、生成器、装饰器。\n' +
-            '够用场景：语法练习、算法题、日常小脚本。要完整 CPython 需下载 Pyodide（约 2 MB，当前 Release 里暂缺）。',
+            '够用场景：语法练习、算法题、日常小脚本。' + pyUpgradeHint(),
     cpplite: 'C/C++ 子集（自研教学级）：不支持指针与地址运算、struct / class、模板、STL、头文件与多文件。\n' +
              '#include 会被忽略。够用场景：语法练习与基础算法。'
   };
@@ -168,7 +214,16 @@
   function runBuiltin(kind, code) {
     if (kind === 'pylite') {
       if (!Code.pylite) { line('warn', 'Python 子集解释器未加载'); return true; }
-      var I = Code.pylite.create(function (s) { print('out', s); }, function () { return ''; });
+      /* E-042：input() 以前传的是 function () { return ''; } ——
+         不弹框、不报错，变量静默变成空字符串，程序带着空值继续跑，
+         用户会以为是自己代码写错了。而 pylite.js 开头自己立的规矩就是
+         "绝不静默跑歪"。所以这里改成弹输入框取真值，取消则抛明确异常。 */
+      var I = Code.pylite.create(function (s) { print('out', s); }, function (prompt) {
+        var v = null;
+        try { v = window.prompt(String(prompt == null ? '' : prompt)); } catch (e) { }
+        if (v === null) throw new Error('已取消输入：本环境通过弹窗获取 input()，取消会中止程序');
+        return v;
+      });
       if (CAVEAT.pylite) printSys(CAVEAT.pylite);
       try {
         var r = I.run(code, { timeout: 5000 });

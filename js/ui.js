@@ -12,28 +12,66 @@
   UI.tabs = {
     list: function () { return tabs.slice(); },
     current: function () { return active; },
+    /* E-039：把标签列表与激活项存起来，刷新后恢复。
+       存的是路径不是内容 —— 内容本来就在 IndexedDB 里，恢复时再读。 */
+    persist: function () {
+      try {
+        if (!Code.store) return;
+        Code.store.set('openTabs', tabs.slice());
+        Code.store.set('activeTab', active || '');
+      } catch (e) { }
+    },
+    /* 启动时调用：恢复上次的标签。
+       文件可能已被删（在别的会话里），所以要逐个核对存在性，
+       不存在的静默跳过 —— 恢复不出一个标签不值得弹错误打断启动。 */
+    restore: function (paths) {
+      try {
+        if (!Code.store) return null;
+        var saved = Code.store.prefs.openTabs || [];
+        var act = Code.store.prefs.activeTab || '';
+        var got = 0;
+        saved.forEach(function (p) {
+          if (typeof p !== 'string' || !p) return;
+          if (paths) {
+            var ok = false;
+            for (var i = 0; i < paths.length; i++) { if (paths[i] === p) { ok = true; break; } }
+            if (!ok) return;
+          }
+          if (tabs.indexOf(p) < 0) { tabs.push(p); got++; }
+        });
+        if (!got) return null;
+        active = (tabs.indexOf(act) >= 0) ? act : tabs[tabs.length - 1];
+        UI.tabs.render();
+        return active;
+      } catch (e) { return null; }
+    },
     add: function (path) {
       if (tabs.indexOf(path) < 0) tabs.push(path);
       active = path;
-      UI.tabs.render();
+      UI.tabs.render(); UI.tabs.persist();
     },
     close: function (path) {
       var i = tabs.indexOf(path);
       if (i < 0) return;
       tabs.splice(i, 1);
       if (active === path) active = tabs.length ? tabs[Math.min(i, tabs.length - 1)] : null;
-      UI.tabs.render();
+      UI.tabs.render(); UI.tabs.persist();
     },
-    closeOthers: function (path) { tabs = [path]; active = path; UI.tabs.render(); },
+    closeOthers: function (path) { tabs = [path]; active = path; UI.tabs.render(); UI.tabs.persist(); },
     select: function (path) {
       if (tabs.indexOf(path) < 0) tabs.push(path);
-      active = path; UI.tabs.render();
+      active = path; UI.tabs.render(); UI.tabs.persist();
     },
     render: function () {
       var bar = U.$('#tabsbar');
       bar.innerHTML = '';
       tabs.forEach(function (p) {
         var t = U.el('div', { class: 'tab' + (p === active ? ' active' : '') });
+        /* E-038：以前没设 dataset.path，于是 app.js 里 dirty[undefined] 恒为 false，
+           .dirty 类永远加不上；而 .tdot 又无条件创建、CSS 没有隐藏规则 ——
+           结果每个标签都常亮"未保存"圆点，而它不代表任何事。
+           两个 bug 叠在一起最坏：用户要么以为文件都没存，要么学会无视它。 */
+        t.dataset.path = p;
         var name = U.el('span', { class: 'tname', text: U.basename(p) });
         name.title = p;
         var dot = U.el('span', { class: 'tdot' });
@@ -176,6 +214,16 @@
   };
 
   /* ================= 快速跳转 / 命令面板 ================= */
+  /* 当前主题对应的"切换后"图标：与顶栏按钮同一套逻辑。
+     浅色下点它要切到深色 → 显示月亮；深色下显示太阳。
+     E-048：命令面板以前写死太阳，与实际主题无关，其中一个永远是错的。 */
+  function currentThemeIcon() {
+    try {
+      var t = document.documentElement.getAttribute('data-theme');
+      return t === 'light' ? 'i-moon' : 'i-sun';
+    } catch (e) { return 'i-sun'; }
+  }
+
   UI.palette = function (mode) {
     var files = Code.fs.list();
     if (!files.length) { U.toast('还没有文件'); return; }
@@ -264,10 +312,15 @@
       { label: '运行当前文件', hint: 'Ctrl+Enter', icon: 'i-run', act: function () { hooks.cmd && hooks.cmd('run'); } },
       { label: '导出全部文件（ZIP）', hint: '', icon: 'i-download', act: function () { hooks.cmd && hooks.cmd('export'); } },
       { label: '导入文件或 ZIP', hint: '', icon: 'i-upload', act: function () { hooks.cmd && hooks.cmd('import'); } },
-      { label: '切换深浅主题', hint: '', icon: 'i-sun', act: function () { hooks.cmd && hooks.cmd('theme'); } },
+      /* E-048：以前写死 'i-sun'，而顶栏真按钮是动态的（浅色显示月亮）。
+         同一个操作两个图标，其中一个永远是错的：浅色下命令面板显示太阳
+         （=切到浅色），点了却切回深色。按当前主题取，与顶栏保持一致。 */
+      { label: '切换深浅主题', hint: '', icon: currentThemeIcon(), act: function () { hooks.cmd && hooks.cmd('theme'); } },
       { label: '显示 / 隐藏底部面板', hint: 'Ctrl+`', icon: 'i-split', act: function () { hooks.cmd && hooks.cmd('panel'); } },
       { label: '清空运行输出', hint: '', icon: 'i-eraser', act: function () { hooks.cmd && hooks.cmd('clear'); } },
       { label: '扩展中心（下载运行时）', hint: '', icon: 'i-download', act: function () { UI.extensions(); } },
+      /* E-030：命令面板里也要有，否则手机端（没有 Ctrl 组合键）无处可关 */
+      { label: '关闭预览', hint: '', icon: 'i-close', act: function () { hooks.cmd && hooks.cmd('close-preview'); } },
       /* 没配密钥就不渲染 AI 入口 —— 渲染了点下去报错是误导 */
       (Code.ai && Code.ai.ready()
         ? { label: 'AI 解释选中代码', hint: '', icon: 'i-info', act: function () { UI.aiAsk('explain'); } }
@@ -344,7 +397,12 @@
 
     var list = U.$('#ext-list');
     if (!list) return;
+    /* 先加载清单再渲染：ready / license 都取自它，
+       没加载就渲染会得到"什么都没标"的空界面。 */
     render();
+    if (R && R.loadManifest) {
+      try { R.loadManifest().then(function () { render(); }); } catch (e) { }
+    }
 
     function render() {
       list.innerHTML = '';
@@ -363,17 +421,37 @@
         if (lang.wasm.upgrade) {
           head.appendChild(U.el('span', { class: 'ext-tag', text: '升级' }));
         }
+        /* E-051：TERMS.md 白纸黑字承诺"许可证在扩展中心逐项标明"。
+           用户据此判断能不能商用，条款说了界面却没给 —— 等于承诺没兑现。
+           数据本来就在清单里（rt.license），只是之前没读。 */
+        if (rt && rt.license) {
+          head.appendChild(U.el('span', { class: 'ext-license', text: rt.license }));
+        }
         head.appendChild(U.el('span', { class: 'ext-size', text: L.fmtSize(bytes) }));
         row.appendChild(head);
 
         var d = U.el('div', { class: 'ext-desc', text: (lang.wasm && lang.wasm.desc) || lang.desc || '' });
         row.appendChild(d);
 
+        /* E-018：「下完也跑不了」必须在下载前就写明。
+           90 MB 下载要好几分钟，让用户等完了才发现不能用是最坏的体验。
+           所以未就绪的运行时置灰下载按钮，并把原因写在旁边。 */
+        var notReady = rt && rt.ready === false;
+        if (notReady) {
+          var warn = U.el('div', { class: 'ext-warn', text: '暂不可用：' + (rt.readyNote || '接线未完成') });
+          row.appendChild(warn);
+        }
+
         var bar = U.el('div', { class: 'ext-bar' });
         var state = U.el('span', { class: 'ext-state' });
         var btn = U.el('button', { class: 'btn small' });
 
-        if (st && st.ready) {
+        if (notReady) {
+          state.textContent = '资源已就位，接线未完成';
+          state.className = 'ext-state bad';
+          btn.textContent = '暂不可用';
+          btn.disabled = true;
+        } else if (st && st.ready) {
           state.textContent = '已下载（本机缓存，离线可用）';
           state.className = 'ext-state ok';
           btn.textContent = '清理';
@@ -406,9 +484,17 @@
 
     var RT_KEY = { sqlite: 'sql', pyodide: 'python', lua: 'lua', php: 'php', ruby: 'ruby', cpp: 'cpp' };
 
-    /* 启动时探一次缓存状态，界面才知道谁已下载 */
+    /* 启动时探一次缓存状态，界面才知道谁已下载。
+       E-055：refreshStatus() 是异步探测，以前这里调用完立刻同步 render()，
+       读到的还是旧状态 —— 表现为"进度条走完 100%，状态却仍是未下载"，
+       用户以为下载失败了。所以统一返回 promise，由调用方在 then 里 render。 */
     function refresh() {
-      if (R && R.refreshStatus) R.refreshStatus();
+      if (R && R.refreshStatus) {
+        try {
+          return Promise.resolve(R.refreshStatus()).catch(function () { });
+        } catch (e) { return Promise.resolve(); }
+      }
+      return Promise.resolve();
     }
 
     function start(id) {
@@ -431,7 +517,10 @@
               row.__state.textContent = '下载中 ' + d.pct + '%' + (d.file ? '（' + d.file + '）' : '');
             }
           },
-          ready: function () { row.classList.remove('busy'); refresh(); render(); },
+          ready: function () {
+            row.classList.remove('busy');
+            refresh().then(function () { render(); });
+          },
           fail: function (d) {
             row.classList.remove('busy');
             row.__state.textContent = '下载失败：' + ((d && d.error) || '未知');
@@ -526,11 +615,47 @@
         : '') +
       '<div class="ai-out"><pre id="ai-result">（等待回复…）</pre></div>';
 
+    /* E-028：改写的目的就是把结果用回去。以前只有「关闭」和「发送」，
+       用户得拖选整段 → Ctrl+C → 关对话框 → 回编辑器 → 粘贴。
+       不自动改文件是对的（改代码要用户自己确认），但不给出路就不对了。 */
+    var lastText = '';
+    var stripFence = function (t) {
+      /* 模型常把代码包在 ``` 里，直接粘进去会多出围栏行 */
+      var m = /^\s*```[a-zA-Z0-9]*\n([\s\S]*?)\n```\s*$/.exec(t);
+      return m ? m[1] : t;
+    };
+
     U.modal({
       title: mode === 'explain' ? 'AI 解释代码' : 'AI 改写代码',
       body: body,
       actions: [
         { label: '关闭' },
+        {
+          label: '复制结果', onClick: function () {
+            if (!lastText) { U.toast('还没有结果可复制', 'err'); return false; }
+            var txt = mode === 'rewrite' ? stripFence(lastText) : lastText;
+            if (navigator.clipboard && navigator.clipboard.writeText) {
+              navigator.clipboard.writeText(txt)
+                .then(function () { U.toast('已复制到剪贴板'); })
+                .catch(function () { U.toast('复制失败，请手动选中', 'err'); });
+            } else { U.toast('此浏览器不支持自动复制，请手动选中', 'err'); }
+            return false;
+          }
+        },
+        {
+          label: '插入到光标处', onClick: function () {
+            if (!lastText) { U.toast('还没有结果可插入', 'err'); return false; }
+            var ed = Code.editor;
+            if (!ed || !ed.replace) { U.toast('编辑器未就绪', 'err'); return false; }
+            var txt = mode === 'rewrite' ? stripFence(lastText) : lastText;
+            try {
+              var r = ed.sel();
+              ed.replace(r[0], r[1], txt);
+              U.toast('已插入，可撤销');
+            } catch (e) { U.toast('插入失败：' + e.message, 'err'); }
+            return false;
+          }
+        },
         {
           label: '发送', primary: true, onClick: function () {
             var out = U.$('#ai-result');
@@ -544,8 +669,10 @@
               p = Code.ai.explain(sel, lang);
             }
             p.then(function (r) {
-              out.textContent = r.text || '（返回为空）';
+              lastText = r.text || '';
+              out.textContent = lastText || '（返回为空）';
             }).catch(function (e) {
+              lastText = '';
               out.textContent = '失败：' + String(e && e.message || e);
             });
             return false;   /* 不关对话框，让结果留在屏幕上 */
@@ -585,36 +712,53 @@
     });
 
     /* 面板拖动 */
+    /* E-053：改用 Pointer Events —— 触摸屏没有 mousedown/mousemove/mouseup，
+       以前手机上侧栏宽度与面板高度都拖不动。一套事件覆盖鼠标/触摸/手写笔。 */
     var rz = U.$('#resizer'), dragging = false, y0 = 0, h0 = 0;
-    rz.addEventListener('mousedown', function (e) {
+    rz.addEventListener('pointerdown', function (e) {
       dragging = true; y0 = e.clientY; h0 = U.$('#panel').offsetHeight;
       document.body.style.userSelect = 'none';
+      try { rz.setPointerCapture(e.pointerId); } catch (err) { }
+      e.preventDefault();
     });
-    addEventListener('mousemove', function (e) {
+    rz.addEventListener('pointermove', function (e) {
       if (!dragging) return;
       var h = UI.panel.setHeight(h0 - (e.clientY - y0));
       Code.store.set('panelHeight', h);
+      e.preventDefault();
     });
-    addEventListener('mouseup', function () {
+    var endPanelDrag = function (e) {
       if (!dragging) return;
       dragging = false; document.body.style.userSelect = '';
-    });
+      try { rz.releasePointerCapture(e.pointerId); } catch (err) { }
+    };
+    rz.addEventListener('pointerup', endPanelDrag);
+    rz.addEventListener('pointercancel', endPanelDrag);
 
     /* 侧栏宽度拖动 */
     var sw = U.$('#side-resizer');
     if (sw) {
       var sd = false, x0 = 0, w0 = 0;
-      sw.addEventListener('mousedown', function (e) {
+      sw.addEventListener('pointerdown', function (e) {
         sd = true; x0 = e.clientX; w0 = U.$('#sidebar').offsetWidth;
         document.body.style.userSelect = 'none';
+        try { sw.setPointerCapture(e.pointerId); } catch (err) { }
+        e.preventDefault();
       });
-      addEventListener('mousemove', function (e) {
+      sw.addEventListener('pointermove', function (e) {
         if (!sd) return;
         var w = Math.max(150, Math.min(520, w0 + (e.clientX - x0)));
         U.$('#sidebar').style.width = w + 'px';
         Code.store.set('sideWidth', w);
+        e.preventDefault();
       });
-      addEventListener('mouseup', function () { sd = false; document.body.style.userSelect = ''; });
+      var endSideDrag = function (e) {
+        if (!sd) return;
+        sd = false; document.body.style.userSelect = '';
+        try { sw.releasePointerCapture(e.pointerId); } catch (err) { }
+      };
+      sw.addEventListener('pointerup', endSideDrag);
+      sw.addEventListener('pointercancel', endSideDrag);
     }
 
     UI.panel.show('output');

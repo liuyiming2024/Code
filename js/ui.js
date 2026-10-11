@@ -264,8 +264,15 @@
           d.appendChild(U.el('span', { class: 'pal-cmd', text: U.basename(label) }));
           d.appendChild(U.el('span', { class: 'pal-key', text: label }));
         }
+        /* ⚠ 原来写 go(hit[sel])（E-033）—— 用的是全局选中序号，
+           不是被点击那一项的序号 idx。
+           桌面侥幸正确，是因为 mouseenter 已经把 sel 改成了 idx；
+           但触摸设备上没有 hover，sel 停在上一次的位置，
+           **点第 3 项会打开第 1 项**。这种"能打开但打开错了"
+           比打不开更难发现 —— 用户以为自己点错了。 */
         d.onmouseenter = function () { sel = idx; mark(); };
-        d.onclick = function () { go(hit[sel]); };
+        d.onmousedown = function () { sel = idx; };
+        d.onclick = function () { sel = idx; go(hit[idx]); };
         list.appendChild(d);
       });
       if (!hit.length) list.appendChild(U.el('div', { class: 'pal-empty', text: '无匹配' }));
@@ -361,8 +368,20 @@
         '<li>主题、字号、缩进等设置保存在本地</li>' +
         '</ul>' +
         '<p class="about-p">键盘：Ctrl+P 跳转文件，Ctrl+Shift+P 命令面板，Ctrl+Enter 运行，Ctrl+S 保存。</p>' +
-        '<p class="about-p">你的代码与文件只存在这台设备上，不上传任何服务器；' +
-        '除了在扩展中心主动下载运行时，页面不发起任何网络请求。</p>' +
+        /* ⚠ 原来无条件写"只存在这台设备上，不上传任何服务器"（E-034）。
+           而云盘已上线：注册、登录、上传文件都是真实的网络请求。
+           「关于」是用户最常打开的入口，这句话他一定会读到，
+           于是他会以为云盘也不上传 —— 声明与实际相反比没有声明更糟。
+           所以按当前是否登录分别写。 */
+        /* 用 token() 判断"是否已登录"，不能用 isOn() ——
+           isOn() 的意思是"后端是否配置好了"，未登录时它也可能是 true。
+           拿它当登录态用，会在用户根本没登录时显示"已登录云盘"，
+           同样是在骗人，只是骗的方向相反。 */
+        (Code.cloud && Code.cloud.token && Code.cloud.token()
+          ? '<p class="about-p">已登录云盘：你主动上传的文件会存到服务端数据库，' +
+            '换设备可取回。未主动上传的文件仍只在这台设备上。</p>'
+          : '<p class="about-p">当前未登录云盘：你的代码与文件只存在这台设备上，' +
+            '不上传任何服务器；除了在扩展中心主动下载运行时，页面不发起任何网络请求。</p>') +
         '<p class="about-p">' +
         '<a href="PRIVACY.md" target="_blank" rel="noopener">隐私声明</a> · ' +
         '<a href="TERMS.md" target="_blank" rel="noopener">使用条款</a> · ' +

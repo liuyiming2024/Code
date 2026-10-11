@@ -268,7 +268,14 @@
         '<li>按需下载：SQLite / Lua / Ruby / PHP / 完整 CPython / 真 Clang，见扩展中心</li>' +
         '<li>主题、字号、缩进等设置保存在本地</li>' +
         '</ul>' +
-        '<p class="about-p">键盘：Ctrl+P 跳转文件，Ctrl+Shift+P 命令面板，Ctrl+Enter 运行，Ctrl+S 保存。</p>',
+        '<p class="about-p">键盘：Ctrl+P 跳转文件，Ctrl+Shift+P 命令面板，Ctrl+Enter 运行，Ctrl+S 保存。</p>' +
+        '<p class="about-p">你的代码与文件只存在这台设备上，不上传任何服务器；' +
+        '除了在扩展中心主动下载运行时，页面不发起任何网络请求。</p>' +
+        '<p class="about-p">' +
+        '<a href="PRIVACY.md" target="_blank" rel="noopener">隐私声明</a> · ' +
+        '<a href="TERMS.md" target="_blank" rel="noopener">使用条款</a> · ' +
+        '<a href="LICENSE" target="_blank" rel="noopener">许可证</a>' +
+        '</p>',
       actions: [{ label: '知道了', primary: true }]
     });
   };

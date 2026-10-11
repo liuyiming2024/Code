@@ -62,6 +62,18 @@ jobs:
           psql "$DB_URL" -v ON_ERROR_STOP=1 -f "$FILE" 2>&1 | tee -a migrate-log.txt
           RC=${PIPESTATUS[0]}
           echo "psql 退出码 $RC" | tee -a migrate-log.txt
+
+          # 认证失败是最常见也最容易被误读的一种失败：
+          # 它看起来像"数据库挂了"，其实只是 Secret 里的密码不对。
+          # 与其让人去猜，不如在这里直接说清楚该查什么。
+          if [ "$RC" -ne 0 ] && grep -q "password authentication failed" migrate-log.txt; then
+            echo "" | tee -a migrate-log.txt
+            echo "::error::数据库密码认证失败 —— SUPABASE_DB_URL 里的密码不对" | tee -a migrate-log.txt
+            echo "排查：本仓库的 Secret 必须与 Chat 仓库的 SUPABASE_DB_URL 完全一致" | tee -a migrate-log.txt
+            echo "（同一个 Supabase 项目，两边用同一个连接串）" | tee -a migrate-log.txt
+            echo "更新位置：Settings → Secrets and variables → Actions → SUPABASE_DB_URL" | tee -a migrate-log.txt
+            echo "注意：私有库 凭据.md 里记的连接串可能已过时，以 Chat 仓库实际在用的为准" | tee -a migrate-log.txt
+          fi
           exit $RC
 
       - name: 日志存为产物

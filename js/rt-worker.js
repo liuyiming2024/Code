@@ -19,6 +19,12 @@
 var BASE = 'https://github.com/liuyiming2024/assets/releases/latest/download/';
 var CACHE = 'code-runtimes-v1';
 
+/* 文件名里有 + 的（ruby+stdlib.wasm）必须编码成 %2B —— Release 直链就是这么给的。
+   不统一的话下载用一个 key、清理用另一个 key，缓存会对不上。 */
+function urlOf(name) {
+  return BASE + name.replace(/\+/g, '%2B');
+}
+
 /* 每个语言需要哪些文件。预下载时按这里逐个拉，带进度。 */
 var NEED = {
   sql: ['sql-wasm.js', 'sql-wasm.wasm'],
@@ -47,16 +53,42 @@ function say(type, data) {
    sql.js 的 locateFile 同理 —— 不接管的话它们会绕过缓存重新下载。
 */
 var origFetch = self.fetch ? self.fetch.bind(self) : null;
+
+/* 已知资产的文件名集合。
+   为什么需要它：browsercc 的 compile() 内部用
+     new URL("sysroot.tar", import.meta.url)
+   去取 sysroot —— 而 GitHub 的下载直链会 302 跳到 objects.githubusercontent.com，
+   重定向之后 import.meta.url 就不再以 BASE 开头了，只看前缀会漏掉它，
+   结果 29 MB 每次重下。
+   所以除了前缀匹配，再按"文件名是否在已知资产里"兜一层。 */
+var KNOWN_NAMES = {};
+Object.keys(NEED).forEach(function (k) {
+  (NEED[k] || []).forEach(function (n) { KNOWN_NAMES[n] = urlOf(n); });
+});
+
+function cacheUrlFor(url) {
+  if (url.indexOf(BASE) === 0) return url;
+  var q = url.indexOf('?');
+  var base = q < 0 ? url : url.slice(0, q);
+  var name = base.slice(base.lastIndexOf('/') + 1);
+  try { name = decodeURIComponent(name); } catch (e) { }
+  /* 只认 GitHub 自己的域名，避免把别处的同名文件也劫走 */
+  if (KNOWN_NAMES[name] && /^https?:\/\/[^/]*github/.test(url)) return KNOWN_NAMES[name];
+  return null;
+}
+
 self.fetch = function (input, opts) {
   var url = typeof input === 'string' ? input : (input && input.url) || '';
-  if (!origFetch || url.indexOf(BASE) !== 0) return origFetch(input, opts);
+  var mapped = cacheUrlFor(url);
+  if (!origFetch || !mapped) return origFetch(input, opts);
+  /* 用映射后的规范 URL 查缓存 —— 下载存的和这里查的必须是同一个 key */
   return caches.open(CACHE).then(function (c) {
-    return c.match(url);
+    return c.match(mapped);
   }).then(function (hit) {
     if (hit) return hit;
     return origFetch(input, opts).then(function (r) {
       return caches.open(CACHE).then(function (c) {
-        try { c.put(url, r.clone()); } catch (e) { /* 配额满就算了 */ }
+        try { c.put(mapped, r.clone()); } catch (e) { /* 配额满就算了 */ }
         return r;
       });
     });
@@ -69,7 +101,7 @@ function fromCache(url) {
 
 /* 下载单个文件，带进度。已缓存则直接跳过（不产生流量）。 */
 function grab(name, doneBytes, totalBytes) {
-  var url = BASE + name;
+  var url = urlOf(name);
   return fromCache(url).then(function (hit) {
     if (hit) return { buf: null, cached: true };
     var resp;
@@ -121,7 +153,7 @@ function prepare(lang) {
   // 先探一次总大小，好算总进度。缓存命中就不算进总量。
   return files.reduce(function (p, f) {
     return p.then(function () {
-      return fromCache(BASE + f).then(function (hit) { return hit ? 0 : null; });
+      return fromCache(urlOf(f)).then(function (hit) { return hit ? 0 : null; });
     }).then(function (skip) {
       if (skip === 0) return 0;
       return grab(f, done, 0).then(function (r) {
@@ -136,14 +168,26 @@ function prepare(lang) {
 
 function load(name) {
   // importScripts 是同步的，加载失败会抛 —— 直接冒泡出去
-  importScripts(BASE + name);
+  importScripts(urlOf(name));
+}
+
+/* ESM 胶水（ruby-wasi.js）不能走 importScripts。
+   classic worker 里可以用动态 import() 加载 ESM ——
+   这正是它与 importScripts 的关键区别，别混为一谈。 */
+function loadESM(name) {
+  if (typeof import !== 'function') {
+    return Promise.reject(new Error(
+      '当前 Worker 不支持动态 import()，无法加载 ESM 胶水 ' + name +
+      '。已知影响：Ruby 不可用，其余语言不受影响。'));
+  }
+  return import(urlOf(name));
 }
 
 /* ================= 各语言执行 ================= */
 
 function runSQL(code) {
   load('sql-wasm.js');
-  return Promise.resolve(self.initSqlJs({ locateFile: function (f) { return BASE + f; } }))
+  return Promise.resolve(self.initSqlJs({ locateFile: function (f) { return urlOf(f); } }))
     .then(function (SQL) {
       var db = new SQL.Database();
       var out = [];
@@ -218,7 +262,7 @@ function runPHP(code) {
     try {
       var PhpWeb = self.PhpWeb || (self.phpwasm && self.phpwasm.PhpWeb);
       if (!PhpWeb) throw new Error('php-web.js 未导出 PhpWeb（UMD 挂载名不符）');
-      var php = new PhpWeb({ locateFile: function (f) { return BASE + f; } });
+      var php = new PhpWeb({ locateFile: function (f) { return urlOf(f); } });
       php.addEventListener('output', function (e) { out.push(e.detail); });
       php.addEventListener('error', function (e) { out.push('[stderr] ' + e.detail); });
       php.addEventListener('ready', function () {
@@ -232,46 +276,102 @@ function runPHP(code) {
 }
 
 function runRuby(code) {
-  // ruby-wasi.js 是 ESM 构建，classic worker 的 importScripts 吃不下。
-  // 先明确报出来，不要静默失败。
-  return Promise.reject(new Error(
-    'Ruby 运行时是 ESM 构建，classic Worker 无法 importScripts。' +
-    '需要改用 module Worker 或抓 IIFE 版资源。'));
+  /* ruby-wasi.js 是 ESM，importScripts 吃不下 —— 改用动态 import()。
+     导出形状没在真机确认过，所以依次尝试常见名字；
+     全都对不上时把实际导出列出来，不静默返回空。 */
+  return loadESM('ruby-wasi.js').then(function (m) {
+    var keys = Object.keys(m || {});
+    var VM = m.RubyVM || m.default || (m.default && m.default.RubyVM);
+    if (!VM) {
+      throw new Error('ruby-wasi.js 没有可识别的导出。实际导出：' +
+        (keys.length ? keys.join(', ') : '(空)'));
+    }
+    /* 各版本构造方式不同：有的要先 new 再 await init，有的是工厂函数 */
+    return Promise.resolve()
+      .then(function () { return typeof VM === 'function' ? new VM() : VM; })
+      .then(function (vm) {
+        return (vm && typeof vm.init === 'function') ? vm.init().then(function () { return vm; }) : vm;
+      })
+      .then(function (vm) {
+        var run = null;
+        ['eval', 'evalAsync', 'run', 'runAsync'].forEach(function (k) {
+          if (!run && vm && typeof vm[k] === 'function') run = vm[k].bind(vm);
+        });
+        if (!run) {
+          throw new Error('RubyVM 实例没有可识别的执行方法。实例导出：' +
+            (vm ? Object.keys(vm).join(', ') : '(空)'));
+        }
+        return Promise.resolve(run(code)).then(function (r) {
+          /* 不同版本返回值形态不一：可能是字符串，也可能是带 output 的对象 */
+          if (r == null) return '';
+          if (typeof r === 'string') return r;
+          if (typeof r === 'object') {
+            return (r.output != null) ? String(r.output)
+              : (r.stdout != null) ? String(r.stdout)
+              : (r.value != null) ? String(r.value) : String(r);
+          }
+          return String(r);
+        });
+      });
+  });
 }
 
-function runCpp(code) {
-  load('cpp-index.js');
-  load('clang.js');
-  load('lld.js');
-  load('wasi-shim.js');
-  return Promise.resolve().then(function () {
-    var compile = self.compile || (self.browsercc && self.browsercc.compile);
-    if (!compile) throw new Error('browsercc 的 compile 未导出');
-    return compile({ source: code, fileName: 'main.cpp', flags: [] });
+function runCpp(code, msg) {
+  /* browsercc 的 cpp-index.js 是 ESM（源码里就是 import Clang from "./clang.js"），
+     importScripts 吃不下 —— 必须走动态 import()。
+
+     一个不能踩的坑：compile() 内部是这样取 sysroot 的
+         new URL("sysroot.tar", import.meta.url)
+     它的相对解析依赖 import.meta.url。所以这里必须 import **原始直链**，
+     不能先把文件读成 blob 再 import（那样 import.meta.url 变成 blob:，
+     相对解析直接失败）。直链解析出来正好是我们缓存的那个 URL。 */
+  return loadESM('cpp-index.js').then(function (bcc) {
+    var compile = bcc.compile || (bcc.default && bcc.default.compile);
+    if (!compile) {
+      throw new Error('browsercc 没有导出 compile。实际导出：' +
+        Object.keys(bcc || {}).join(', '));
+    }
+    /* 扩展名决定 clang 按 C 还是 C++ 编译 —— 传 .c 却按 C++ 编会出莫名其妙的错 */
+    var fileName = (msg && msg.fileName) || 'main.cpp';
+    if (!/\.(c|cc|cpp|cxx)$/i.test(fileName)) fileName = 'main.cpp';
+
+    var flags = /\.c$/i.test(fileName)
+      ? ['-std=c17', '-O2']
+      : ['-std=c++20', '-O2'];
+
+    return compile({ source: code, fileName: fileName, flags: flags });
   }).then(function (r) {
     var out = [];
-    if (r.compileOutput) out.push(r.compileOutput);
-    if (!r.module) return out.join('\n');
-    var WASI = self.WASI || (self.browser_wasi_shim && self.browser_wasi_shim.WASI);
-    if (!WASI) { out.push('（WASI shim 未加载，无法执行编译产物）'); return out.join('\n'); }
-    var captured = '';
-    var ConsoleStdout = self.ConsoleStdout ||
-      (self.browser_wasi_shim && self.browser_wasi_shim.ConsoleStdout);
-    var File = self.File || (self.browser_wasi_shim && self.browser_wasi_shim.File);
-    var OpenFile = self.OpenFile || (self.browser_wasi_shim && self.browser_wasi_shim.OpenFile);
-    var sink = function (d) { captured += new TextDecoder().decode(d); };
-    var fds = [new OpenFile(new File([])),
-               new ConsoleStdout(sink), new ConsoleStdout(sink)];
-    var wasi = new WASI([], [], fds);
-    return WebAssembly.instantiate(r.module, {
-      wasi_snapshot_preview1: wasi.wasiImport
-    }).then(function (inst) {
-      try { wasi.start(inst); } catch (e) {
-        // WASI 的 _start 结束后会抛一个退出信号，属正常
-        if (!/exit|unreachable/i.test(String(e && e.message))) throw e;
-      }
-      out.push(captured);
+    if (r && r.compileOutput) out.push(r.compileOutput);
+    if (!r || !r.module) {
+      out.push('（编译未产出可执行模块）');
       return out.join('\n');
+    }
+    /* 执行编译产物需要 WASI。wasi-shim.js 也是 ESM，同样走动态 import。 */
+    return loadESM('wasi-shim.js').then(function (shim) {
+      var WASI = shim.WASI;
+      var ConsoleStdout = shim.ConsoleStdout;
+      var File = shim.File;
+      var OpenFile = shim.OpenFile;
+      if (!WASI || !ConsoleStdout || !File || !OpenFile) {
+        out.push('（WASI shim 导出不全：' + Object.keys(shim || {}).join(', ') + '）');
+        return out.join('\n');
+      }
+      var captured = '';
+      var sink = function (d) { captured += new TextDecoder().decode(d); };
+      var fds = [new OpenFile(new File([])),
+                 new ConsoleStdout(sink), new ConsoleStdout(sink)];
+      var wasi = new WASI([], [], fds);
+      return WebAssembly.instantiate(r.module, {
+        wasi_snapshot_preview1: wasi.wasiImport
+      }).then(function (inst) {
+        try { wasi.start(inst); } catch (e) {
+          /* WASI 的 _start 结束后会抛退出信号，属正常，别当成错误报给用户 */
+          if (!/exit|unreachable/i.test(String(e && e.message))) throw e;
+        }
+        out.push(captured);
+        return out.join('\n');
+      });
     });
   });
 }
@@ -297,7 +397,7 @@ self.addEventListener('message', function (e) {
     say('begin', { lang: d.lang, sizeHint: SIZE_HINT[d.lang] || 0 });
     prepare(d.lang).then(function () {
       say('ready', { lang: d.lang });
-      return fn(d.code);
+      return fn(d.code, d);
     }).then(function (text) {
       say('done', { text: text || '' });
     }, function (err) {

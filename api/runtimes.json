@@ -11,7 +11,8 @@
   "note": [
     "只列 assets 库 Release 里确实存在的资产，SHA-256 取自 Release API 的 digest 字段。",
     "workerType：classic 用 importScripts 注入 UMD；module 用动态 import 注入 ESM。",
-    "entry 是入口胶水；其余是它运行要拉的 wasm / stdlib / sysroot。"
+    "entry 是入口胶水；其余是它运行要拉的 wasm / stdlib / sysroot。",
+    "cpp 与 ruby 的入口是 ESM，走 Worker 内的动态 import()；其余是 UMD，走 importScripts。两者在同一 classic Worker 内共存。"
   ],
   "runtimes": [
     {
@@ -170,7 +171,7 @@
       "license": "MIT",
       "workerType": "module",
       "entry": "cpp-index.js",
-      "desc": "browsercc：真正的 Clang + LLD，浏览器内编译运行完整 C/C++",
+      "desc": "browsercc：真正的 Clang + LLD，浏览器内编译运行完整 C/C++（90 MB，首次很慢）",
       "files": [
         {
           "name": "cpp-index.js",
@@ -214,7 +215,12 @@
           "sha256": "01b030aa585df3f49e4c35cf65892f50905a5bf17ddfcd097e483f42ab961854",
           "url": "https://github.com/liuyiming2024/assets/releases/download/latest/wasi-shim.js"
         }
-      ]
+      ],
+      "esmEntries": [
+        "cpp-index.js",
+        "wasi-shim.js"
+      ],
+      "caveat": "clang.wasm 43MB + lld.wasm 23MB + sysroot.tar 29MB，内存占用大、首次编译慢"
     }
   ],
   "planned": [],

@@ -23,6 +23,14 @@
   var worker = null;
   var pending = null;      // 当前等待的请求
   var supported = null;    // 是否支持 Worker（file:// 下会失败）
+  var lastWorkerError = null;
+
+  /* 判断是不是 file:// 打开。这种情况 Worker 一定被拒，
+     提示必须直说原因和解决办法，不能只说"创建失败"。 */
+  function isFileProtocol() {
+    try { return (location.protocol || '') === 'file:'; }
+    catch (e) { return false; }
+  }
 
   function ensure() {
     if (worker) return worker;
@@ -31,6 +39,7 @@
       worker = new Worker(WORKER);
     } catch (e) {
       supported = false;
+      lastWorkerError = (e && e.message) || String(e);
       return null;
     }
     worker.addEventListener('message', function (e) {
@@ -50,8 +59,11 @@
     var w = ensure();
     if (!w) {
       on.fail && on.fail({
-        error: '无法创建 Worker。用 file:// 直接打开时浏览器会阻止 Worker，' +
-               '请用 python3 server.py 起本地服务，或访问在线版。'
+        error: isFileProtocol()
+          ? '无法创建 Worker：当前是用 file:// 直接打开的，浏览器会以"来源为空"处理并拒绝 Worker。\n' +
+            '请在本仓库目录执行 python3 server.py，然后访问 http://localhost:8000/\n' +
+            '或直接访问在线版 https://liuyiming2024.github.io/Code/'
+          : '无法创建 Worker：' + (lastWorkerError || '浏览器不允许。请检查是否启用了脚本隔离限制。')
       });
       return;
     }
@@ -91,8 +103,10 @@
              php: '16.5 MB', ruby: '34 MB', cpp: '90 MB' }[lang] || '若干 MB';
   }
 
-  function run(lang, code, hooks) {
-    call({ cmd: 'run', lang: lang, code: code },
+  /* fileName 决定编译器按哪种语言处理（.c 与 .cpp 的 flags 不同），
+     有就传下去；没有就让 Worker 侧用默认值。 */
+  function run(lang, code, hooks, fileName) {
+    call({ cmd: 'run', lang: lang, code: code, fileName: fileName || '' },
          hooks || {}, 10 * 60 * 1000);
   }
 

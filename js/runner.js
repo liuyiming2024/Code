@@ -53,10 +53,15 @@
   }
 
   /* 返回值前缀用图标，不用文本箭头。图标与文字同一行，基线对齐。 */
+  /* 各输出类型的默认图标：err/warn 必须有图形，
+     否则"这行是错误还是警告"只能靠颜色分辨 —— 色弱用户分不出来。 */
+  var KIND_ICON = { err: 'i-close', warn: 'i-warn', sys: 'i-info', ret: 'i-return' };
+
   function line(kind, text, iconId) {
     if (!out) return;
     var d = document.createElement('div');
     d.className = 'out ' + kind;
+    if (!iconId) iconId = KIND_ICON[kind];
     if (iconId && U.svg) {
       var ic = U.svg(iconId, 11);
       ic.setAttribute('class', 'out-icon');
@@ -238,7 +243,7 @@
         printSys('结束');
       },
       fail: function (d) { line('err', (d && d.error) || '运行时失败'); }
-    });
+    }, path);
   }
 
   /* 注册表 id → runtimes.js 用的语言键。

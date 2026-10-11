@@ -1,0 +1,87 @@
+name: 数据库迁移
+
+# 手动触发：Actions → 数据库迁移 → Run workflow
+#
+# 为什么用它：
+#   Supabase SQL Editor 需要手动粘贴，长脚本容易截断、报错不好定位。
+#   把 SQL 放进仓库版本化，这里一键执行，日志可回看、可重跑。
+#
+# 配置：仓库 Settings → Secrets → Actions 添加 SUPABASE_DB_URL。
+# 连接串的取值记在私有库，不写在这里。
+
+on:
+  workflow_dispatch:
+    inputs:
+      script:
+        description: '要执行的脚本'
+        required: true
+        default: 'cloud.sql'
+        type: choice
+        options:
+          - cloud.sql
+
+jobs:
+  migrate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 检出仓库
+        uses: actions/checkout@v5
+
+      # ⚠ 不要加 continue-on-error。
+      #   Chat 那边踩过：加了之后 psql 明明失败却显示 success，
+      #   再用 outcome 去判定又判错 —— 双重掩盖，表一直没建起来，
+      #   而界面上"执行 SQL → success"。失败的迁移必须看起来就是失败的。
+      #   正确做法：正常失败，日志用 if: always() 回收。
+      - name: 执行 SQL
+        env:
+          DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+        run: |
+          set -uo pipefail
+          # 去除首尾空白/换行：手动粘贴 Secret 时极易在末尾带上回车，
+          # 会导致库名变成 "postgres\n" 而连不上。
+          DB_URL="$(printf '%s' "$DB_URL" | tr -d '\r\n' | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+          export DB_URL
+          if [ -z "${DB_URL:-}" ]; then
+            echo "::error::未配置 SUPABASE_DB_URL，请先在仓库 Settings → Secrets 里添加"
+            exit 1
+          fi
+          echo "连接串长度 ${#DB_URL}"
+
+          FILE="code/supabase/${{ inputs.script }}"
+          : > migrate-log.txt
+          {
+            echo "==================== $FILE ===================="
+          } | tee -a migrate-log.txt
+          if [ ! -f "$FILE" ]; then
+            echo "::error::找不到 $FILE"
+            exit 1
+          fi
+          # 输出全留档：失败时这才是唯一线索
+          psql "$DB_URL" -v ON_ERROR_STOP=1 -f "$FILE" 2>&1 | tee -a migrate-log.txt
+          RC=${PIPESTATUS[0]}
+          echo "psql 退出码 $RC" | tee -a migrate-log.txt
+          exit $RC
+
+      - name: 日志存为产物
+        if: always()
+        uses: actions/upload-artifact@v5
+        with:
+          name: migrate-log
+          path: migrate-log.txt
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: 校验
+        if: always()
+        env:
+          DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+        run: |
+          set -uo pipefail
+          DB_URL="$(printf '%s' "$DB_URL" | tr -d '\r\n' | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+          export DB_URL
+          echo "--- Code 相关表 ---"
+          psql "$DB_URL" -tAc "select coalesce(string_agg(table_name,', ' order by table_name),'（无）') from information_schema.tables where table_schema='public' and table_name like 'code_%'"
+          echo "--- Code 相关函数 ---"
+          psql "$DB_URL" -tAc "select coalesce(string_agg(routine_name,', ' order by routine_name),'（无）') from information_schema.routines where routine_schema='public' and routine_name like 'code_%'"
+          echo "--- 账号表仍在（未被误删）---"
+          psql "$DB_URL" -tAc "select count(*) from users"

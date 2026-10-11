@@ -23,6 +23,8 @@ on:
 jobs:
   migrate:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write      # 要把日志推回 diag 分支
     steps:
       - name: 检出仓库
         uses: actions/checkout@v5
@@ -70,6 +72,35 @@ jobs:
           path: migrate-log.txt
           if-no-files-found: warn
           retention-days: 30
+
+      # 日志除了存 artifact，也推回 diag 分支。
+      # 为什么两个都做：artifact 下载在某些网络环境下取不到（遇到过 403），
+      # 那时就完全看不到失败原因，只能盲改。分支里的文件用 API 一定能读。
+      - name: 日志推回分支
+        if: always()
+        env:
+          DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+        run: |
+          set -uo pipefail
+          git config user.name "db-migrate"
+          git config user.email "actions@users.noreply.github.com"
+          git fetch origin diag 2>/dev/null || true
+          git checkout -B diag
+          mkdir -p .diag
+          cp migrate-log.txt .diag/db-migrate.log 2>/dev/null || true
+          {
+            echo "===== 校验 ====="
+            DB_URL="$(printf '%s' "${DB_URL:-}" | tr -d '\r\n')"
+            if [ -n "$DB_URL" ]; then
+              echo "连接串长度 ${#DB_URL}，前缀 ${DB_URL:0:12}"
+              psql "$DB_URL" -tAc "select coalesce(string_agg(table_name,', '),'（无）') from information_schema.tables where table_schema='public' and table_name like 'code_%'" 2>&1 || echo "（查询失败）"
+            else
+              echo "未配置 SUPABASE_DB_URL"
+            fi
+          } > .diag/verify.txt 2>&1
+          git add -f .diag || true
+          git commit -m "db-migrate 日志 $(date -u +%Y-%m-%dT%H:%M:%SZ)" || echo "（无变化可提交）"
+          git push -f origin diag || echo "（推送失败）"
 
       - name: 校验
         if: always()

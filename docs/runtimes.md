@@ -70,18 +70,23 @@
   在独立堆里跑不可信代码，跑飞了也不影响页面
 - 限制：没有 DOM、`fetch`、`setTimeout`、`require`；顶层 await 是语法错误
 
-### C / C++ —— Emscripten 系
+### C / C++ —— browsercc（已备齐资源）
 
-| 项目 | 体积 | 说明 |
-| --- | --- | --- |
-| **browsercc** | clang.wasm **43 MB** + lld.wasm 23 MB + sysroot 29 MB | 真正的 Clang，能在浏览器里编译，但很大 |
-| **emception** | 更大 | Emscripten 完整环境 |
-| Emscripten（本地用） | — | 命令行工具链，不能直接跑在浏览器里 |
+**资源已抓齐**（90 MB），在 `liuyiming2024/assets` 的 `latest` 标签下：
 
-- 许可证：MIT / Apache-2.0（LLVM）
-- **现实建议**：C++ 走按需加载代价太高（上百 MB）。
-  真要支持，优先做**语法着色 + 明确的"暂不支持运行"提示**，
-  或者引导用户到本地编译。
+| 文件 | 体积 |
+| --- | --- |
+| clang.wasm | 40.6 MB |
+| sysroot.tar | 27.3 MB |
+| lld.wasm | 22.1 MB |
+| clang.js / lld.js / cpp-index.js / wasi-shim.js | 0.18 MB |
+
+用法见 assets 仓库 README。**WASI 不支持 C++ 异常和多线程**。
+
+代价确实大（90 MB），但这是浏览器内跑真 C++ 的唯一现实路径。
+emception 更完整但体积还要大一个量级。
+
+**接入时三条不能省**：放 Web Worker、显示下载进度、说清首次需联网。
 
 ### Lua
 

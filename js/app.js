@@ -369,61 +369,192 @@
     U.toast('已导出 ' + fs.list().length + ' 项');
   }
 
+  /* ================= 导入 =================
+   *
+   * 导入会覆盖同名文件，而覆盖是不可恢复的（云端没有版本历史，
+   * 本地也没有）。所以这里做三层：
+   *
+   *   1. 导入前确认 —— 告诉总共要导入多少
+   *   2. 有同名文件时二次确认 —— 明确列出会被覆盖的那些
+   *   3. 导入后可撤销 —— 动手前存快照，给一条退路
+   *
+   * 三层不是重复：第 1 层拦的是"手滑选错文件"，
+   * 第 2 层拦的是"没想到会撞名"，第 3 层接的是"看结果才发现不该导"。
+   * 前两层是防，第三层是补救 —— 防不住的情况一定存在，所以退路必须有。
+   */
   function doImport() {
     var inp = document.createElement('input');
     inp.type = 'file';
     inp.multiple = true;
     inp.accept = '.zip,.json,.*';
     inp.onchange = function () {
-      var files = Array.prototype.slice.call(inp.files || []);
-      if (!files.length) return;
-      var chain = Promise.resolve(), zips = 0, singles = 0;
-      var importFailures = [];
-      files.forEach(function (f) {
-        chain = chain.then(function () {
-          if (/\.zip$/i.test(f.name)) {
-            return U.readFileAsArrayBuffer(f).then(fs.importZip).then(function (r) {
-              /* importZip 现在返回 { imported, failed? } —— 数字是老格式，兼容 */
-              var got = (r && typeof r === 'object') ? (r.imported || 0) : (r || 0);
-              zips += got;
-              if (r && r.failed && r.failed.length) importFailures = importFailures.concat(r.failed);
-            });
-          }
-          if (/\.json$/i.test(f.name)) {
-            return U.readFileAsText(f).then(function (t) {
-              try { return fs.importPack(t).then(function (n) { singles += n; }); }
-              catch (e) { return fs.importFiles([f]).then(function (n) { singles += n; }); }
-            });
-          }
-          return fs.importFiles([f]).then(function (n) { singles += n; });
-        });
+      var picked = Array.prototype.slice.call(inp.files || []);
+      if (!picked.length) return;
+      /* 先只读地算出"会导入哪些、哪些会撞名"，一步都不写 */
+      peekAll(picked).then(function (info) {
+        confirmThenImport(picked, info);
+      }).catch(function (e) {
+        U.toast('读不了：' + String(e && e.message || e), 'err');
       });
-      chain.then(function () {
-        var msg = [];
-        if (zips) msg.push(zips + ' 个来自压缩包');
-        if (singles) msg.push(singles + ' 个文件');
-        /* E-036：部分成功必须说清楚 —— 只说"导入失败"会让人再导一次，
-           而成功的那批已经真实写进去了（还把同名文件覆盖了）。 */
-        if (importFailures.length) {
-          var names = importFailures.slice(0, 5).map(function (x) { return x.name; }).join('、');
-          var more = importFailures.length > 5 ? ' 等 ' + importFailures.length + ' 个' : '';
-          U.modal({
-            title: '导入部分完成',
-            body: '<p class="about-p">成功导入 <b>' + (zips + singles) + '</b> 个文件，' +
-              '<b>' + importFailures.length + '</b> 个失败。</p>' +
-              '<p class="about-p">失败的文件：' + U.esc(names + more) + '</p>' +
-              '<p class="about-p">失败原因：' + U.esc(String(importFailures[0].err || '')) + '</p>' +
-              '<p class="about-p">成功部分<b>已经写入</b>，并覆盖了同名文件。' +
-              '不要重复导入 —— 那样会把它们再覆盖一次。</p>',
-            actions: [{ label: '知道了', primary: true }]
-          });
-          U.toast('导入部分完成：成功 ' + (zips + singles) + ' 个，失败 ' + importFailures.length + ' 个', 'err');
-        } else {
-          U.toast('导入完成：' + (msg.join('，') || '0 项'));
-        }
-      }).catch(function (e) { U.toast('导入失败：' + e.message, 'err'); });
     };
     inp.click();
+  }
+
+  /* 只读预览：不写入任何东西 */
+  function peekAll(picked) {
+    var names = [], chain = Promise.resolve();
+    picked.forEach(function (f) {
+      chain = chain.then(function () {
+        if (/\.zip$/i.test(f.name)) {
+          return U.readFileAsArrayBuffer(f).then(fs.peekZip).then(function (ns) {
+            names = names.concat(ns);
+          }).catch(function () { names.push(f.name); });
+        }
+        if (/\.json$/i.test(f.name)) {
+          return U.readFileAsText(f).then(function (t) {
+            return fs.peekPack(t).then(function (ns) { names = names.concat(ns); },
+              function () { names.push(f.name); });
+          }).catch(function () { names.push(f.name); });
+        }
+        if (!/\.(zip|json)$/i.test(f.name)) {
+          names.push(U.normPath((f.webkitRelativePath || f.name).replace(/^\/+/, '')));
+        }
+      });
+    });
+    return chain.then(function () {
+      var uniq = [];
+      names.forEach(function (n) { if (n && uniq.indexOf(n) < 0) uniq.push(n); });
+      var dup = uniq.filter(function (n) { return fs.exists(n); });
+      return { all: uniq, dup: dup };
+    });
+  }
+
+  function confirmThenImport(picked, info) {
+    var total = info.all.length, dup = info.dup;
+
+    /* 第一层：确认要导入 */
+    U.modal({
+      title: '导入文件',
+      body: '<p class="about-p">将导入 <b>' + total + '</b> 个文件。</p>' +
+        (dup.length
+          ? '<p class="about-p">其中 <b>' + dup.length + '</b> 个与现有文件同名，' +
+            '导入后<b>会被覆盖</b>。</p>'
+          : '<p class="about-p">没有与现有文件同名的，不会覆盖任何东西。</p>'),
+      actions: [
+        { label: '取消', primary: true },
+        { label: '继续', onClick: function () { secondConfirm(picked, info); } }
+      ]
+    });
+  }
+
+  /* 第二层：有同名才出现，明确列出会被覆盖的 */
+  function secondConfirm(picked, info) {
+    var dup = info.dup;
+    if (!dup.length) { runImport(picked, info); return; }
+    var show = dup.slice(0, 12).map(function (d) { return '<li>' + U.esc(d) + '</li>' }).join('');
+    var more = dup.length > 12 ? '<li>…以及另外 ' + (dup.length - 12) + ' 个</li>' : '';
+    U.modal({
+      title: '会覆盖 ' + dup.length + ' 个文件',
+      body: '<p class="about-p">下列文件已存在，导入后<b>原内容会被替换</b>：</p>' +
+        '<ul class="about-ul">' + show + more + '</ul>' +
+        '<p class="about-p">导入前会自动存一份快照，导完可以撤销。</p>',
+      actions: [
+        { label: '取消', primary: true },
+        { label: '覆盖并导入', onClick: function () { runImport(picked, info); } }
+      ]
+    });
+  }
+
+  function runImport(picked, info) {
+    /* 第三层的地基：动手之前先存快照 */
+    try { fs.takeImportSnapshot(info.all); } catch (e) { }
+
+    var chain = Promise.resolve(), zips = 0, singles = 0;
+    var importFailures = [];
+    picked.forEach(function (f) {
+      chain = chain.then(function () {
+        if (/\.zip$/i.test(f.name)) {
+          return U.readFileAsArrayBuffer(f).then(fs.importZip).then(function (r) {
+            var got = (r && typeof r === 'object') ? (r.imported || 0) : (r || 0);
+            zips += got;
+            if (r && r.failed && r.failed.length) importFailures = importFailures.concat(r.failed);
+          });
+        }
+        if (/\.json$/i.test(f.name)) {
+          return U.readFileAsText(f).then(function (t) {
+            try { return fs.importPack(t).then(function (n) { singles += n; }); }
+            catch (e) { return fs.importFiles([f]).then(function (n) { singles += n; }); }
+          });
+        }
+        return fs.importFiles([f]).then(function (n) { singles += n; });
+      });
+    });
+
+    chain.then(function () {
+      refreshTree(); refreshTargets();
+      var done = zips + singles;
+
+      if (importFailures.length) {
+        var names = importFailures.slice(0, 5).map(function (x) { return x.name; }).join('、');
+        var more = importFailures.length > 5 ? ' 等 ' + importFailures.length + ' 个' : '';
+        U.modal({
+          title: '导入部分完成',
+          body: '<p class="about-p">成功 <b>' + done + '</b> 个，失败 <b>' +
+            importFailures.length + '</b> 个。</p>' +
+            '<p class="about-p">失败的文件：' + U.esc(names + more) + '</p>' +
+            '<p class="about-p">原因：' + U.esc(String(importFailures[0].err || '')) + '</p>' +
+            '<p class="about-p">成功部分<b>已经写入</b>。' +
+            '不要重复导入 —— 那样会把它们再覆盖一次。</p>',
+          actions: [
+            { label: '知道了', primary: true },
+            { label: '撤销本次导入', onClick: function () { undoImport(); } }
+          ]
+        });
+        U.toast('导入部分完成：成功 ' + done + '，失败 ' + importFailures.length, 'err');
+        return;
+      }
+
+      /* 成功时也给撤销入口 —— 用户看到结果才发现不该导，是常有的事 */
+      U.modal({
+        title: '导入完成',
+        body: '<p class="about-p">已导入 <b>' + done + '</b> 个文件' +
+          (info.dup.length ? '（其中 ' + info.dup.length + ' 个覆盖了原有文件）' : '') + '。</p>' +
+          '<p class="about-p">如果不该导，现在可以撤销。</p>',
+        actions: [
+          { label: '完成', primary: true },
+          { label: '撤销本次导入', onClick: function () { undoImport(); } }
+        ]
+      });
+      U.toast('导入完成：' + done + ' 个');
+    }).catch(function (e) { U.toast('导入失败：' + e.message, 'err'); });
+  }
+
+  /* 撤销：把快照写回去。只在本次会话有效 ——
+     刷新之后再说"撤销上次导入"是没有意义的，也容易误伤后来的改动。 */
+  function undoImport() {
+    if (!fs.hasImportSnapshot || !fs.hasImportSnapshot()) {
+      U.toast('没有可撤销的导入', 'err');
+      return;
+    }
+    U.modal({
+      title: '撤销本次导入',
+      body: '<p class="about-p">会还原到导入前的状态：被覆盖的文件写回原内容，' +
+        '新导入的文件删掉。</p>' +
+        '<p class="about-p">导入<b>之后</b>你做的改动也会被一起还原 —— ' +
+        '如果导完又改了东西，请先导出备份。</p>',
+      actions: [
+        { label: '算了', primary: true },
+        {
+          label: '撤销', onClick: function () {
+            fs.rollbackImport().then(function (n) {
+              refreshTree(); refreshTargets();
+              try { UI.tabs.render(); } catch (e) { }
+              U.toast('已撤销，还原了 ' + n + ' 项');
+            }).catch(function (e) { U.toast('撤销失败：' + e.message, 'err'); });
+          }
+        }
+      ]
+    });
   }
 
   function refreshTargets() {
@@ -468,6 +599,8 @@
       case 'about': UI.about(); break;
       case 'extensions': UI.extensions(); break;
       /* E-041：refresh 以前根本没有这个 case —— 就算按钮绑上了也是死的 */
+      /* 撤销上次导入：快照只在会话内有效，有才显示这个命令 */
+      case 'undo-import': undoImport(); break;
       /* E-030：预览必须有关闭出口。按钮、命令面板、Esc 三条路都给上。 */
       case 'close-preview':
         if (runner.hidePreview) runner.hidePreview();
@@ -909,7 +1042,12 @@
   }
 
   Code.app = {
-    onSaveFail: onSaveFail, boot: boot, run: doRun, open: openPath, exportZip: doExport, importPick: doImport };
+    onSaveFail: onSaveFail,
+    /* 供命令面板与自动化调用。名字与 command() 的 case 对齐，
+       不另起一套说法 —— 两处叫不同名字，后来的人会对不上。 */
+    import: doImport,
+    undoImport: undoImport,
+    exportZip: doExport, boot: boot, run: doRun, open: openPath, exportZip: doExport, importPick: doImport };
 
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot);
   else boot();

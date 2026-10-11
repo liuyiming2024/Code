@@ -165,9 +165,18 @@
   /* 用法：
      U.modal({title, body(HTML), inputs:[{name,label,value,placeholder}],
               actions:[{label, primary, onClick(close, values)}]}) */
+  /* 对话框是复用的同一个 #modal，一次只能有一个。
+     于是有个坑：在按钮的 onClick 里再开一个对话框时，
+     外层按钮处理器执行完会紧接着 close() —— 把刚打开的那个关掉。
+     表现为"第二个对话框一闪就没了"，而这正是确认链（确认 → 二次确认）会走的路径。
+     所以用 token 标记"当前有效的是哪一个"：
+     关闭时若发现自己已经过期（期间又开了新的），就不动手。 */
+  var modalToken = 0;
+
   U.modal = function (opt) {
     var box = U.$('#modal'), title = U.$('#modal-title'),
       content = U.$('#modal-content'), actions = U.$('#modal-actions');
+    var myToken = ++modalToken;
     title.textContent = opt.title || '提示';
     content.innerHTML = opt.body || '';
     var fields = {};
@@ -223,6 +232,8 @@
     }
 
     function close() {
+      /* 期间又开了新的对话框 → 我已经不是当前那个，别把新的关掉 */
+      if (myToken !== modalToken) return;
       box.classList.add('hidden');
       document.removeEventListener('keydown', onKey);
       restoreFocus();

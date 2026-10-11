@@ -324,6 +324,84 @@
     });
   }
 
+  /* 只看压缩包里有哪些文件，不解压内容、不写入任何东西。
+     用途：导入前先告诉用户"哪些会被覆盖"，这必须在动手之前算出来。 */
+  function peekZip(buf) {
+    var entries;
+    try { entries = zipRead(buf); }
+    catch (e) { return Promise.reject(e); }
+    var names = [];
+    entries.forEach(function (e) {
+      var name = U.normPath(e.name.replace(/^\/+/, ''));
+      if (!name) return;
+      if (/\/$/.test(e.name) || e.usize === 0) return;   /* 目录项不算文件 */
+      names.push(name);
+    });
+    return Promise.resolve(names);
+  }
+
+  /* ---------- 导入快照与撤销 ----------
+   * 导入会覆盖同名文件，而写进去就回不来了。所以要能在事后整体还原。
+   *
+   * 快照记两类：
+   *   - 原本就有的：记住旧内容，撤销时写回
+   *   - 原本没有的：记成 null，撤销时删掉
+   * 目录只记"原本不存在"，撤销时删掉（目录里若还有别的文件就不删，
+   *   所以删除前会再查一次是不是空的）。
+   *
+   * 快照只活在内存里：撤销"本次导入"是会话内的动作，
+   * 刷新之后再说撤销没有意义，也不该占用户的持久化空间。 */
+  var importSnap = null;
+
+  function takeImportSnapshot(paths) {
+    var snap = { at: Date.now(), files: [], dirs: [] };
+    paths.forEach(function (p) {
+      if (exists(p)) {
+        var st = stat(p);
+        if (st && st.type === 'dir') { snap.dirs.push(p); return; }
+        snap.files.push({ path: p, prev: read(p) });
+      } else {
+        snap.files.push({ path: p, prev: null });
+      }
+    });
+    importSnap = snap;
+    return snap;
+  }
+
+  function hasImportSnapshot() { return !!importSnap; }
+
+  function rollbackImport() {
+    if (!importSnap) return Promise.resolve(0);
+    var snap = importSnap;
+    importSnap = null;
+    var chain = Promise.resolve();
+    var n = 0;
+    /* 文件：有旧内容就写回，原本没有就删掉 */
+    snap.files.forEach(function (f) {
+      chain = chain.then(function () {
+        if (f.prev === null) {
+          if (!exists(f.path)) return;
+          return remove(f.path).then(function () { n++; }, function () { });
+        }
+        return write(f.path, f.prev).then(function () { n++; }, function () { });
+      });
+    });
+    /* 目录：只有仍然为空才删，避免误删用户后来放进去的东西 */
+    snap.dirs.forEach(function (d) {
+      chain = chain.then(function () {
+        if (!exists(d)) return;
+        var st = stat(d);
+        if (!st || st.type !== 'dir') return;
+        try {
+          var kids = childrenOf ? childrenOf(d) : [];
+          if (kids && kids.length) return;
+        } catch (e) { return; }
+        return remove(d).then(function () { n++; }, function () { });
+      });
+    });
+    return chain.then(function () { emit('rollback'); return n; });
+  }
+
   /* ---------- 导入本地文件 / 文件夹 ---------- */
   /* files: File[]（webkitRelativePath 存在时按目录还原） */
   function importFiles(files) {
@@ -347,6 +425,20 @@
     return JSON.stringify({ v: 1, exported: Date.now(), files: list() }, null, 2);
   }
 
+  /* 只读预览：这个工程包里有哪些文件，不写入任何东西 */
+  function peekPack(text) {
+    var data;
+    try { data = JSON.parse(text); }
+    catch (e) { return Promise.reject(new Error('不是本工具导出的工程文件')); }
+    if (!data || !data.files) return Promise.reject(new Error('不是本工具导出的工程文件'));
+    var names = [];
+    data.files.forEach(function (r) {
+      var p = U.normPath(r.path);
+      if (p) names.push(p);
+    });
+    return Promise.resolve(names);
+  }
+
   function importPack(text) {
     var data = JSON.parse(text);
     if (!data || !data.files) throw new Error('不是本工具导出的工程文件');
@@ -368,6 +460,10 @@
     create: create, write: write, remove: remove, move: move,
     childrenOf: childrenOf, clearAll: clearAll,
     exportZip: exportZip, importZip: importZip,
-    importFiles: importFiles, exportPack: exportPack, importPack: importPack
+    importFiles: importFiles, exportPack: exportPack, importPack: importPack,
+    peekZip: peekZip, peekPack: peekPack,
+    takeImportSnapshot: takeImportSnapshot,
+    hasImportSnapshot: hasImportSnapshot,
+    rollbackImport: rollbackImport
   };
 })(window);

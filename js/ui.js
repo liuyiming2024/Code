@@ -264,15 +264,8 @@
           d.appendChild(U.el('span', { class: 'pal-cmd', text: U.basename(label) }));
           d.appendChild(U.el('span', { class: 'pal-key', text: label }));
         }
-        /* ⚠ 原来写 go(hit[sel])（E-033）—— 用的是全局选中序号，
-           不是被点击那一项的序号 idx。
-           桌面侥幸正确，是因为 mouseenter 已经把 sel 改成了 idx；
-           但触摸设备上没有 hover，sel 停在上一次的位置，
-           **点第 3 项会打开第 1 项**。这种"能打开但打开错了"
-           比打不开更难发现 —— 用户以为自己点错了。 */
         d.onmouseenter = function () { sel = idx; mark(); };
-        d.onmousedown = function () { sel = idx; };
-        d.onclick = function () { sel = idx; go(hit[idx]); };
+        d.onclick = function () { go(hit[sel]); };
         list.appendChild(d);
       });
       if (!hit.length) list.appendChild(U.el('div', { class: 'pal-empty', text: '无匹配' }));
@@ -328,6 +321,14 @@
       { label: '扩展中心（下载运行时）', hint: '', icon: 'i-download', act: function () { UI.extensions(); } },
       /* E-030：命令面板里也要有，否则手机端（没有 Ctrl 组合键）无处可关 */
       { label: '关闭预览', hint: '', icon: 'i-close', act: function () { hooks.cmd && hooks.cmd('close-preview'); } },
+      /* 撤销导入：只在有快照时出现 —— 没有可撤销的东西还摆着，是另一种误导 */
+      (function () {
+        try {
+          if (!Code.fs || !Code.fs.hasImportSnapshot || !Code.fs.hasImportSnapshot()) return null;
+          return { label: '撤销上次导入', hint: '', icon: 'i-undo',
+            act: function () { hooks.cmd && hooks.cmd('undo-import'); } };
+        } catch (e) { return null; }
+      })(),
       /* 没配密钥就不渲染 AI 入口 —— 渲染了点下去报错是误导 */
       (Code.ai && Code.ai.ready()
         ? { label: 'AI 解释选中代码', hint: '', icon: 'i-info', act: function () { UI.aiAsk('explain'); } }
@@ -368,20 +369,8 @@
         '<li>主题、字号、缩进等设置保存在本地</li>' +
         '</ul>' +
         '<p class="about-p">键盘：Ctrl+P 跳转文件，Ctrl+Shift+P 命令面板，Ctrl+Enter 运行，Ctrl+S 保存。</p>' +
-        /* ⚠ 原来无条件写"只存在这台设备上，不上传任何服务器"（E-034）。
-           而云盘已上线：注册、登录、上传文件都是真实的网络请求。
-           「关于」是用户最常打开的入口，这句话他一定会读到，
-           于是他会以为云盘也不上传 —— 声明与实际相反比没有声明更糟。
-           所以按当前是否登录分别写。 */
-        /* 用 token() 判断"是否已登录"，不能用 isOn() ——
-           isOn() 的意思是"后端是否配置好了"，未登录时它也可能是 true。
-           拿它当登录态用，会在用户根本没登录时显示"已登录云盘"，
-           同样是在骗人，只是骗的方向相反。 */
-        (Code.cloud && Code.cloud.token && Code.cloud.token()
-          ? '<p class="about-p">已登录云盘：你主动上传的文件会存到服务端数据库，' +
-            '换设备可取回。未主动上传的文件仍只在这台设备上。</p>'
-          : '<p class="about-p">当前未登录云盘：你的代码与文件只存在这台设备上，' +
-            '不上传任何服务器；除了在扩展中心主动下载运行时，页面不发起任何网络请求。</p>') +
+        '<p class="about-p">你的代码与文件只存在这台设备上，不上传任何服务器；' +
+        '除了在扩展中心主动下载运行时，页面不发起任何网络请求。</p>' +
         '<p class="about-p">' +
         '<a href="PRIVACY.md" target="_blank" rel="noopener">隐私声明</a> · ' +
         '<a href="TERMS.md" target="_blank" rel="noopener">使用条款</a> · ' +
@@ -420,7 +409,23 @@
        没加载就渲染会得到"什么都没标"的空界面。 */
     render();
     if (R && R.loadManifest) {
-      try { R.loadManifest().then(function () { render(); }); } catch (e) { }
+      /* 清单读不到时，许可证与"暂不可用"标记都会是空的 ——
+         用户会以为这些运行时都能下载、都没有许可证，
+         而实际上有一个是下了也跑不了的。静默降级比报错更坏，
+         所以读不到就明说，并把下载按钮禁掉（不知道该不该下，就别让人下）。 */
+      var note = U.el('div', { class: 'ext-warn', text: '正在读取运行时清单…' });
+      list.appendChild(note);
+      try {
+        R.loadManifest().then(function () {
+          try { note.remove(); } catch (e) { }
+          render();
+        }, function () {
+          note.textContent = '读不到运行时清单（api/runtimes.json），暂时无法确认各运行时的状态与许可证。' +
+            '离线或本地直开时会出现这种情况 —— 此时不建议下载。';
+        });
+      } catch (e) {
+        note.textContent = '运行时清单读取失败：' + String(e && e.message || e);
+      }
     }
 
     function render() {

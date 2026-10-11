@@ -42,6 +42,12 @@
       tree.init({ open: openPath, rename: askRename, remove: askRemove, jump: jumpTo });
       ed.init(elWrap());
       runner.init();
+      /* 探一次各运行时的缓存状态，扩展中心才知道谁已下载。
+         失败不影响启动 —— 这只是界面显示用的探测。 */
+      if (Code.runtime && Code.runtime.refreshStatus) {
+        try { Code.runtime.refreshStatus().catch(function () { }); }
+        catch (e) { /* 探测失败只影响扩展中心的显示，不影响编辑器 */ }
+      }
       UI.init({
         open: openPath,
         select: openPath,
@@ -355,6 +361,7 @@
       case 'panel': UI.panel.open(!UI.panel.isOpen()); break;
       case 'clear': runner.clear(); break;
       case 'about': UI.about(); break;
+      case 'extensions': UI.extensions(); break;
     }
   }
 
@@ -442,7 +449,9 @@
     U.$$('#top-menu [data-act]').forEach(function (b) {
       b.onclick = function () {
         var a = b.getAttribute('data-act');
-        if (a === 'about') UI.about(); else command(a);
+        if (a === 'about') UI.about();
+        else if (a === 'extensions') UI.extensions();
+        else command(a);
       };
     });
     var br = U.$('#btn-run'); if (br) br.onclick = doRun;

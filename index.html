@@ -96,6 +96,7 @@
     <button data-act="save"><svg><use href="#i-save"/></svg><span>保存到浏览器</span></button>
     <button data-act="export"><svg><use href="#i-download"/></svg><span>导出工程 ZIP</span></button>
     <button data-act="import"><svg><use href="#i-upload"/></svg><span>导入工程 ZIP</span></button>
+    <button data-act="extensions"><svg><use href="#i-download"/></svg><span>扩展中心</span></button>
     <button data-act="about"><svg><use href="#i-info"/></svg><span>关于</span></button>
   </nav>
   <div class="spacer"></div>
@@ -258,11 +259,16 @@
 <script src="js/fs.js"></script>
 <script src="js/highlight.js"></script>
 <script src="js/editor.js"></script>
+<!-- 按需运行时（前辈的 Worker 方案）：runtimes.js 主线程侧 + rt-worker.js 执行侧 -->
 <script src="js/runtimes.js"></script>
+<script src="js/langs.js"></script>
+<script src="js/runtime.js"></script>
+<script src="js/pylite.js"></script>
+<script src="js/cpplite.js"></script>
 <script src="js/runner.js"></script>
+<script src="js/api.js"></script>
 <script src="js/tree.js"></script>
 <script src="js/ui.js"></script>
-<script src="js/api.js"></script>
 <script src="js/app.js"></script>
 </body>
 </html>

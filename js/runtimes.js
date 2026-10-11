@@ -96,6 +96,12 @@
          hooks || {}, 10 * 60 * 1000);
   }
 
+  /* 只下载不执行。扩展中心的"下载"按钮用这个 ——
+     rt-worker.js 里已有 prepare 分支，这里补上主线程侧的入口。 */
+  function prepare(lang, hooks) {
+    call({ cmd: 'prepare', lang: lang }, hooks || {}, 10 * 60 * 1000);
+  }
+
   function clearCache(onDone) {
     call({ cmd: 'drop' }, {
       cleared: function () { onDone && onDone(); },
@@ -105,6 +111,7 @@
 
   Code.runtimes = {
     run: run,
+    prepare: prepare,
     clearCache: clearCache,
     has: function (lang) { return !!({ sql: 1, python: 1, lua: 1, php: 1, ruby: 1, cpp: 1 })[lang]; },
     label: function (lang) { return LABEL[lang] || lang; },

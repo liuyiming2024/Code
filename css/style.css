@@ -905,3 +905,12 @@ body.has-vkb .mobile-bar { display: none; }   /* 互斥：有键盘就不显示�
 }
 .prog-txt { font-size: 12px; color: var(--fg-2); line-height: 1.6; }
 .prog-txt b { color: var(--fg); }
+
+/* 网络体检结果：等宽、可换行、限高滚动。结论很长，不能挤成一行。 */
+.ext-diag {
+  margin: 8px 0; padding: 10px 12px;
+  background: var(--bg-3, #2a2e35); border-radius: 4px;
+  font-family: var(--mono, monospace); font-size: 12px; line-height: 1.7;
+  white-space: pre-wrap; word-break: break-all;
+  max-height: 240px; overflow: auto; color: var(--fg-2);
+}

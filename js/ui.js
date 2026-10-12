@@ -441,27 +441,34 @@
       return;
     }
     /* 下载失败时最该做的不是重试，而是先弄清楚为什么失败。
-       "NetworkError" 分不清是断网、被拦还是跨域被拒，
-       而这三者的处理方式完全不同。体检按钮一次就能判定。 */
-    var diagBtn = U.el('button', {
-      class: 'btn small', text: '网络体检',
-      onclick: function () {
-        diagBtn.disabled = true;
-        diagBtn.textContent = '体检中…';
+       "NetworkError" 分不清是断网、被拦还是跨域被拒，而这三者处理方式完全不同。
+       体检按钮一次就能判定。
+
+       注意：U.modal 的 actions 只认 {label, primary, onClick} 这类普通对象，
+       不认已经构造好的 DOM 元素 —— 传元素进去的话，modal 会去读 a.label
+       得到 undefined，按钮就变成空白且点不动。
+       所以要传 action 对象，按钮的后续状态改动通过 DOM 查找来做。 */
+    var diagAction = {
+      label: '网络体检',
+      onClick: function () {
         var box = U.$('#ext-diag');
-        if (box) {
-          box.classList.remove('hidden');
-          box.textContent = '正在检测（约几秒）…';
+        var btn = null;
+        var bs = document.querySelectorAll('#modal-actions .btn');
+        for (var i = 0; i < bs.length; i++) {
+          if (/网络体检|重新体检|体检中/.test(bs[i].textContent)) { btn = bs[i]; break; }
         }
+        if (btn) { btn.disabled = true; btn.textContent = '体检中…'; }
+        if (box) { box.classList.remove('hidden'); box.textContent = '正在检测（约几秒）…'; }
+
+        function done() { if (btn) { btn.disabled = false; btn.textContent = '重新体检'; } }
+
         if (!Code.runtimes || !Code.runtimes.diagnose) {
           if (box) box.textContent = '运行时管理模块未加载，无法体检。';
-          diagBtn.disabled = false; diagBtn.textContent = '网络体检';
-          return;
+          done(); return;
         }
         Code.runtimes.diagnose({
           diag: function (r) {
-            diagBtn.disabled = false;
-            diagBtn.textContent = '重新体检';
+            done();
             if (!box) return;
             var head = (r && r.verdict === 'ok') ? '结论：链路正常'
               : (r && r.verdict === 'cors') ? '结论：跨域被拒（CORS）'
@@ -471,7 +478,9 @@
             if (r && r.assetUrl) txt += '\n体检用的地址：' + r.assetUrl;
             if (r && r.steps && r.steps.length) {
               txt += '\n\n分步结果：';
-              r.steps.forEach(function (st) {
+              /* 分步结果可能含 null（某一步的 note 没写成），
+                 直接 st.r 会抛，把整个结果渲染打断。过滤掉再渲染。 */
+              r.steps.filter(function (x) { return x && x.r; }).forEach(function (st) {
                 var x = st.r || {};
                 txt += '\n  · ' + st.name + '：' +
                   (x.ok ? ('成功（状态 ' + x.status + '，' + x.ms + 'ms）')
@@ -481,14 +490,12 @@
             box.textContent = txt;
           },
           fail: function (d) {
-            diagBtn.disabled = false;
-            diagBtn.textContent = '网络体检';
+            done();
             if (box) box.textContent = '体检失败：' + ((d && d.error) || '未知');
           }
         });
       }
-    });
-    rootDiagHolder = diagBtn;
+    };
 
     var close = U.modal({
       title: '扩展中心',
@@ -504,9 +511,10 @@
         '<p class="ext-warn">这些按需运行时尚未经端到端验证：' +
           '下载与加载链路只做过结构断言，实际能否跑出结果一次都没验过。' +
           '建议先试体积最小的 SQLite（约 0.7 MB），它通了就说明整条链路是好的。</p>' +
+        '<pre id="ext-diag" class="ext-diag hidden"></pre>' +
         '<div id="ext-list" class="ext-list"></div>',
       actions: [
-        (function () { return rootDiagHolder; })(),
+        diagAction,
         { label: '关闭', primary: true }
       ]
     });

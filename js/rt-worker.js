@@ -439,23 +439,32 @@ function diagnose() {
   var steps = [];
   var out = { steps: steps };
 
-  function note(name, obj) { steps.push(obj); return obj; }
+  /* 单参数：调用处写的就是 note({...})。
+     签名写成两个参数 (name, obj) 而调用只传一个，obj 就是 undefined，
+     push 进去的是 undefined —— 于是分步结果全空，而结论部分照常显示，
+     看起来像"分步没做"，实际是参数没对上。 */
+  function note(obj) { steps.push(obj); return obj; }
 
   /* 第 1 步：GitHub 本身通不通 */
+  var netOk = false, corsOk = false;
   return probeOnce('https://github.com/', 'no-cors').then(function (a) {
     note({ name: 'GitHub 连通性', mode: 'no-cors', r: a });
     /* 第 2 步：资产直链，no-cors */
     return probeOnce(assetUrl, 'no-cors');
   }).then(function (b) {
+    /* 结果必须存在外层变量里：
+       b 只在当前回调作用域内有效，下一个 then 里直接用 b 会 ReferenceError，
+       于是整个体检在最后一步炸掉，用户只看到"体检未能完成"而没有分步结果。
+       这种错只在真正跑到最后一步时才暴露，静态检查查不出来。 */
     note({ name: '资产直链（不校验跨域）', mode: 'no-cors', r: b });
+    netOk = !!(b && b.ok);
     /* 第 3 步：同一 URL，cors（真实下载用的就是这个） */
     return probeOnce(assetUrl, 'cors');
   }).then(function (c) {
     note({ name: '资产直链（校验跨域，下载实际走的）', mode: 'cors', r: c });
+    corsOk = !!(c && c.ok);
 
     /* 组合判断 */
-    var netOk = b.ok;
-    var corsOk = c.ok;
     if (!netOk) {
       out.verdict = 'network';
       out.text = '网络层就断了：连不校验跨域的请求都发不出去。' +

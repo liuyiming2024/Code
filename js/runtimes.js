@@ -78,7 +78,11 @@
       }, timeoutMs);
     }
     var wrapped = {};
-    ['begin', 'progress', 'ready', 'done', 'fail'].forEach(function (k) {
+    /* 'diag' 必须列在这里。
+       每加一种 Worker 消息类型，都要同步加到这个数组 ——
+       漏了的话消息发出去了但主线程收不到，表现为"点了没反应"，
+       而且不报错（on[k] 不存在就静默跳过），最难查。 */
+    ['begin', 'progress', 'ready', 'done', 'fail', 'diag'].forEach(function (k) {
       wrapped[k] = function (d) {
         if (!pending) return;
         if (k === 'done' || k === 'fail') {

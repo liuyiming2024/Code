@@ -175,12 +175,19 @@ function load(name) {
    classic worker 里可以用动态 import() 加载 ESM ——
    这正是它与 importScripts 的关键区别，别混为一谈。 */
 function loadESM(name) {
-  if (typeof import !== 'function') {
+  /* ⚠ 这里绝不能写 `typeof import !== 'function'` 做特性检测。
+     `import` 是关键字不是标识符 —— Chrome 会把 `typeof import` 解析成
+     静态 import 语句，于是整个 Worker 在【解析阶段】就抛
+     "Cannot use import statement outside a module"，连一行都跑不起来。
+     后果：六种按需运行时一个都下载不了，点下载立刻失败，
+     而报错指向的是 Worker 而非真正的原因。
+     要检测只能间接地做：动态 import() 失败了会走 catch，
+     在那里给出同样清楚的说明。 */
+  return import(urlOf(name)).catch(function (e) {
     return Promise.reject(new Error(
-      '当前 Worker 不支持动态 import()，无法加载 ESM 胶水 ' + name +
-      '。已知影响：Ruby 不可用，其余语言不受影响。'));
-  }
-  return import(urlOf(name));
+      '无法加载 ESM 胶水 ' + name + '：' + String((e && e.message) || e) +
+      '。若浏览器不支持动态 import()，受影响的是 Ruby 与 C++，其余语言不受影响。'));
+  });
 }
 
 /* ================= 各语言执行 ================= */
@@ -381,6 +388,25 @@ var RUNNERS = {
   php: runPHP, ruby: runRuby, cpp: runCpp
 };
 
+/* 把 fetch 的裸错误翻译成人能判断的话。
+   "Failed to fetch" / "NetworkError" 这种话对用户毫无用处 ——
+   他分不清是"我网断了"、"GitHub 挂了"还是"这软件坏了"，
+   于是只会得出一个结论：这软件不能用。
+   所以把最常见几种情况分别说清楚，并给出可执行的下一步。 */
+function explainFetchError(err) {
+  var m = String((err && err.message) || err || '');
+  if (/Failed to fetch|NetworkError|ERR_FAILED|ERR_NETWORK/i.test(m)) {
+    return '下载被网络中断（' + m + '）。常见原因：断网、公司/校园网拦了 GitHub、' +
+      '或浏览器插件拦截。可先确认能否打开 github.com，再重试。' +
+      '已下载的部分会留在缓存里，重试不会从头开始。';
+  }
+  if (/HTTP 4\d\d/.test(m)) {
+    return m + '。资源地址可能已失效，请反馈给作者。';
+  }
+  if (/不支持的压缩方式/.test(m)) return m;
+  return m;
+}
+
 /* ================= 消息入口 ================= */
 
 self.addEventListener('message', function (e) {
@@ -388,7 +414,7 @@ self.addEventListener('message', function (e) {
   if (d.cmd === 'prepare') {
     say('begin', { lang: d.lang, sizeHint: SIZE_HINT[d.lang] || 0 });
     prepare(d.lang).then(function () { say('ready', { lang: d.lang }); },
-                         function (err) { say('fail', { lang: d.lang, error: String(err && err.message || err) }); });
+                         function (err) { say('fail', { lang: d.lang, error: explainFetchError(err) }); });
     return;
   }
   if (d.cmd === 'run') {

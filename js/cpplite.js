@@ -21,13 +21,118 @@
   /* ============================================================
    * 一、分词
    * ============================================================ */
+  /* ============================================================
+   * UB（未定义行为）模拟开关  ——  S-082 / S-083
+   *
+   * 为什么要有这个开关：
+   *   我上一轮建议"UB 一律转明确报错"，审查官指出这条取向是错的，予以收回。
+   *   理由：Code 是**教学与竞赛**工具。真实 C++ 里 UB 不会报错 ——
+   *   int 溢出就回绕、数组越界就读到相邻内存、未初始化变量读到垃圾值。
+   *   如果这里一律明确报错，学生写的程序在 Code 里"很安全"，
+   *   一提交到 OJ 就 WA，而他在 Code 里从来没见过这种错。
+   *   **报错掩盖了真实行为，比不报错更有害。**
+   *
+   * 所以分两档：
+   *   safe  （默认）：明确报错，适合初学与教学 —— 出错了告诉你错在哪
+   *   real          ：真模拟 UB，适合竞赛与进阶 —— 行为贴近 g++
+   *
+   * 危险类（默认 real 才生效，safe 档报错）：
+   *   整数溢出回绕 / 数组越界 / 未初始化变量 / 空指针
+   * 非 UB（IEEE 754 明确规定，两档都按真实行为）：
+   *   浮点除零 → Infinity  （S-078 明确：这条不进开关）
+   * ============================================================ */
+  var UB = {
+    mode: 'safe',
+    set: function (m) { if (m === 'real' || m === 'safe') UB.mode = m; },
+    isReal: function () { return UB.mode === 'real'; },
+    /* 统一入口：安全档抛明确错误，真实档返回 true 表示"继续模拟" */
+    check: function (kind, msg) {
+      if (UB.isReal()) return true;
+      throw cerr('暂不支持（安全模式）：' + msg + '。' +
+        '切换到「真实 UB」模式可模拟真实 C++ 的行为（' + kind + '）');
+    }
+  };
+
+  /* 按真实宽度回绕（S-069 / S-083①）。
+     int 是 32 位、long long 是 64 位 —— 用 JS 的 number 直接算，
+     2147483647+1 会得到 2147483648，而真实 g++ 是 -2147483648。
+     竞赛里溢出是常见陷阱，算错了就是 WA。 */
+  function wrapInt(v, type) {
+    if (typeof v !== 'number' || !isFinite(v)) return v;
+    if (!Number.isInteger(v)) return v;
+    var bits = 32;
+    if (type === 'long long' || type === 'unsigned long long' || type === 'long') bits = 64;
+    if (type === 'short' || type === 'short int') bits = 16;
+    if (type === 'char' || type === 'unsigned char') bits = 8;
+    if (bits === 64) {
+      /* 用 BigInt 精确回绕，避免 2^53 以上精度丢失 */
+      var b = BigInt(Math.trunc(v));
+      var m = 1n << 64n;
+      var r = ((b % m) + m) % m;
+      if (r >= (1n << 63n)) r -= m;
+      return Number(r);
+    }
+    var mod = Math.pow(2, bits);
+    var r2 = ((v % mod) + mod) % mod;
+    if (r2 >= mod / 2) r2 -= mod;
+    return r2;
+  }
+
+  /* 源码里出现过的宏名（#define 的）。
+     记录它们是为了在"变量未定义"时给出正确的原因 ——
+     否则用户永远不知道自己踩的是"不支持预处理"这个限制。 */
+  var MACROS = {};
+
+  /* 吸收连续的类型词构成完整类型名。
+     竞赛里 `long long`、`unsigned long long` 是基础中的基础 ——
+     防溢出全靠它们。只认一个词的话，第二个词会落在变量名位置，
+     报"期望标识符，实际读到 long"，用户会以为自己写错了语法。
+
+     组合规则（最多三段）：
+       long + long          → long long
+       long + double        → long double
+       unsigned + long      → unsigned long
+       unsigned long + long → unsigned long long   ← 三段，竞赛最常用
+       signed   同理
+       short + int          → short int
+     返回是否吸收了一个词。 */
+  function absorbType(parser, type) {
+    if (!parser.at('TYPE')) return null;
+    var nx = parser.peek().v;
+    if (nx === 'const') return null;
+    var parts = type.split(' ');
+    var head = parts[0];
+    var last = parts[parts.length - 1];
+    if ((head === 'unsigned' || head === 'signed')) {
+      if (nx === 'long' && parts.length < 3) { parser.p++; return type + ' long'; }
+      if ((nx === 'int' || nx === 'char' || nx === 'short') && parts.length < 2) { parser.p++; return type + ' ' + nx; }
+      return null;
+    }
+    if (head === 'long' && (nx === 'long' || nx === 'double') && parts.length < 2) { parser.p++; return type + ' ' + nx; }
+    if (head === 'short' && nx === 'int' && parts.length < 2) { parser.p++; return 'short int'; }
+    return null;
+  }
+
   function tokenize(src) {
     var t = [], i = 0, n = src.length;
     while (i < n) {
       var c = src[i];
       if (c === ' ' || c === '\t' || c === '\r' || c === '\n') { i++; continue; }
       /* 预处理指令整行忽略 */
-      if (c === '#') { while (i < n && src[i] !== '\n') i++; continue; }
+      /* ⚠ 预处理指令不能只静默跳过。
+         `#define N 5` 被无声忽略后，用到 N 的地方才报"变量未定义：N" ——
+         用户会以为自己拼错了变量名，翻来覆去找，
+         而真实原因是"我们不支持预处理宏"，这句话从没告诉过他。
+         所以记录所有宏名，等标识符找不到时给出针对性提示。 */
+      if (c === '#') {
+        var ln = '';
+        var j0 = i + 1;
+        while (j0 < n && src[j0] !== '\n') { ln += src[j0]; j0++; }
+        var dm = /^\s*define\s+([A-Za-z_]\w*)/.exec(ln);
+        if (dm) MACROS[dm[1]] = true;
+        i = j0;
+        continue;
+      }
       /* 注释 */
       if (c === '/' && src[i + 1] === '/') { while (i < n && src[i] !== '\n') i++; continue; }
       if (c === '/' && src[i + 1] === '*') { i += 2; while (i < n && !(src[i] === '*' && src[i + 1] === '/')) i++; i += 2; continue; }
@@ -51,7 +156,10 @@
       /* 数字 */
       if (/[0-9]/.test(c) || (c === '.' && /[0-9]/.test(src[i + 1] || ''))) {
         var m = /^(0[xX][0-9a-fA-F]+|(\d+\.?\d*|\.\d+)([eE][+-]?\d+)?)/.exec(src.slice(i));
-        t.push({ t: 'NUM', v: parseFloat(m[0]) });
+        /* ⚠ parseFloat 会把 1.0 变成整数 1，浮点性就此丢失。
+           于是 `1.0/0` 被当成整数除零而报错，真 C++ 却是 inf。
+           保留原始文本，供后面判断"这个字面量是浮点还是整数"。 */
+        t.push({ t: 'NUM', v: parseFloat(m[0]), raw: m[0] });
         i += m[0].length;
         continue;
       }
@@ -85,6 +193,36 @@
   /* ============================================================
    * 二、语法分析
    * ============================================================ */
+  /* 容器类型识别：vector<int> / map<string,int> / set<int>。
+     这些名字不在 TYPES 里，走普通声明解析会当成表达式，
+     报"读到意外的 int"——用户看不出这是"不支持 vector"。
+     所以单独识别，并明确告诉用户支持到什么程度。 */
+  function isContainerName(v) {
+    return v === 'vector' || v === 'map' || v === 'set' || v === 'unordered_map' ||
+           v === 'unordered_set' || v === 'deque' || v === 'stack' || v === 'queue' ||
+           v === 'priority_queue' || v === 'pair' || v === 'list';
+  }
+
+  function parseContainerDecl(parser) {
+    /* 只在"NAME < ... > NAME"这个形状下才认，避免误判比较表达式 */
+    if (!parser.at('NAME') || !isContainerName(parser.peek().v)) return null;
+    var save = parser.p;
+    var kind = parser.next().v;
+    if (!parser.atOp('<')) { parser.p = save; return null; }
+    parser.p++;
+    var depth = 1, elem = [];
+    while (depth > 0 && !parser.at('EOF')) {
+      var t = parser.peek();
+      if (t.t === 'OP' && t.v === '<') depth++;
+      if (t.t === 'OP' && t.v === '>') { depth--; if (depth === 0) { parser.p++; break; } }
+      elem.push(t.v); parser.p++;
+    }
+    if (depth !== 0) { parser.p = save; return null; }
+    /* 后面必须跟标识符才是声明 */
+    if (!parser.at('NAME')) { parser.p = save; return null; }
+    return { kind: kind, elem: elem.join('') };
+  }
+
   function Parser(t) { this.t = t; this.p = 0; }
   Parser.prototype = {
     peek: function (k) { return this.t[this.p + (k || 0)]; },
@@ -99,7 +237,24 @@
       }
     },
 
+
+    /* 预扫描：先把所有 struct 名收集起来。
+       解析器遇到 `P p;` 时要知道 P 是类型而不是表达式 ——
+       而 struct 定义可能出现在文件后面，不预扫描就认不出来。
+       C++ 里这叫前置声明问题，这里用一次轻量扫描解决。 */
+    prescanStructs: function () {
+      var names = {}, i = 0, n = this.t.length;
+      while (i < n) {
+        if (this.t[i].t === 'KW' && (this.t[i].v === 'struct' || this.t[i].v === 'class')) {
+          if (i + 1 < n && this.t[i + 1].t === 'NAME') names[this.t[i + 1].v] = true;
+        }
+        i++;
+      }
+      return names;
+    },
+
     parse: function () {
+      this.structNames = this.prescanStructs();
       var out = [];
       while (!this.at('EOF')) {
         if (this.eat('OP', ';')) continue;
@@ -108,12 +263,151 @@
       return { type: 'Program', body: out };
     },
 
+    /* 容器变量声明：vector<int> v; / vector<int> v(10); / map<string,int> m; */
+    containerVarDecl: function (cdecl) {
+      var name = this.next().v;
+      var init = null;
+      /* vector<int> v(10) 或 v(10, 0) —— 构造参数 */
+      if (this.atOp('(')) {
+        this.p++;
+        var a1 = null, a2 = null;
+        if (!this.atOp(')')) a1 = this.assign();
+        if (this.eat('OP', ',')) a2 = this.assign();
+        this.expect('OP', ')');
+        init = { type: 'CtorArgs', a: a1, b: a2 };
+      } else if (this.eat('OP', '=')) {
+        init = this.assign();
+      }
+      this.expect('OP', ';');
+      return { type: 'ContainerDecl', kind: cdecl.kind, elem: cdecl.elem, name: name, init: init };
+    },
+
+    /* switch 语句（S-073）。竞赛里状态机、菜单类题目常用。 */
+    switchStmt: function () {
+      this.next();   /* switch */
+      this.expect('OP', '(');
+      var disc = this.expr();
+      this.expect('OP', ')');
+      this.expect('OP', '{');
+      var cases = [], def = null, cur = null;
+      while (!this.atOp('}') && !this.at('EOF')) {
+        if (this.at('KW', 'case')) {
+          this.p++;
+          var cv = this.expr();
+          this.expect('OP', ':');
+          cur = { test: cv, body: [] };
+          cases.push(cur);
+          continue;
+        }
+        if (this.at('KW', 'default')) {
+          this.p++;
+          this.expect('OP', ':');
+          def = { body: [] };
+          cur = def;
+          continue;
+        }
+        var st = this.statement();
+        if (st) (cur ? cur.body : (def && def.body) || []).push(st);
+      }
+      this.expect('OP', '}');
+      return { type: 'Switch', disc: disc, cases: cases, def: def };
+    },
+
+    /* struct 变量声明：P p;  /  P arr[10]; */
+    structVarDecl: function (typeName) {
+      this.p++;   /* 类型名 */
+      var name = this.next().v;
+      var sizes = null;
+      while (this.atOp('[')) {
+        this.p++;
+        (sizes || (sizes = [])).push(this.atOp(']') ? null : this.expr());
+        this.expect('OP', ']');
+      }
+      this.expect('OP', ';');
+      return { type: 'StructVarDecl', typeName: typeName, name: name, sizes: sizes };
+    },
+
+    /* struct 声明：struct P { int x; int y; }; */
+    structDecl: function () {
+      this.next();  /* 吃掉 struct / class */
+      var nameTok = this.peek();
+      if (!this.at('NAME')) throw cerr('struct 后面需要名字');
+      var name = this.next().v;
+      /* 前置声明 struct P; —— 只登记名字，成员未知 */
+      if (this.eat('OP', ';')) return { type: 'StructDecl', name: name, fields: null };
+      this.expect('OP', '{');
+      var fields = [];
+      while (!this.atOp('}') && !this.at('EOF')) {
+        /* 成员声明：类型 名字;  —— 同样支持 long long */
+        while (this.at('TYPE') && (this.peek().v === 'const' || this.peek().v === 'unsigned' || this.peek().v === 'signed')) this.p++;
+        var ftype = this.at('TYPE') ? this.next().v : 'int';
+        while (this.at('TYPE') && this.peek().v !== 'const') {
+          var nx3 = this.peek().v;
+          if (ftype === 'long' && (nx3 === 'long' || nx3 === 'double')) { ftype += ' ' + nx3; this.p++; }
+          else if (ftype === 'unsigned' && (nx3 === 'long' || nx3 === 'int' || nx3 === 'char' || nx3 === 'short')) { ftype += ' ' + nx3; this.p++; }
+          else break;
+        }
+        var fname = this.next().v;
+        var farr = null;
+        while (this.atOp('[')) {
+          this.p++;
+          (farr || (farr = [])).push(this.atOp(']') ? null : this.expr());
+          this.expect('OP', ']');
+        }
+        this.expect('OP', ';');
+        fields.push({ name: fname, type: ftype, sizes: farr });
+      }
+      this.expect('OP', '}');
+      this.eat('OP', ';');   /* struct 定义后的分号可省，但不能报错 */
+      return { type: 'StructDecl', name: name, fields: fields };
+    },
+
     topLevel: function () {
       /* using namespace std; */
       if (this.at('KW', 'using')) { while (!this.atOp(';') && !this.at('EOF')) this.p++; this.eat('OP', ';'); return { type: 'Pass' }; }
+      /* typedef int ll; —— 竞赛里 ll 几乎人手一个。
+         不认它会报"无法识别的声明"，用户以为自己写错了。 */
+      if (this.at('KW', 'typedef')) {
+        this.p++;
+        var bt = this.next().v;
+        while (this.at('TYPE') && this.peek().v !== 'const') {
+          var nxb = this.peek().v;
+          if (bt === 'long' && (nxb === 'long' || nxb === 'double')) { bt += ' ' + nxb; this.p++; }
+          else if (bt === 'unsigned' && (nxb === 'long' || nxb === 'int' || nxb === 'char' || nxb === 'short')) { bt += ' ' + nxb; this.p++; }
+          else break;
+        }
+        var alias = this.next().v;
+        this.expect('OP', ';');
+        (this.aliases || (this.aliases = {}))[alias] = bt;
+        return { type: 'Pass' };
+      }
       if (this.at('KW', 'namespace') || this.at('KW', 'template')) throw cerr('暂不支持：' + this.peek().v);
-      if (this.at('KW', 'struct') || this.at('KW', 'class') || this.at('KW', 'enum') || this.at('KW', 'union')) {
+      if (this.at('KW', 'struct') || this.at('KW', 'class')) {
+        return this.structDecl();
+      }
+      if (this.at('KW', 'enum') || this.at('KW', 'union')) {
         throw cerr('暂不支持：' + this.peek().v + '（本环境只支持基础类型、数组与函数）');
+      }
+      var cdecl = parseContainerDecl(this);
+      if (cdecl) return this.containerVarDecl(cdecl);
+      /* typedef 的别名当类型用：`ll x = 5;` */
+      if (this.at('NAME') && this.aliases && this.aliases[this.peek().v]) {
+        var al = this.peek().v;
+        var saveA = this.p;
+        this.p++;   /* 吃掉别名 */
+        if (this.at('NAME')) {
+          var an = this.next().v;
+          var declsA = [this.varDeclarator(this.aliases[al], an)];
+          while (this.eat('OP', ',')) { var an2 = this.next().v; declsA.push(this.varDeclarator(this.aliases[al], an2)); }
+          this.expect('OP', ';');
+          return { type: 'VarDecl', decls: declsA };
+        }
+        this.p = saveA;
+      }
+      /* struct 类型的变量声明：`P p;` / `P arr[10];` */
+      if (this.at('NAME') && this.structNames && this.structNames[this.peek().v] &&
+          this.t[this.p + 1] && this.t[this.p + 1].t === 'NAME') {
+        return this.structVarDecl(this.peek().v);
       }
       return this.funcOrDecl();
     },
@@ -121,9 +415,24 @@
     /* 识别函数定义：类型 名字 ( ... ) { */
     funcOrDecl: function () {
       if (!this.at('TYPE') && !this.at('NAME')) throw cerr('无法识别的声明');
-      /* 可能带 const / unsigned */
-      while (this.at('TYPE') && (this.peek().v === 'const' || this.peek().v === 'unsigned' || this.peek().v === 'signed')) this.p++;
+      /* const 是限定词，跳过；unsigned / signed 是主类型的一部分，
+         ⚠ 不能再无条件跳过 —— `unsigned x = 5;` 跳掉 unsigned 后
+         就剩下 `x = 5`，报"期望标识符，实际读到 ="，
+         而这个措辞会让用户以为自己写错了语法。 */
+      while (this.at('TYPE') && this.peek().v === 'const') this.p++;
+      /* ⚠ 必须循环吸收连续的类型词：`long long`、`unsigned long long`、
+         `long double` 都是两个词组成一个类型。
+         只吃第一个的话，第二个 `long` 会被当成变量名位置去解析，
+         于是报"期望标识符，实际读到 long"——
+         而 long long 是竞赛里最基础的类型（防 int 溢出），
+         报这个错等于大部分数论题都跑不了。 */
       var type = this.at('TYPE') ? this.next().v : 'auto';
+      /* 用统一的 absorbType，避免各写一份规则导致行为不一致 */
+      while (this.at('TYPE')) {
+        var nt2 = absorbType(this, type);
+        if (!nt2) break;
+        type = nt2;
+      }
       var nameTok = this.peek();
       if (!this.at('NAME')) throw cerr('期望标识符，实际读到 ' + (nameTok && nameTok.v));
       var name = this.next().v;
@@ -216,17 +525,49 @@
           case 'return': return this.returnStmt();
           case 'break': this.p++; this.expect('OP', ';'); return { type: 'Break' };
           case 'continue': this.p++; this.expect('OP', ';'); return { type: 'Continue' };
-          case 'switch': throw cerr('暂不支持：switch');
+          case 'switch': return this.switchStmt();
           case 'try': case 'catch': case 'throw': throw cerr('暂不支持：' + t.v);
           case 'new': case 'delete': throw cerr('暂不支持：' + t.v + '（本环境无动态内存）');
         }
       }
       /* using namespace std; */
       if (this.at('KW', 'using')) { while (!this.atOp(';') && !this.at('EOF')) this.p++; this.eat('OP', ';'); return null; }
+      /* 局部声明：容器（vector / map / set …） */
+      var cdecl2 = parseContainerDecl(this);
+      if (cdecl2) return this.containerVarDecl(cdecl2);
+      /* 局部的 typedef 别名：`ll x = 5;`（函数体内最常见） */
+      if (this.at('NAME') && this.aliases && this.aliases[this.peek().v]) {
+        var al2 = this.peek().v;
+        var saveB = this.p;
+        this.p++;
+        if (this.at('NAME')) {
+          var an3 = this.next().v;
+          var declsB = [this.varDeclarator(this.aliases[al2], an3)];
+          while (this.eat('OP', ',')) { var an4 = this.next().v; declsB.push(this.varDeclarator(this.aliases[al2], an4)); }
+          this.expect('OP', ';');
+          return { type: 'VarDecl', decls: declsB };
+        }
+        this.p = saveB;
+      }
+      /* struct 类型的局部变量：`P p;` */
+      if (this.at('NAME') && this.structNames && this.structNames[this.peek().v] &&
+          this.t[this.p + 1] && this.t[this.p + 1].t === 'NAME') {
+        return this.structVarDecl(this.peek().v);
+      }
       /* 局部声明 */
       if (this.at('TYPE')) {
-        while (this.at('TYPE') && (this.peek().v === 'const' || this.peek().v === 'unsigned' || this.peek().v === 'signed')) this.p++;
+        while (this.at('TYPE') && this.peek().v === 'const') this.p++;
         var ty = this.next().v;
+        /* 多词类型：long long / unsigned long long / long double。
+           函数体内的 `long long ans = 0;` 是竞赛代码里最常见的写法，
+           只吃第一个词的话第二个 `long` 会落在变量名位置，
+           报"期望标识符，实际读到 long" —— 看起来像用户写错了，
+           实际是我们没认全这个类型。 */
+        while (this.at('TYPE')) {
+          var nt3 = absorbType(this, ty);
+          if (!nt3) break;
+          ty = nt3;
+        }
         /* int *p —— 星号在变量名之前，必须先看，否则会当成"期望标识符"报错，
            用户看到的是语法错而不是"不支持指针" */
         if (this.atOp('*')) throw cerr('暂不支持：指针（本环境无地址与内存操作）');
@@ -417,18 +758,31 @@
         /* << 与 >> 必须左结合。右操作数解析期间要关掉流运算符：
            否则 unary() 内部又走到 postfix，继续吃掉后面的 <<，
            结果 cout << "hi" << 42 变成 cout << ("hi" << 42)，中间的项全丢。 */
-        if (!this.noStream && this.atOp('<<')) {
+        /* ⚠ 右操作数必须用 additive() 而不是 unary()。
+           用 unary() 的话 `cout << a+b` 只吃掉 a，
+           输出 3 而不是 10 —— 而这是竞赛里最常见的写法之一。
+           C++ 中 + 的优先级高于 <<，所以右操作数应包含加减层级。
+           仍需 noStream 保护：否则 `cout << a << b` 会被后面的 << 吃掉。 */
+        /* ⚠ `<<` / `>>` 既是流运算符也是位移。
+           必须靠左操作数区分：只有左边是 cin / cout 时才当流。
+           不区分的话 `n >> 1`（快速幂、状压 DP 的核心写法）
+           会被当成 cin 解析，报"暂不支持的赋值目标" ——
+           而这个写法在竞赛里和 cin >> x 一样常见。 */
+        var isStreamObj = (e && e.type === 'Name' && (e.name === 'cin' || e.name === 'cout' ||
+                          e.name === 'cerr' || e.name === 'endl')) ||
+                          (e && (e.type === 'Cout' || e.type === 'Cin'));
+        if (!this.noStream && isStreamObj && this.atOp('<<')) {
           this.p++;
           this.noStream = true;
-          var r = this.unary();
+          var r = this.additive();
           this.noStream = false;
           e = { type: 'Cout', left: e, right: r };
           continue;
         }
-        if (!this.noStream && this.atOp('>>')) {
+        if (!this.noStream && isStreamObj && this.atOp('>>')) {
           this.p++;
           this.noStream = true;
-          var r2 = this.unary();
+          var r2 = this.additive();
           this.noStream = false;
           e = { type: 'Cin', left: e, right: r2 };
           continue;
@@ -440,12 +794,41 @@
     primary: function () {
       var t = this.peek();
       if (this.atOp('(')) {
+        /* C 风格强制转换：(int)x 、(long long)n。
+           竞赛里 `c[(int)s[i]]` 这种字符转下标很常见，
+           不认这个语法会报"读到意外的 int"，用户根本看不出是转换的问题。 */
+        var nt = this.t[this.p + 1];
+        if (nt && nt.t === 'TYPE') {
+          var save2 = this.p;
+          this.p++;
+          var ctype = this.next().v;
+          while (this.at('TYPE') && this.peek().v !== 'const') {
+            var nx4 = this.peek().v;
+            if (ctype === 'long' && (nx4 === 'long' || nx4 === 'double')) { ctype += ' ' + nx4; this.p++; }
+            else if (ctype === 'unsigned' && (nx4 === 'long' || nx4 === 'int' || nx4 === 'char' || nx4 === 'short')) { ctype += ' ' + nx4; this.p++; }
+            else break;
+          }
+          if (this.atOp(')')) {
+            this.p++;
+            var inner = this.unary();
+            return { type: 'Cast', ctype: ctype, v: inner };
+          }
+          this.p = save2;   /* 不是转换，回退按普通括号处理 */
+        }
         this.p++;
         var e = this.expr();
         this.expect('OP', ')');
         return e;
       }
-      if (t.t === 'NUM') { this.p++; return { type: 'Num', v: t.v }; }
+      /* ⚠ 字面量必须区分整数与浮点。
+         `1.0/0` 里如果 1.0 被当成整数 1，就会走整数除零分支报错，
+         而真 C++ 打印的是 inf —— 这条错会让学生以为浮点除零会崩。 */
+      if (t.t === 'NUM') {
+        this.p++;
+        var raw = String(t.raw !== undefined ? t.raw : t.v);
+        var flt = /[.eE]/.test(raw);
+        return { type: 'Num', v: t.v, isFloat: flt };
+      }
       if (t.t === 'STR') { this.p++; return { type: 'Str', v: t.v }; }
       if (t.t === 'CHAR') { this.p++; return { type: 'Char', v: t.v }; }
       if (t.t === 'KW' && (t.v === 'nullptr')) { this.p++; return { type: 'Null' }; }
@@ -477,6 +860,13 @@
   Scope.prototype.get = function (n) {
     var s = this;
     while (s) { if (n in s.v) return s.v[n]; s = s.parent; }
+    /* 未定义时先查是不是 #define 过的宏 ——
+       告诉用户"这是宏，而我们不支持预处理"，
+       比让他盯着"变量未定义"怀疑自己拼错要有用得多。 */
+    if (MACROS[n]) {
+      throw cerr('变量未定义：' + n + '。注意：源码里有 `#define " + n + "`，' +
+        '本环境暂不支持预处理宏（#define），请用常量或 enum 代替');
+    }
     throw cerr('变量未定义：' + n);
   };
   /* 赋值：沿链找到已存在的那一层再改。只写当前层的话，
@@ -489,7 +879,14 @@
   /* 声明：必须落在当前层，否则 for(int i...) 会去改外层同名变量 */
   Scope.prototype.declare = function (n, val) { this.v[n] = val; };
 
-  function CBreak() { } function CContinue() { } function CReturn(v) { this.value = v; }
+  /* 控制流信号用异常实现。
+     ⚠ 必须带可识别的标记 —— 否则 switch / 循环分不清是哪个信号，
+     只能靠 `instanceof` 或字符串比较，容易漏。
+     给每个信号一个 __break / __continue / __return 标记，
+     捕获方一眼能认出来。 */
+  function CBreak() { this.__break = true; }
+  function CContinue() { this.__continue = true; }
+  function CReturn(v) { this.value = v; this.__return = true; }
 
   function Interp(out, input) {
     this.out = out || function () { };
@@ -498,6 +895,10 @@
     this.deadline = 0;
     this.global = new Scope(null);
     this.funcs = {};
+
+    this.inBuf = [];   /* cin 的输入词缓冲，跨多次 >> 共享 */
+
+    this.structs = {};   /* struct 名 → 字段列表 */
     this.install();
   }
 
@@ -560,12 +961,89 @@
       this.funcs.ceil = { builtin: Math.ceil };
       this.funcs.round = { builtin: Math.round };
       this.funcs.scanf = { builtin: function () { return 0; } };
+
+      /* ================= 竞赛常用算法 =================
+       * sort 是竞赛里用得最多的函数，没有之一。以前报"暂不支持的函数：sort"，
+       * 等于绝大多数题都跑不了。
+       *
+       * 这里支持三种调用形式（真实竞赛代码里都会出现）：
+       *   sort(a)          —— 整个数组
+       *   sort(a, n)       —— 前 n 个元素
+       *   sort(a, l, r)    —— 下标 [l, r)
+       * 数组是原地排序（C++ 语义就是原地），返回排序后的数组以便链式使用。
+       */
+      this.funcs.sort = {
+        builtin: function (a, b, c) {
+          if (!Array.isArray(a)) throw cerr('sort 的第一个参数必须是数组');
+          var arr = a;
+          var l = 0, r = arr.length;
+          if (typeof b === 'number') {
+            /* sort(a, n)：第二个参数是个数 */
+            if (c === undefined) { l = 0; r = Math.min(b, arr.length); }
+            /* sort(a, l, r)：左闭右开区间 */
+            else { l = b; r = Math.min(c, arr.length); }
+          }
+          var part = arr.slice(l, r).sort(function (x, y) {
+            if (typeof x === 'number' && typeof y === 'number') return x - y;
+            return String(x) < String(y) ? -1 : (String(x) > String(y) ? 1 : 0);
+          });
+          for (var i = 0; i < part.length; i++) arr[l + i] = part[i];
+          return arr;
+        }
+      };
+
+      /* reverse：与 sort 同级的常用操作 */
+      this.funcs.reverse = {
+        builtin: function (a) {
+          if (!Array.isArray(a)) throw cerr('reverse 的参数必须是数组');
+          a.reverse();
+          return a;
+        }
+      };
+
+      /* lower_bound / upper_bound：二分查找，返回下标（找不到返回长度） */
+      /* lower_bound 有两种常见写法，都得支持：
+           lower_bound(a, a+n, v)  —— STL 迭代器风格（三个参数）
+           lower_bound(a, n, v)    —— 数组 + 长度 + 值（竞赛简化写法）
+         只支持一种的话，另一种会静默返回错的下标 ——
+         而二分查找错了不会报错，只会给出错误答案。 */
+      function boundHelper(a, b, c, inclusive) {
+        var arr = a, lo = 0, hi, v;
+        if (Array.isArray(a)) {
+          if (c === undefined) { hi = arr.length; v = b; }
+          else { lo = 0; hi = Math.min(b, arr.length); v = c; }
+        } else throw cerr('lower_bound / upper_bound 的第一个参数必须是数组');
+        while (lo < hi) {
+          var mid = (lo + hi) >> 1;
+          if (inclusive ? (arr[mid] <= v) : (arr[mid] < v)) lo = mid + 1; else hi = mid;
+        }
+        return lo;
+      }
+      this.funcs.lower_bound = { builtin: function (a, b, c) { return boundHelper(a, b, c, false); } };
+      this.funcs.upper_bound = { builtin: function (a, b, c) { return boundHelper(a, b, c, true); } };
+
+      /* __gcd：数论常用（<algorithm> 里实际叫 std::gcd，竞赛常写 __gcd） */
+      this.funcs.__gcd = {
+        builtin: function (a, b) {
+          a = Math.abs(Math.round(a)); b = Math.abs(Math.round(b));
+          while (b) { var t = b; b = a % b; a = t; }
+          return a;
+        }
+      };
+      this.funcs.gcd = this.funcs.__gcd;
     },
 
     str: function (v) {
       if (v === null || v === undefined) return 'null';
       if (typeof v === 'boolean') return v ? 'true' : 'false';
-      if (typeof v === 'number') return String(Math.round(v * 1e10) / 1e10);
+      /* 整数直接输出。
+         以前统一走 Math.round(v*1e10)/1e10，超过 2^53 精度的大整数
+         会被表示成 7778742049.000001 —— 而 long long 输出的正是这类数，
+         竞赛答案错一位就是 WA，这种"看起来差不多"的输出最危险。 */
+      if (typeof v === 'number') {
+        if (Number.isInteger(v)) return String(v);
+        return String(Math.round(v * 1e10) / 1e10);
+      }
       if (typeof v === 'string') return v;
       if (Array.isArray(v)) return '[' + v.map(this.str, this).join(', ') + ']';
       return String(v);
@@ -598,18 +1076,124 @@
       switch (node.type) {
         case 'Pass': return null;
         case 'Block': return this.execBlock(node.body, scope);
+        /* struct 定义：登记字段，供后面 P p; 使用 */
+        case 'StructDecl':
+          if (node.fields) self.structs[node.name] = node.fields;
+          else if (!self.structs[node.name]) self.structs[node.name] = [];
+          return null;
+
+        /* 容器声明：vector / map / set。
+           值统一用 JS 数组表示（map 用带 __map 标记的对象），
+           这样现有的下标读写、sort、循环遍历都能直接复用。 */
+        case 'ContainerDecl': {
+          var val2;
+          if (node.kind === 'map' || node.kind === 'unordered_map') {
+            val2 = { __map: true, data: {} };
+          } else if (node.kind === 'set' || node.kind === 'unordered_set') {
+            /* set 也用数组表示（去重 + 排序语义在写入时维护） */
+            val2 = [];
+          } else {
+            /* vector / deque / stack / queue / priority_queue / list 都用数组 */
+            val2 = [];
+            if (node.init && node.init.type === 'CtorArgs' && node.init.a !== null) {
+              var cnt = self.eval(node.init.a, scope) | 0;
+              var fill = node.init.b !== null ? self.eval(node.init.b, scope) : 0;
+              for (var ci = 0; ci < cnt; ci++) val2.push(fill);
+            } else if (node.init) {
+              var iv = self.eval(node.init, scope);
+              if (Array.isArray(iv)) val2 = iv.slice();
+            }
+          }
+          scope.declare(node.name, val2);
+          return null;
+        }
+
+        /* struct 变量：按登记的字段建对象，数值字段默认 0 */
+        case 'StructVarDecl': {
+          var fields = self.structs[node.typeName] || [];
+          var mkInst = function () {
+            var o = { __struct: true, __type: node.typeName };
+            fields.forEach(function (f) {
+              o[f.name] = (f.type === 'char') ? '' : (f.type === 'string' ? '' : 0);
+            });
+            return o;
+          };
+          if (node.sizes) {
+            var cnt2 = self.eval(node.sizes[0] || { type: 'Num', v: 0 }, scope) | 0;
+            var arr2 = [];
+            for (var si = 0; si < cnt2; si++) arr2.push(mkInst());
+            scope.declare(node.name, arr2);
+          } else {
+            scope.declare(node.name, mkInst());
+          }
+          return null;
+        }
+
+        /* switch：找匹配的 case，穿透（fallthrough）到下一个 break。
+           C++ 的 switch 是穿透的 —— 不实现穿透的话，
+           `case 1: case 2: ...` 这种合并写法会失效。 */
+        case 'Switch': {
+          var dv = self.eval(node.disc, scope);
+          var idx3 = -1;
+          for (var k3 = 0; k3 < node.cases.length; k3++) {
+            if (self.eval(node.cases[k3].test, scope) === dv) { idx3 = k3; break; }
+          }
+          if (idx3 < 0 && node.def) idx3 = node.cases.length;  /* default 放最后 */
+          if (idx3 < 0) return null;
+          /* ⚠ 不能直接用 execBlock —— 它会把 break 的返回值丢掉，
+             于是 switch 永远不会在 break 处停下，一路穿透到底。
+             所以自己逐条执行并检查返回值。 */
+          for (var k4 = idx3; k4 <= node.cases.length; k4++) {
+            var blk = (k4 === node.cases.length) ? (node.def ? node.def.body : null) : node.cases[k4].body;
+            if (!blk) continue;
+            /* break / continue 是**抛异常**实现的（CBreak / CContinue），
+               不是返回值 —— 所以用 try/catch 接，检查返回值是接不到的。
+               不接住的话 break 会一路穿到最外层，
+               表现为 switch 之后的代码全都不执行。 */
+            var broke = false;
+            try {
+              for (var bi = 0; bi < blk.length; bi++) self.exec(blk[bi], scope);
+            } catch (e5) {
+              if (e5 && e5.__break) broke = true;
+              else if (e5 && e5.__continue) return null;
+              else throw e5;   /* return 信号继续往外传 */
+            }
+            if (broke) return null;
+            /* default 段执行完就不再穿透 */
+            if (k4 === node.cases.length) break;
+          }
+          return null;
+        }
+
         case 'VarDecl':
           node.decls.forEach(function (d) {
             var val;
             if (d.sizes) {
               /* 初始化列表是 AST 节点（InitList），先求值再取长度 */
               var initArr = d.init ? self.eval(d.init, scope) : null;
-              if (initArr !== null && !Array.isArray(initArr)) initArr = [initArr];
-              var n0 = initArr ? initArr.length : (d.sizes[0] ? self.eval(d.sizes[0], scope) : 0);
-              val = new Array(Math.max(0, n0 | 0));
-              var def = d.type === 'char' ? '' : 0;
-              for (var i = 0; i < val.length; i++) val[i] = def;
-              if (initArr) for (var j = 0; j < initArr.length && j < val.length; j++) val[j] = initArr[j];
+              var dims = d.sizes.map(function (z) { return z ? (self.eval(z, scope) | 0) : 0; });
+              /* 多维数组（S-075）：int a[2][2] —— 按维度递归建嵌套数组。
+                 竞赛里二维 DP、矩阵题全靠它，不支持等于这类题都写不了。 */
+              var build = function (k) {
+                var n1 = Math.max(0, dims[k] || 0);
+                var arr9 = new Array(n1);
+                var def0 = d.type === 'char' ? '' : 0;
+                if (k < dims.length - 1) {
+                  for (var q = 0; q < n1; q++) arr9[q] = build(k + 1);
+                } else {
+                  for (var q2 = 0; q2 < n1; q2++) arr9[q2] = def0;
+                }
+                return arr9;
+              };
+              val = dims.length > 1 ? build(0) : null;
+              if (!val) {
+                if (initArr !== null && !Array.isArray(initArr)) initArr = [initArr];
+                var n0 = initArr ? initArr.length : (dims[0] || 0);
+                val = new Array(Math.max(0, n0 | 0));
+                var def = d.type === 'char' ? '' : 0;
+                for (var i = 0; i < val.length; i++) val[i] = def;
+                if (initArr) for (var j = 0; j < initArr.length && j < val.length; j++) val[j] = initArr[j];
+              }
             } else {
               val = d.init ? self.eval(d.init, scope) : (d.type === 'char' ? '' : 0);
               if (d.type === 'int' && typeof val === 'number') val = Math.trunc(val);
@@ -703,8 +1287,33 @@
         case 'Bool': return node.v;
         case 'Null': return null;
         case 'Name':
-          try { return scope.get(node.name); } catch (e) { throw cerr('变量未定义：' + node.name); }
+          try { return scope.get(node.name); } catch (e) {
+            /* 与 Scope.get 里同样的宏提示。
+               表达式里用到宏（`int x = N;`）走的是这里，
+               只在 Scope.get 里加提示的话，这个最常见的场景反而漏了。 */
+            if (MACROS[node.name]) {
+              throw cerr('变量未定义：' + node.name + '。' +
+                '注意：源码里有 #define ' + node.name + '，' +
+                '本环境暂不支持预处理宏，请用常量或 enum 代替');
+            }
+            throw cerr('变量未定义：' + node.name);
+          }
         case 'BinOp': return this.binop(node, scope);
+        /* Logic 节点（&& / ||）与 BinOp 是两种节点类型。
+           只接了 BinOp 的话，`a==0 || b==1` 这种最常见的条件判断
+           会报"暂不支持的表达式：Logic" —— 而它在 if 里无处不在。 */
+        case 'Logic': return this.binop(node, scope);
+        case 'Cast': {
+          var cv = this.eval(node.v, scope);
+          if (node.ctype === 'int' || node.ctype === 'long' || node.ctype === 'long long' ||
+              node.ctype === 'short' || node.ctype === 'char' || node.ctype === 'unsigned') {
+            if (typeof cv === 'string' && cv.length === 1) return cv.charCodeAt(0);
+            return Math.trunc(Number(cv)) || 0;
+          }
+          if (node.ctype === 'double' || node.ctype === 'float' || node.ctype === 'long double') return Number(cv);
+          if (node.ctype === 'string') return this.str(cv);
+          return cv;
+        }
         case 'Unary':
           if (node.op === '!') return !this.truthy(this.eval(node.v, scope));
           if (node.op === '-') return -this.eval(node.v, scope);
@@ -730,31 +1339,131 @@
           var arr = this.eval(node.obj, scope);
           var i = this.eval(node.index, scope);
           if (typeof arr === 'string') return arr[i | 0];
+          if (arr && typeof arr === 'object' && arr.__map) {
+            var mk2 = String(i);
+            return (mk2 in arr.data) ? arr.data[mk2] : 0;
+          }
           if (!Array.isArray(arr)) throw cerr('不是数组：' + this.str(arr));
-          return arr[i | 0];
+          var ix = i | 0;
+          /* 越界读（S-077 / S-063）。安全档明确报错；
+             真实档返回 undefined（模拟"读到不确定的值"，真实 C++ 是 UB） */
+          if (ix < 0 || ix >= arr.length) {
+            UB.check('数组越界', '下标 ' + ix + ' 越界（数组长度 ' + arr.length + '）');
+            return undefined;
+          }
+          return arr[ix];
         }
         case 'Call': return this.doCall(node, scope);
         case 'Cout': return this.doCout(node, scope);
         case 'Cin': return this.doCin(node, scope);
-        case 'Member': throw cerr('暂不支持：结构体 / 类成员访问');
+        /* vector 的方法。竞赛里 vector 用得极多，
+           而它的 .size() / .push_back() 都是成员调用 ——
+           不支持成员访问，等于 vector 整体不可用。 */
+        case 'Member': {
+          var obj = this.eval(node.obj, scope);
+          if (node.arrow) throw cerr('暂不支持：-> 运算符（本环境无指针）');
+          /* string 的方法。s.length() 是竞赛里最常用的字符串操作，
+             不支持的话连最基本的字符串处理都做不了。 */
+          if (typeof obj === 'string') {
+            var sm = {
+              size: function () { return obj.length; },
+              length: function () { return obj.length; },
+              empty: function () { return obj.length === 0; },
+              substr: function (a, b) { return (b === undefined) ? obj.substr(a) : obj.substr(a, b); },
+              find: function (t) { var i = obj.indexOf(String(t)); return i < 0 ? -1 : i; },
+              clear: function () { return ''; }
+            }[node.name];
+            if (sm) return { __bound: sm, __self: obj };
+            if (node.name === 'npos') return -1;
+            throw cerr('string 暂不支持的方法：' + node.name);
+          }
+          if (Array.isArray(obj)) {
+            var nm = node.name;
+            /* push_back / pop_back / size / empty / clear / begin / end */
+            var meth = {
+              size: function () { return obj.length; },
+              length: function () { return obj.length; },
+              empty: function () { return obj.length === 0; },
+              clear: function () { obj.length = 0; return 0; },
+              push_back: function (x) { obj.push(x); return 0; },
+              pop_back: function () { obj.pop(); return 0; },
+              begin: function () { return { __iter: obj, __at: 0 }; },
+              end: function () { return { __iter: obj, __at: obj.length }; },
+              front: function () { return obj[0]; },
+              back: function () { return obj[obj.length - 1]; },
+              at: function (i) { return obj[i]; }
+            }[nm];
+            if (meth) return { __bound: meth, __self: obj };
+            throw cerr('vector 暂不支持的方法：' + nm);
+          }
+          if (obj && typeof obj === 'object' && obj.__struct) {
+            /* struct 成员访问 */
+            if (!(node.name in obj)) {
+              /* 未显式赋值过的成员按 0 处理，与 C++ 全局 struct 一致 */
+              obj[node.name] = 0;
+            }
+            return obj[node.name];
+          }
+          if (obj && typeof obj === 'object' && obj.__map) {
+            var mk = node.name;
+            var mm = {
+              size: function () { return Object.keys(obj.data).length; },
+              empty: function () { return Object.keys(obj.data).length === 0; },
+              clear: function () { obj.data = {}; return 0; },
+              count: function (k) { return (String(k) in obj.data) ? 1 : 0; },
+              find: function (k) { return (String(k) in obj.data) ? obj.data[String(k)] : null; },
+              erase: function (k) { delete obj.data[String(k)]; return 0; }
+            }[mk];
+            if (mm) return { __bound: mm, __self: obj };
+            throw cerr('map 暂不支持的方法：' + mk);
+          }
+          throw cerr('暂不支持：结构体 / 类成员访问（' + node.name + '）');
+        }
       }
       throw cerr('暂不支持的表达式：' + node.type);
     },
 
     binop: function (node, scope) {
       var op = node.op;
+      /* 整数溢出回绕（S-069 / S-083①）。
+         实现思路：先按 JS 算完，再按类型宽度回绕。
+         只在真实 UB 档回绕 —— 安全档保持数学正确的结果并给出提示，
+         因为对初学者来说"2147483647+1 = -2147483648"只会让人困惑。 */
+      var __self = this;
+      function ov(v) {
+        if (!UB.isReal()) return v;
+        if (typeof v !== 'number' || !Number.isInteger(v) || !isFinite(v)) return v;
+        return wrapInt(v, node.type || 'int');
+      }
       /* && 与 || 短路 */
       if (op === '&&') return this.truthy(this.eval(node.l, scope)) && this.truthy(this.eval(node.r, scope));
       if (op === '||') return this.truthy(this.eval(node.l, scope)) || this.truthy(this.eval(node.r, scope));
       var a = this.eval(node.l, scope), b = this.eval(node.r, scope);
+      var isArith = (op === '+' || op === '-' || op === '*' || op === '<<');
+      var bothInt = isArith && Number.isInteger(a) && Number.isInteger(b) &&
+                    typeof a === 'number' && typeof b === 'number';
       switch (op) {
         case '+':
           if (typeof a === 'string' || typeof b === 'string') return this.str(a) + this.str(b);
-          return a + b;
-        case '-': return a - b;
-        case '*': return a * b;
+          return ov(a + b);
+        case '-': return ov(a - b);
+        case '*': return ov(a * b);
         case '/':
-          if (b === 0) throw cerr('除零错误');
+          /* S-078：浮点除零不是 UB，IEEE 754 明确规定为 inf。
+             真 C++ 打印 inf，这里却抛"除零错误" ——
+             而整数除零才是 UB（真机上通常是 SIGFPE）。 */
+          if (b === 0) {
+            /* 只要有一端是浮点（或字面量带小数），就按 IEEE 754 走 */
+            /* 判据：值本身是浮点，或任一端字面量带小数点/指数 */
+          var isFloatExpr = !Number.isInteger(a) || !Number.isInteger(b) ||
+                            (node.l && node.l.isFloat) || (node.r && node.r.isFloat);
+            if (isFloatExpr || a === 0) {
+              if (a === 0) return NaN;
+              return (a > 0) ? Infinity : -Infinity;
+            }
+            /* 整数除零：安全档报错，真实档也报错（真机 SIGFPE，不是可模拟的值） */
+            throw cerr('除零错误（整数除零在真实 C++ 里会导致程序崩溃）');
+          }
           /* 两个整数相除按 C 语义取整 */
           if (Number.isInteger(a) && Number.isInteger(b)) return Math.trunc(a / b);
           return a / b;
@@ -790,17 +1499,71 @@
       if (target.type === 'Name') { scope.set(target.name, val); return; }
       if (target.type === 'Index') {
         var arr = this.eval(target.obj, scope);
+        /* map<string,int> m; m["a"] = 1; —— 键是字符串 */
+        if (arr && typeof arr === 'object' && arr.__map) {
+          arr.data[String(this.eval(target.index, scope))] = val;
+          return val;
+        }
         if (!Array.isArray(arr)) throw cerr('不是数组，无法赋值');
-        arr[this.eval(target.index, scope) | 0] = val;
+        var wx = this.eval(target.index, scope) | 0;
+        /* 越界写：真实 C++ 会踩到相邻内存（UB），
+           这里真实档就真的写进去（数组被撑大），
+           安全档明确报错 —— 静默写成功是最坏的选择，
+           因为它看起来"能用"，到 OJ 上才炸。 */
+        if (wx < 0 || wx >= arr.length) {
+          UB.check('数组越界', '给下标 ' + wx + ' 赋值越界（数组长度 ' + arr.length + '）');
+        }
+        arr[wx] = val;
         return;
+      }
+      /* struct 成员赋值：p.x = 1;
+         不支持的话，struct 只能声明不能写 —— 等于不能用。 */
+      if (target.type === 'Member') {
+        var objv = this.eval(target.obj, scope);
+        if (!objv || typeof objv !== 'object') throw cerr('不能给非对象赋值成员：' + target.name);
+        if (objv.__map) { objv.data[String(target.name)] = val; return val; }
+        objv[target.name] = val;
+        return val;
+      }
+      /* 复合赋值里的位运算：n >>= 1 / n = n >> 1。
+         快速幂、状压 DP 全靠这个，缺了它这类题都写不了。 */
+      if (target.type === 'Name' && (node.op === '>>=' || node.op === '<<=')) {
+        var cur = scope.get(target.name);
+        var by = this.eval(node.value, scope);
+        scope.set(target.name, node.op === '>>=' ? (cur >> by) : (cur << by));
+        return scope.get(target.name);
       }
       throw cerr('暂不支持的赋值目标');
     },
 
     doCall: function (node, scope) {
       var self = this;
+      var self2 = this;
+      /* 成员调用：v.push_back(x) / m.count(k)
+         先求值 callee 得到绑定对象，再把 this 绑上去调用 */
+      if (node.callee.type === 'Member') {
+        var bound = this.eval(node.callee, scope);
+        var margs = node.args.map(function (a) { return self2.eval(a, scope); });
+        if (bound && typeof bound === 'object' && typeof bound.__bound === 'function') {
+          return bound.__bound.apply(bound.__self, margs);
+        }
+        throw cerr('不是可调用的成员');
+      }
       var name = node.callee.type === 'Name' ? node.callee.name : null;
       var args = node.args.map(function (a) { return self.eval(a, scope); });
+      /* sort(v.begin(), v.end()) —— 迭代器形式。
+         竞赛代码里 sort 几乎都写成这样，只支持 sort(a, n) 是不够的。 */
+      if (name === 'sort' && args.length >= 2 && args[0] && args[0].__iter) {
+        var container = args[0].__iter;
+        var l = args[0].__at || 0;
+        var r = (args[1] && args[1].__iter === container) ? (args[1].__at || 0) : container.length;
+        var part2 = container.slice(l, r).sort(function (x, y) {
+          if (typeof x === 'number' && typeof y === 'number') return x - y;
+          return String(x) < String(y) ? -1 : (String(x) > String(y) ? 1 : 0);
+        });
+        for (var i2 = 0; i2 < part2.length; i2++) container[l + i2] = part2[i2];
+        return container;
+      }
       if (name && this.funcs[name]) {
         var f = this.funcs[name];
         if (f.builtin) return f.builtin.apply(null, args);
@@ -831,14 +1594,28 @@
       return { __cout: true };
     },
 
+    /* 从输入缓冲取一个词。缓冲空了才去调 input()。
+       以前每次都调 input() 且只取第一个词，剩下的全丢 ——
+       `cin >> a >> b` 里 b 永远读不到本行第二个词。 */
+    nextToken: function () {
+      if (!this.inBuf || !this.inBuf.length) {
+        var line = this.input();
+        if (line === undefined || line === null) return '';
+        this.inBuf = String(line).trim().split(/\s+/).filter(function (x) { return x !== ''; });
+      }
+      return this.inBuf.length ? this.inBuf.shift() : '';
+    },
+
     doCin: function (node, scope) {
-      /* cin >> x：从输入行读一个词 */
-      var line = this.input();
-      var parts = String(line).trim().split(/\s+/);
-      var val = parts.shift() || '';
+      /* cin >> a >> b 是嵌套节点 Cin(Cin(cin, a), b)。
+         ⚠ 必须先求值 node.left —— 否则左边的 a 根本不会被赋值，
+         只有最右边的 b 拿到值。表现为 `cin>>a>>b` 时 a 恒为 0，
+         而 A+B 这种最基础的题都跑不对。 */
+      var leftVal = node.left ? this.eval(node.left, scope) : null;
+      var val = this.nextToken();
       var num = Number(val);
       this.assignTo(node.right, val !== '' && isFinite(num) ? num : val, scope);
-      return node.left;
+      return leftVal;
     }
   };
 
@@ -846,6 +1623,15 @@
     tokenize: tokenize,
     parse: function (src) { return new Parser(tokenize(src)).parse(); },
     create: function (out, input) { return new Interp(out, input); },
-    MAX_STEPS: MAX_STEPS
+    MAX_STEPS: MAX_STEPS,
+    /* UB 模拟开关（S-082）。
+       'safe'（默认）：危险 UB 明确报错 —— 适合初学与教学
+       'real'        ：真模拟 UB（溢出回绕、越界读垃圾值）—— 适合竞赛
+       调用：Code.cpplite.setUB('real') */
+    setUB: UB.set,
+    getUB: function () { return UB.mode; },
+    /* 源码里出现过的 #define 宏名。导出是为了让断言能验证
+       "用了宏会给出针对性提示"这件事，而不是只报"变量未定义"。 */
+    macros: function () { return MACROS; }
   };
 })(typeof window !== 'undefined' ? window : globalThis);

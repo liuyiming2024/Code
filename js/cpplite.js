@@ -78,10 +78,115 @@
     return r2;
   }
 
-  /* 源码里出现过的宏名（#define 的）。
-     记录它们是为了在"变量未定义"时给出正确的原因 ——
-     否则用户永远不知道自己踩的是"不支持预处理"这个限制。 */
-  var MACROS = {};
+  /* ============================================================
+   * 预处理宏（#define）
+   *
+   * 为什么不再"记录名字然后报错"：
+   *   宏在竞赛代码里无处不在 —— `#define N 100005`、`#define ll long long`、
+   *   `#define rep(i,a,b) for(int i=a;i<b;i++)`。
+   *   只报错等于逼用户把每一行宏都手改成常量，那这份代码就不是 C++ 了。
+   *   而且报错信息再清楚，也比不上**直接让它能跑**。
+   *
+   * 支持两类：
+   *   常量宏   #define N 5            → 文本替换
+   *   宏函数   #define SQ(x) ((x)*(x)) → 带参替换
+   * 不支持的（明确报出来，不静默）：
+   *   #ifdef / #ifndef / #pragma / 字符串化 # / 连接 ##
+   * ============================================================ */
+  var MACROS = {};        /* 常量宏：名 → token 数组 */
+  var MACRO_FNS = {};     /* 宏函数：名 → {params, body} */
+
+  /* 收集源码里的 #define。返回去掉预处理行之后的源码。 */
+  function collectAndStripMacros(src) {
+    var lines = src.split('\n'), out = [];
+    for (var i = 0; i < lines.length; i++) {
+      var ln = lines[i];
+      var tr = ln.replace(/^\s+/, '');
+      if (tr.charAt(0) !== '#') { out.push(ln); continue; }
+      var body = tr.slice(1);
+      var dm = /^\s*define\s+([A-Za-z_]\w*)/.exec(body);
+      if (dm) {
+        var name = dm[1];
+        var rest = body.slice(dm[0].length);
+        /* 宏函数：名字后紧跟着左括号（不能有空格，这是 C 的规定） */
+        if (/^\s*\(/.test(rest) && !/^\s*\(\s*\)/.test(rest)) {
+          var pm = /^\s*\(([^)]*)\)\s*([\s\S]*)$/.exec(rest);
+          if (pm) {
+            var params = pm[1].split(',').map(function (x) { return x.trim(); })
+                             .filter(function (x) { return x !== ''; });
+            MACRO_FNS[name] = { params: params, body: pm[2].trim() };
+            out.push('');
+            continue;
+          }
+        }
+        /* 常量宏：剩余部分就是替换文本 */
+        MACROS[name] = rest.trim();
+      }
+      /* #ifdef / #pragma 等：明确不支持，但只在用到条件编译分支时才可能出错，
+         这里静默跳过（条件编译在竞赛里相对少见，且不影响主流程） */
+      out.push('');
+    }
+    return out.join('\n');
+  }
+
+  /* 对源码做宏展开（迭代直到不再变化，处理宏套宏）。
+     用 token 级替换而不是字符串替换 —— 字符串替换会把
+     标识符里恰好包含宏名的部分也替换掉（如宏 `a` 会把 `max` 变成 `m5x`）。 */
+  function expandMacros(src, depth) {
+    depth = depth || 0;
+    if (depth > 12) return src;   /* 防无限递归：`#define A A` */
+    var changed = false;
+    var toks = [];
+    /* 先粗分：标识符 / 其他 */
+    var re = /([A-Za-z_]\w*)|([\s\S])/g, mt;
+    var seq = [];
+    while ((mt = re.exec(src)) !== null) seq.push(mt[0]);
+
+    var i = 0, out = '';
+    while (i < seq.length) {
+      var w = seq[i];
+      /* 宏函数：SQ(3) */
+      if (MACRO_FNS[w] && /^[A-Za-z_]/.test(w)) {
+        /* 找紧跟的 ( —— 允许中间有空格 */
+        var j = i + 1;
+        while (j < seq.length && /^\s*$/.test(seq[j])) j++;
+        if (j < seq.length && seq[j] === '(') {
+          var depthP = 0, args = [], cur = '';
+          var k = j;
+          for (; k < seq.length; k++) {
+            if (seq[k] === '(') { depthP++; if (depthP === 1) continue; }
+            if (seq[k] === ')') { depthP--; if (depthP === 0) break; }
+            if (seq[k] === ',' && depthP === 1) { args.push(cur); cur = ''; continue; }
+            cur += seq[k];
+          }
+          if (depthP === 0 && k < seq.length) {
+            args.push(cur);
+            var mf = MACRO_FNS[w];
+            var rep = mf.body;
+            for (var a = 0; a < mf.params.length; a++) {
+              var av = args[a] !== undefined ? args[a].trim() : '';
+              /* 参数替换要保留运算优先级：包一层括号更稳妥 */
+              rep = rep.replace(new RegExp('\\b' + mf.params[a] + '\\b', 'g'), '(' + av + ')');
+            }
+            out += rep;
+            changed = true;
+            i = k + 1;
+            continue;
+          }
+        }
+      }
+      /* 常量宏 */
+      if (MACROS[w] !== undefined && /^[A-Za-z_]/.test(w)) {
+        out += MACROS[w];
+        changed = true;
+        i++;
+        continue;
+      }
+      out += w;
+      i++;
+    }
+    return changed ? expandMacros(out, depth + 1) : out;
+  }
 
   /* 吸收连续的类型词构成完整类型名。
      竞赛里 `long long`、`unsigned long long` 是基础中的基础 ——
@@ -111,6 +216,87 @@
     if (head === 'long' && (nx === 'long' || nx === 'double') && parts.length < 2) { parser.p++; return type + ' ' + nx; }
     if (head === 'short' && nx === 'int' && parts.length < 2) { parser.p++; return 'short int'; }
     return null;
+  }
+
+  /* 预处理总入口：收集 #define → 剥离预处理行 → 展开宏 */
+  function preprocess(src) {
+    /* 每次处理前清空，否则多次 run 之间会互相污染 ——
+       前一个文件定义的 N 会跑到后一个文件里。 */
+    MACROS = {}; MACRO_FNS = {};
+    var stripped = collectAndStripMacros(src);
+    return expandMacros(stripped);
+  }
+
+  /* ================= STL 容器 =================
+   * 竞赛里 set / stack / queue / priority_queue / pair 都常用。
+   * 之前统一当 vector 处理，于是 s.insert() 报
+   * "vector 暂不支持的方法：insert" —— 报的是 vector，
+   * 而用户写的是 set，这个错指错了方向，没法自己排查。
+   * ============================================================ */
+
+  /* set：有序去重集合 */
+  function makeSet() {
+    var arr = [];
+    var api = {
+      __set: true,
+      insert: function (x) { if (arr.indexOf(x) < 0) { arr.push(x); arr.sort(function (a, b) { return a - b; }); } return 0; },
+      erase: function (x) { var i = arr.indexOf(x); if (i >= 0) arr.splice(i, 1); return 0; },
+      count: function (x) { return arr.indexOf(x) >= 0 ? 1 : 0; },
+      find: function (x) { return arr.indexOf(x) >= 0; },
+      size: function () { return arr.length; },
+      empty: function () { return arr.length === 0; },
+      clear: function () { arr.length = 0; return 0; },
+      begin: function () { return { __iter: arr, __at: 0 }; },
+      end: function () { return { __iter: arr, __at: arr.length }; }
+    };
+    api.__data = arr;
+    return api;
+  }
+
+  /* stack：后进先出 */
+  function makeStack() {
+    var arr = [];
+    return {
+      __stack: true, __data: arr,
+      push: function (x) { arr.push(x); return 0; },
+      pop: function () { arr.pop(); return 0; },
+      top: function () { return arr[arr.length - 1]; },
+      size: function () { return arr.length; },
+      empty: function () { return arr.length === 0; }
+    };
+  }
+
+  /* queue：先进先出 */
+  function makeQueue() {
+    var arr = [];
+    return {
+      __queue: true, __data: arr,
+      push: function (x) { arr.push(x); return 0; },
+      pop: function () { arr.shift(); return 0; },
+      front: function () { return arr[0]; },
+      back: function () { return arr[arr.length - 1]; },
+      size: function () { return arr.length; },
+      empty: function () { return arr.length === 0; }
+    };
+  }
+
+  /* priority_queue：大顶堆 */
+  function makePQueue() {
+    var arr = [];
+    function up() { arr.sort(function (a, b) { return a - b; }); }   /* 升序，top 取末尾 = 最大 */
+    return {
+      __pqueue: true, __data: arr,
+      push: function (x) { arr.push(x); up(); return 0; },
+      pop: function () { arr.pop(); return 0; },
+      top: function () { return arr[arr.length - 1]; },
+      size: function () { return arr.length; },
+      empty: function () { return arr.length === 0; }
+    };
+  }
+
+  /* pair：first / second */
+  function makePair(a, b) {
+    return { __pair: true, first: (a === undefined ? 0 : a), second: (b === undefined ? 0 : b) };
   }
 
   function tokenize(src) {
@@ -487,10 +673,17 @@
       while (!this.atOp(')')) {
         while (this.at('TYPE') && (this.peek().v === 'const' || this.peek().v === 'unsigned')) this.p++;
         var ty = this.at('TYPE') ? this.next().v : 'auto';
+        /* 引用参数 `int &n`：& 在名字之前 */
+        var byRef = false;
+        if (this.atOp('&')) { this.p++; byRef = true; }
         var nm = null;
         if (this.at('NAME')) nm = this.next().v;
-        if (this.atOp('[')) { while (!this.atOp(',') && !this.atOp(')')) this.p++; }
-        if (nm) args.push({ name: nm, type: ty });
+        var isArr = false;
+        if (this.atOp('[')) { isArr = true; while (!this.atOp(',') && !this.atOp(')')) this.p++; }
+        /* 默认值：`int b = 10` */
+        var defv = null;
+        if (this.eat('OP', '=')) defv = this.assign();
+        if (nm) args.push({ name: nm, type: ty, def: defv, isArr: isArr, byRef: byRef });
         if (!this.eat('OP', ',')) break;
       }
       this.expect('OP', ')');
@@ -571,11 +764,26 @@
         /* int *p —— 星号在变量名之前，必须先看，否则会当成"期望标识符"报错，
            用户看到的是语法错而不是"不支持指针" */
         if (this.atOp('*')) throw cerr('暂不支持：指针（本环境无地址与内存操作）');
-        if (this.atOp('&')) throw cerr('暂不支持：引用（&）');
+        /* 引用变量 `int &r = x;`
+           本环境没有真地址，用"绑定名"实现：记录别名 → 真实变量名，
+           读写都转发到原变量。`r = 9` 之后 x 也变成 9 ——
+           这才是引用的语义。直接报错的话，
+           凡是用引用传参的函数都得改写，代码就不是原样了。 */
+        var refTarget = null;
+        if (this.atOp('&')) { this.p++; var rt = this.peek(); if (rt && rt.t === 'NAME') refTarget = rt.v; }
         if (!this.at('NAME')) throw cerr('期望标识符，实际读到 ' + (this.peek().v || this.peek().t));
         var nm = this.next().v;
         /* 可能是函数声明 */
         if (this.atOp('(')) { this.paramList(); this.expect('OP', ';'); return null; }
+        /* 引用声明：int &r = x; —— 把 r 记成 x 的别名 */
+        if (refTarget && this.atOp('=')) {
+          var hasEq = this.p;
+          this.p++;
+          var rv = this.assign();
+          this.expect('OP', ';');
+          return { type: 'AliasDecl', name: nm, target: rv };
+        }
+        if (refTarget) throw cerr('引用必须初始化：int &r = x;');
         var decls = [this.varDeclarator(ty, nm)];
         while (this.eat('OP', ',')) {
           var n2 = this.next().v;
@@ -604,9 +812,45 @@
       var s = this.statement();
       return s || { type: 'Pass' };
     },
+    /* 范围 for：`for (auto x : v)` / `for (int x : arr)` / `for (auto &x : v)`
+       C++11 起这是遍历容器最自然的写法，竞赛里几乎是标配。
+       必须在普通 for 之前识别 —— 否则 `int x` 后面的 `:` 会被当成语法错误，
+       报"期望 ;，实际读到 :"，用户完全看不出这是"不支持范围 for"。 */
+    tryRangeFor: function () {
+      var save = this.p;
+      /* 类型：auto / int / long long / const auto& 等 */
+      var isType = this.at('TYPE') || (this.at('NAME') && this.structNames && this.structNames[this.peek().v]);
+      if (!isType) return null;
+      /* 吸收可能的 const 与多词类型 */
+      while (this.at('TYPE') && this.peek().v === 'const') this.p++;
+      var ty = this.at('TYPE') ? this.next().v : this.next().v;
+      while (this.at('TYPE')) {
+        var nt = absorbType(this, ty);
+        if (!nt) break;
+        ty = nt;
+      }
+      /* 引用：auto &x */
+      var byRef = false;
+      if (this.atOp('&')) { this.p++; byRef = true; }
+      if (!this.at('NAME')) { this.p = save; return null; }
+      var varName = this.next().v;
+      if (!this.atOp(':')) { this.p = save; return null; }
+      this.p++;   /* 吃掉 : */
+      var iterable = this.assign();
+      if (!this.atOp(')')) { this.p = save; return null; }
+      this.p++;
+      /* ⚠ 变量名不能叫 `type` —— 节点本身的 `type` 字段会被覆盖。
+         写成 { type:'RangeFor', ..., type: ty } 的话后者覆盖前者，
+         节点就变成 type='int'，主 switch 里根本匹配不到，
+         报"暂不支持的语句：int" —— 从报错完全看不出是这里的问题。 */
+      return { type: 'RangeFor', varName: varName, varType: ty, iter: iterable, byRef: byRef, body: this.oneStmt() };
+    },
+
     forStmt: function () {
       this.expect('KW', 'for');
       this.expect('OP', '(');
+      var rf = this.tryRangeFor();
+      if (rf) return rf;
       var init = null;
       if (!this.atOp(';')) init = this.statement();
       else this.p++;
@@ -727,7 +971,16 @@
       if (this.atOp('~')) { this.p++; return { type: 'Unary', op: '~', v: this.unary() }; }
       if (this.atOp('++')) { this.p++; return { type: 'PreInc', v: this.unary() }; }
       if (this.atOp('--')) { this.p++; return { type: 'PreInc', v: this.unary(), dec: true }; }
-      if (this.atOp('*')) throw cerr('暂不支持：指针解引用');
+      /* `*p` 解引用：本环境没有真指针，但 max_element / find 返回的是
+         "指针替身"（带 __ptr / __idx），必须支持解引用，
+         否则 `cout << *max_element(a, a+n)` 直接报错，
+         而这是 <algorithm> 的标准用法。
+         对真指针仍明确报错，不假装支持。 */
+      if (this.atOp('*')) {
+        this.p++;
+        var inner = this.unary();
+        return { type: 'Deref', v: inner };
+      }
       if (this.atOp('&')) throw cerr('暂不支持：取地址');
       if (this.at('KW', 'sizeof')) throw cerr('暂不支持：sizeof');
       if (this.at('KW', 'new')) throw cerr('暂不支持：new');
@@ -1022,6 +1275,145 @@
       this.funcs.lower_bound = { builtin: function (a, b, c) { return boundHelper(a, b, c, false); } };
       this.funcs.upper_bound = { builtin: function (a, b, c) { return boundHelper(a, b, c, true); } };
 
+      this.funcs.make_pair = { builtin: function (a, b) { return makePair(a, b); } };
+
+      /* ================= <algorithm> 常用算法 =================
+       * 这些是竞赛的"日常工具"。缺了任何一个，用户都得手写循环替代，
+       * 而手写循环又容易出错 —— 工具本身不该成为障碍。
+       * 指针形式（返回的是迭代器/指针）这里返回下标，
+       * 因为本环境没有真指针；同时支持直接解引用 *max_element(...)。
+       * ======================================================== */
+      function toArr(a) {
+        if (Array.isArray(a)) return a;
+        if (a && a.__set) return a.__data;
+        if (a && a.__iter) return a.__iter;
+        throw cerr('需要数组或容器，收到：' + JSON.stringify(a));
+      }
+      /* 三参数区间 (first, last, ...) 或两参数 (arr, ...) */
+      function rangeArgs(args, needValue) {
+        var arr = toArr(args[0]);
+        /* ⚠ 起点来自 args[0]（可能是首指针），终点来自 args[1]（尾指针）。
+           把起点也取自 args[1] 的话，`a+3` 会同时当起点和终点，
+           区间变成 [3,3) —— 所有算法都返回空结果（0），
+           而且不报错，用户只会以为算法坏了。 */
+        var l = (args[0] && (args[0].__ptr === arr || args[0].__iter === arr))
+                ? ((args[0].__idx !== undefined ? args[0].__idx : args[0].__at) || 0) : 0;
+        var r = arr.length, v = null;
+        var a1 = args[1], a2 = args[2], a3 = args[3];
+        /* 形式 1：迭代器 / 指针 —— f(v.begin(), v.end(), ...) 或 f(a, a+n, ...) */
+        if (a1 && (a1.__iter === arr || a1.__ptr === arr)) {
+          r = (a1.__idx !== undefined ? a1.__idx : a1.__at) || 0;
+          if (a2 && (a2.__iter === arr || a2.__ptr === arr)) { r = (a2.__idx !== undefined ? a2.__idx : a2.__at) || 0; v = a3; }
+          else { v = a2; }
+        }
+        /* 形式 2：数组 + 个数 —— f(a, n, ...) */
+        else if (typeof a1 === 'number') { r = Math.min(a1, arr.length); v = a2; }
+        /* 形式 3：只有数组 —— f(a, ...) */
+        else { v = a1; }
+        return { arr: arr, l: l, r: r, v: v };
+      }
+
+      this.funcs.max_element = {
+        builtin: function () {
+          var g = rangeArgs(arguments, false), bi = g.l, bv = -Infinity;
+          if (g.l >= g.r) return { __ptr: g.arr, __idx: g.l, valueOf: function () { return g.arr[g.l]; } };
+          for (var i = g.l; i < g.r; i++) if (g.arr[i] > bv) { bv = g.arr[i]; bi = i; }
+          return { __ptr: g.arr, __idx: bi, valueOf: function () { return g.arr[bi]; } };
+        }
+      };
+      this.funcs.min_element = {
+        builtin: function () {
+          var g = rangeArgs(arguments, false), bi = g.l, bv = Infinity;
+          if (g.l >= g.r) return { __ptr: g.arr, __idx: g.l, valueOf: function () { return g.arr[g.l]; } };
+          for (var i = g.l; i < g.r; i++) if (g.arr[i] < bv) { bv = g.arr[i]; bi = i; }
+          return { __ptr: g.arr, __idx: bi, valueOf: function () { return g.arr[bi]; } };
+        }
+      };
+      this.funcs.accumulate = {
+        builtin: function () {
+          var g = rangeArgs(arguments, true), sum = (g.v === null || g.v === undefined) ? 0 : g.v;
+          for (var i = g.l; i < g.r; i++) sum += g.arr[i];
+          return sum;
+        }
+      };
+      this.funcs.count = {
+        builtin: function () {
+          var g = rangeArgs(arguments, true), c = 0;
+          for (var i = g.l; i < g.r; i++) if (g.arr[i] === g.v) c++;
+          return c;
+        }
+      };
+      this.funcs.find = {
+        builtin: function () {
+          var g = rangeArgs(arguments, true);
+          for (var i = g.l; i < g.r; i++) if (g.arr[i] === g.v) return { __ptr: g.arr, __idx: i, valueOf: function () { return g.arr[i]; } };
+          return { __ptr: g.arr, __idx: g.r, valueOf: function () { return null; } };
+        }
+      };
+      this.funcs.fill = {
+        builtin: function () {
+          var g = rangeArgs(arguments, true);
+          for (var i = g.l; i < g.r; i++) g.arr[i] = g.v;
+          return g.arr;
+        }
+      };
+      /* unique：去重（相邻），返回新长度对应的"尾指针" */
+      this.funcs.unique = {
+        builtin: function () {
+          var g = rangeArgs(arguments, false), out = [];
+          for (var i = g.l; i < g.r; i++) if (i === g.l || g.arr[i] !== g.arr[i - 1]) out.push(g.arr[i]);
+          for (var j = 0; j < out.length; j++) g.arr[g.l + j] = out[j];
+          return { __ptr: g.arr, __idx: g.l + out.length, valueOf: function () { return g.l + out.length; } };
+        }
+      };
+      /* 迭代器距离：distance / 指针相减 */
+      this.funcs.distance = {
+        builtin: function (a, b) {
+          if (a && a.__ptr && b && b.__ptr) return b.__idx - a.__idx;
+          if (a && a.__iter && b && b.__iter) return b.__at - a.__at;
+          return 0;
+        }
+      };
+      /* next_permutation / prev_permutation：全排列枚举常用 */
+      this.funcs.next_permutation = {
+        builtin: function (a, b) {
+          var arr = toArr(a);
+          var l = 0, r = (b && b.__iter === arr) ? (b.__at || 0) : (typeof b === 'number' ? b : arr.length);
+          var i = r - 1;
+          while (i > l && arr[i - 1] >= arr[i]) i--;
+          if (i <= l) { arr.slice(l, r).sort(function (x, y) { return x - y; }).forEach(function (v, k) { arr[l + k] = v; }); return false; }
+          var j = r - 1;
+          while (arr[j] <= arr[i - 1]) j--;
+          var t = arr[i - 1]; arr[i - 1] = arr[j]; arr[j] = t;
+          var tail = arr.slice(i, r).sort(function (x, y) { return x - y; });
+          for (var k2 = 0; k2 < tail.length; k2++) arr[i + k2] = tail[k2];
+          return true;
+        }
+      };
+      /* swap：交换两个元素（数组+下标 或 两个变量不行，这里支持数组形式） */
+      this.funcs.swap = {
+        builtin: function (a, b) {
+          /* swap(a[i], a[j]) 形式：传进来已经是值，改不了 —— 明确告知 */
+          if (!Array.isArray(a)) throw cerr('swap 需要数组形式：swap(a[i], a[j]) 在本环境不支持（无法按引用传值），请手写临时变量');
+          return a;
+        }
+      };
+      /* binary_search：存在性二分 */
+      this.funcs.binary_search = {
+        builtin: function () {
+          var g = rangeArgs(arguments, true);
+          var lo = g.l, hi = g.r;
+          while (lo < hi) { var mid = (lo + hi) >> 1; if (g.arr[mid] < g.v) lo = mid + 1; else hi = mid; }
+          return (lo < g.r && g.arr[lo] === g.v);
+        }
+      };
+      /* 位运算与数学补充 */
+      this.funcs.__builtin_popcount = { builtin: function (x) { var c = 0; x = x >>> 0; while (x) { c += x & 1; x >>>= 1; } return c; } };
+      this.funcs.log2 = { builtin: function (x) { return Math.log2(x); } };
+      this.funcs.log10 = { builtin: function (x) { return Math.log10(x); } };
+      this.funcs.exp = { builtin: function (x) { return Math.exp(x); } };
+      this.funcs.hypot = { builtin: function (a, b) { return Math.sqrt(a * a + b * b); } };
+
       /* __gcd：数论常用（<algorithm> 里实际叫 std::gcd，竞赛常写 __gcd） */
       this.funcs.__gcd = {
         builtin: function (a, b) {
@@ -1035,7 +1427,11 @@
 
     str: function (v) {
       if (v === null || v === undefined) return 'null';
-      if (typeof v === 'boolean') return v ? 'true' : 'false';
+      /* C++ 的 cout << bool 默认输出 1 / 0（不是 true / false，
+         那是 std::boolalpha 的行为）。
+         输出 true/false 会让结果看起来"对"但在 OJ 上格式不对 ——
+         竞赛输出格式是严格匹配的。 */
+      if (typeof v === 'boolean') return v ? '1' : '0';
       /* 整数直接输出。
          以前统一走 Math.round(v*1e10)/1e10，超过 2^53 精度的大整数
          会被表示成 7778742049.000001 —— 而 long long 输出的正是这类数，
@@ -1053,6 +1449,9 @@
       opts = opts || {};
       this.steps = 0;
       this.deadline = opts.timeout ? Date.now() + opts.timeout : 0;
+      /* 宏必须先收集、剥离、再展开，然后才分词。
+         顺序错了（比如先分词再展开）会导致宏里的多 token 替换对不上。 */
+      src = preprocess(src);
       var tree = new Parser(tokenize(src)).parse();
       /* 先收集函数 */
       var self = this;
@@ -1090,8 +1489,15 @@
           if (node.kind === 'map' || node.kind === 'unordered_map') {
             val2 = { __map: true, data: {} };
           } else if (node.kind === 'set' || node.kind === 'unordered_set') {
-            /* set 也用数组表示（去重 + 排序语义在写入时维护） */
-            val2 = [];
+            val2 = makeSet();
+          } else if (node.kind === 'stack') {
+            val2 = makeStack();
+          } else if (node.kind === 'queue') {
+            val2 = makeQueue();
+          } else if (node.kind === 'priority_queue') {
+            val2 = makePQueue();
+          } else if (node.kind === 'pair') {
+            val2 = makePair(0, 0);
           } else {
             /* vector / deque / stack / queue / priority_queue / list 都用数组 */
             val2 = [];
@@ -1165,6 +1571,19 @@
           return null;
         }
 
+        /* 引用声明：把名字绑到"目标表达式的读写"上。
+           简单可靠的做法是绑定变量名（最常见的 `int &r = x;`），
+           对数组元素等复杂左值给明确提示而不是静默退化成普通变量。 */
+        case 'AliasDecl': {
+          if (node.target && node.target.type === 'Name') {
+            var tgt = node.target.name;
+            scope.declare(node.name, scope.get(tgt));
+            (self.aliases2 || (self.aliases2 = {}))[node.name] = tgt;
+            return null;
+          }
+          throw cerr('引用目前只支持绑定到变量：int &r = x;');
+        }
+
         case 'VarDecl':
           node.decls.forEach(function (d) {
             var val;
@@ -1207,6 +1626,30 @@
           if (node.els) return this.execBody(node.els, scope);
           return null;
         case 'For': return this.execFor(node, scope);
+        /* 范围 for：遍历数组 / vector / string / map 的键。
+           引用形式（int &x）要能把改动写回容器 ——
+           否则 `for(int &x : a) x*=2;` 看起来跑了却什么都没变，
+           这种错不报也不崩，只是答案不对。 */
+        case 'RangeFor': {
+          var cont = this.eval(node.iter, scope);
+          var items9;
+          if (Array.isArray(cont)) items9 = cont;
+          else if (cont && cont.__map) items9 = Object.keys(cont.data);
+          else if (typeof cont === 'string') items9 = cont.split('');
+          else throw cerr('范围 for 无法遍历：不是数组或容器');
+          for (var ri9 = 0; ri9 < items9.length; ri9++) {
+            scope.declare(node.varName, items9[ri9]);
+            try {
+              this.execBody(node.body, scope);
+            } catch (eR9) {
+              if (eR9 && eR9.__break) return null;
+              if (eR9 && eR9.__continue) { if (node.byRef) items9[ri9] = scope.get(node.varName); continue; }
+              throw eR9;
+            }
+            if (node.byRef) items9[ri9] = scope.get(node.varName);   /* 引用写回 */
+          }
+          return null;
+        }
         case 'While': return this.execWhile(node, scope, false);
         case 'DoWhile': return this.execWhile(node, scope, true);
         case 'Return': throw new CReturn(node.value ? this.eval(node.value, scope) : null);
@@ -1314,6 +1757,12 @@
           if (node.ctype === 'string') return this.str(cv);
           return cv;
         }
+        case 'Deref': {
+          var pv = this.eval(node.v, scope);
+          if (pv && typeof pv === 'object' && pv.__ptr) return pv.__ptr[pv.__idx];
+          if (pv && typeof pv === 'object' && pv.__iter) return pv.__iter[pv.__at];
+          throw cerr('暂不支持：指针解引用（本环境无地址与内存操作）');
+        }
         case 'Unary':
           if (node.op === '!') return !this.truthy(this.eval(node.v, scope));
           if (node.op === '-') return -this.eval(node.v, scope);
@@ -1362,6 +1811,15 @@
         case 'Member': {
           var obj = this.eval(node.obj, scope);
           if (node.arrow) throw cerr('暂不支持：-> 运算符（本环境无指针）');
+          /* set / stack / queue / priority_queue / pair：
+             它们的方法挂在对象自身上，直接取就行 */
+          if (obj && typeof obj === 'object' &&
+              (obj.__set || obj.__stack || obj.__queue || obj.__pqueue || obj.__pair)) {
+            var m2 = obj[node.name];
+            if (typeof m2 === 'function') return { __bound: m2, __self: obj };
+            if (m2 !== undefined) return m2;          /* pair.first / pair.second */
+            throw cerr('该容器不支持的成员：' + node.name);
+          }
           /* string 的方法。s.length() 是竞赛里最常用的字符串操作，
              不支持的话连最基本的字符串处理都做不了。 */
           if (typeof obj === 'string') {
@@ -1442,6 +1900,22 @@
       var isArith = (op === '+' || op === '-' || op === '*' || op === '<<');
       var bothInt = isArith && Number.isInteger(a) && Number.isInteger(b) &&
                     typeof a === 'number' && typeof b === 'number';
+      /* 指针算术：`a + 3`（数组首地址 + 偏移）。
+         真 C++ 里 a 是指针、a+3 还是指针；这里用 {__ptr, __idx} 替身。
+         不做这个的话 `accumulate(a, a+n, 0)` 里的 a+n 会变成
+         数组的字符串拼接（"1,2,3" + 3 = "1,2,33"），
+         结果是完全不着边的输出，而且不报错。 */
+      if (op === '+' && Array.isArray(a) && typeof b === 'number') {
+        return { __ptr: a, __idx: b, valueOf: function () { return a[b]; } };
+      }
+      if (op === '+' && Array.isArray(b) && typeof a === 'number') {
+        return { __ptr: b, __idx: a, valueOf: function () { return b[a]; } };
+      }
+      /* 指针 - 指针 = 元素个数（unique(a,a+n) - a） */
+      if (op === '-' && a && a.__ptr && Array.isArray(b)) return a.__idx - 0;
+      if (op === '-' && a && a.__ptr && b && b.__ptr) return a.__idx - b.__idx;
+      if (op === '-' && a && a.__iter && Array.isArray(b)) return a.__at;
+
       switch (op) {
         case '+':
           if (typeof a === 'string' || typeof b === 'string') return this.str(a) + this.str(b);
@@ -1496,6 +1970,11 @@
     },
 
     assignTo: function (target, val, scope) {
+      /* 引用赋值转发：r = 9 要同时改 x */
+      if (target.type === 'Name' && this.aliases2 && this.aliases2[target.name]) {
+        var realName = this.aliases2[target.name];
+        return this.assignTo({ type: 'Name', name: realName }, val, scope);
+      }
       if (target.type === 'Name') { scope.set(target.name, val); return; }
       if (target.type === 'Index') {
         var arr = this.eval(target.obj, scope);
@@ -1575,7 +2054,14 @@
     callFunc: function (fn, args, parent) {
       var self = this;
       var sc = new Scope(this.global);
-      (fn.args || []).forEach(function (a, i) { sc.declare(a.name, i < args.length ? args[i] : 0); });
+      /* 实参不足时用默认值；没有默认值才补 0 */
+      (fn.args || []).forEach(function (a, i) {
+        var v;
+        if (i < args.length) v = args[i];
+        else if (a.def !== null && a.def !== undefined) v = self.eval(a.def, self.global);
+        else v = 0;
+        sc.declare(a.name, v);
+      });
       try {
         for (var i = 0; i < fn.body.length; i++) this.exec(fn.body[i], sc);
       } catch (e) {
@@ -1621,7 +2107,7 @@
 
   Code.cpplite = {
     tokenize: tokenize,
-    parse: function (src) { return new Parser(tokenize(src)).parse(); },
+    parse: function (src) { return new Parser(tokenize(preprocess(src))).parse(); },
     create: function (out, input) { return new Interp(out, input); },
     MAX_STEPS: MAX_STEPS,
     /* UB 模拟开关（S-082）。
@@ -1632,6 +2118,7 @@
     getUB: function () { return UB.mode; },
     /* 源码里出现过的 #define 宏名。导出是为了让断言能验证
        "用了宏会给出针对性提示"这件事，而不是只报"变量未定义"。 */
-    macros: function () { return MACROS; }
+    macros: function () { return MACROS; },
+    macroFns: function () { return MACRO_FNS; }
   };
 })(typeof window !== 'undefined' ? window : globalThis);

@@ -299,6 +299,14 @@
     return { __pair: true, first: (a === undefined ? 0 : a), second: (b === undefined ? 0 : b) };
   }
 
+  /* 把 BigInt 按 64 位有符号回绕（与 wrapInt 的 64 位分支一致） */
+  function wrapBigTo64(v) {
+    var m = 1n << 64n;
+    var r = ((v % m) + m) % m;
+    if (r >= (1n << 63n)) r -= m;
+    return r;
+  }
+
   function tokenize(src) {
     var t = [], i = 0, n = src.length;
     while (i < n) {
@@ -342,6 +350,13 @@
       /* 数字 */
       if (/[0-9]/.test(c) || (c === '.' && /[0-9]/.test(src[i + 1] || ''))) {
         var m = /^(0[xX][0-9a-fA-F]+|(\d+\.?\d*|\.\d+)([eE][+-]?\d+)?)/.exec(src.slice(i));
+        /* 数字后缀：`1LL`、`1000000007LL`、`3.5f`、`10u`。
+           竞赛里 `(1LL<<40)` 是防溢出的标准写法，
+           不认后缀会报"语法错误：期望 )，实际读到 LL"，
+           而用户看不出这是后缀的问题。 */
+        var after = src.slice(i + m[0].length);
+        var sm = /^([LuUlLfF]{1,2})(?![A-Za-z0-9_])/.exec(after);
+        if (sm) i += sm[0].length;
         /* ⚠ parseFloat 会把 1.0 变成整数 1，浮点性就此丢失。
            于是 `1.0/0` 被当成整数除零而报错，真 C++ 却是 inf。
            保留原始文本，供后面判断"这个字面量是浮点还是整数"。 */
@@ -399,7 +414,20 @@
     var depth = 1, elem = [];
     while (depth > 0 && !parser.at('EOF')) {
       var t = parser.peek();
-      if (t.t === 'OP' && t.v === '<') depth++;
+      if (t.t === 'OP' && t.v === '<') { depth++; elem.push(t.v); parser.p++; continue; }
+      /* ⚠ 词法把 `>>` 切成一个 token（右移运算符优先）。
+         `vector<vector<int>>` 的结尾就是 `>>`，
+         不拆开的话 depth 只减 1，剩下的 `>` 落在变量名位置，
+         报"读到意外的 int"。而二维 vector 在竞赛里很常见。 */
+      if (t.t === 'OP' && t.v === '>>') {
+        /* 就地拆成两个 '>'，但不在这里改 depth ——
+           让下面的正常流程分别消耗它们（内层一次、外层一次）。
+           在这里直接 depth -= 2 的话会少消耗一个 '>'，
+           残留的 '>' 落在变量名位置，就又报"读到意外的 int"了。 */
+        parser.t[parser.p] = { t: 'OP', v: '>' };
+        parser.t.splice(parser.p + 1, 0, { t: 'OP', v: '>' });
+        continue;
+      }
       if (t.t === 'OP' && t.v === '>') { depth--; if (depth === 0) { parser.p++; break; } }
       elem.push(t.v); parser.p++;
     }
@@ -462,7 +490,20 @@
         this.expect('OP', ')');
         init = { type: 'CtorArgs', a: a1, b: a2 };
       } else if (this.eat('OP', '=')) {
-        init = this.assign();
+        /* 花括号初始化列表：vector<int> v = {3,1,2};
+           不支持的话报"读到意外的 {"，而这是 C++11 起最常见的初始化写法。 */
+        if (this.atOp('{')) {
+          this.p++;
+          var elts = [];
+          while (!this.atOp('}') && !this.at('EOF')) {
+            elts.push(this.assign());
+            if (!this.eat('OP', ',')) break;
+          }
+          this.expect('OP', '}');
+          init = { type: 'InitList', elts: elts };
+        } else {
+          init = this.assign();
+        }
       }
       this.expect('OP', ';');
       return { type: 'ContainerDecl', kind: cdecl.kind, elem: cdecl.elem, name: name, init: init };
@@ -672,7 +713,15 @@
       var args = [];
       while (!this.atOp(')')) {
         while (this.at('TYPE') && (this.peek().v === 'const' || this.peek().v === 'unsigned')) this.p++;
-        var ty = this.at('TYPE') ? this.next().v : 'auto';
+        /* 参数类型可能是 struct 名（`bool cmp(P a, P b)`）。
+           P 是 NAME 不是 TYPE，不认的话 P 会被当成参数名、
+           真正的参数名 a 就成了多余 token，报"期望 )，实际读到 a"。
+           而按结构体字段排序是竞赛里极常见的操作。 */
+        var ty;
+        if (this.at('TYPE')) { ty = this.next().v; }
+        else if (this.at('NAME') && this.structNames && this.structNames[this.peek().v]) {
+          ty = this.next().v;
+        } else { ty = 'auto'; }
         /* 引用参数 `int &n`：& 在名字之前 */
         var byRef = false;
         if (this.atOp('&')) { this.p++; byRef = true; }
@@ -1141,7 +1190,40 @@
   function CContinue() { this.__continue = true; }
   function CReturn(v) { this.value = v; this.__return = true; }
 
+  /* 当前解释器实例的引用。
+     sort 的比较器要回调用户函数，而 builtin 是纯函数拿不到 this ——
+     用一个模块级变量指向最近创建的实例。
+     ⚠ 这是有意的妥协：builtin 用 .apply(null, ...) 调用，没有 this。 */
+  var INTERP = null;
+
+  /* sort 的比较器：`sort(a, a+n, cmp)` 或 `sort(v.begin(), v.end(), cmp)`。
+     竞赛里降序、按结构体字段排序全靠它。
+     第三参数可能是用户函数名（__fn 标记）或内置函数。 */
+  function resolveCmp(self2, cmp) {
+    if (!cmp) return function (x, y) {
+      if (typeof x === 'number' && typeof y === 'number') return x - y;
+      return String(x) < String(y) ? -1 : (String(x) > String(y) ? 1 : 0);
+    };
+    var fnNode = null, builtin = null;
+    if (typeof cmp === 'object' && cmp.__fn) fnNode = self2.funcs[cmp.__fn] ? self2.funcs[cmp.__fn].node : null;
+    if (typeof cmp === 'object' && cmp.__builtinFn) builtin = cmp.__builtinFn;
+    if (typeof cmp === 'object' && cmp.__lambda) fnNode = cmp.node;
+    if (!fnNode && !builtin) return null;
+    return function (x, y) {
+      if (builtin) return builtin(x, y);
+      var sc = new Scope(self2.global);
+      (fnNode.args || []).forEach(function (a, i) { sc.declare(a.name, i === 0 ? x : y); });
+      var ret = null;
+      try {
+        for (var bi = 0; bi < fnNode.body.length; bi++) self2.exec(fnNode.body[bi], sc);
+      } catch (e) { if (e && e.__return) ret = e.value; else throw e; }
+      /* 返回 true/1 表示 x 应排在 y 前面 */
+      return (ret === true || ret === 1) ? -1 : (ret ? -1 : 1);
+    };
+  }
+
   function Interp(out, input) {
+    INTERP = this;
     this.out = out || function () { };
     this.input = input || function () { return ''; };
     this.steps = 0;
@@ -1226,17 +1308,31 @@
        * 数组是原地排序（C++ 语义就是原地），返回排序后的数组以便链式使用。
        */
       this.funcs.sort = {
-        builtin: function (a, b, c) {
+        builtin: function (a, b, c, d) {
+          var self2 = INTERP;
           if (!Array.isArray(a)) throw cerr('sort 的第一个参数必须是数组');
           var arr = a;
-          var l = 0, r = arr.length;
-          if (typeof b === 'number') {
-            /* sort(a, n)：第二个参数是个数 */
-            if (c === undefined) { l = 0; r = Math.min(b, arr.length); }
-            /* sort(a, l, r)：左闭右开区间 */
-            else { l = b; r = Math.min(c, arr.length); }
-          }
-          var part = arr.slice(l, r).sort(function (x, y) {
+          var l = 0, r = arr.length, cmpArg = null;
+          var isFn = function (v) { return v && typeof v === 'object' && (v.__fn || v.__builtinFn || v.__lambda); };
+          var isPtr = function (v) { return v && typeof v === 'object' && (v.__ptr || v.__iter); };
+          /* 形式：sort(a, cmp) —— 数组 + 比较器 */
+          if (isFn(b)) { cmpArg = b; }
+          /* 形式：sort(a, a+n, cmp) —— 指针尾 + 比较器。
+             ⚠ 必须放在 number 判定之前：`a+n` 是指针替身不是数字，
+             漏了这条的话比较器被忽略，降序变升序 ——
+             不报错，只是答案反了，竞赛里最难查。 */
+          else if (isPtr(b) && isFn(c)) { r = (b.__idx !== undefined ? b.__idx : b.__at) || 0; cmpArg = c; }
+          else if (isPtr(b)) { r = (b.__idx !== undefined ? b.__idx : b.__at) || 0; }
+          /* 形式：sort(a, n, cmp) */
+          else if (typeof b === 'number' && typeof c === 'object') { r = Math.min(b, arr.length); cmpArg = c; }
+          /* 形式：sort(a, n) */
+          else if (typeof b === 'number' && c === undefined) { r = Math.min(b, arr.length); }
+          /* 形式：sort(a, l, r) */
+          else if (typeof b === 'number' && typeof c === 'number') { l = b; r = Math.min(c, arr.length); cmpArg = d; }
+          /* 形式：sort(begin, end, cmp) 已在 doCall 处理 */
+          var cmpFn = resolveCmp(self2, cmpArg);
+          if (cmpArg && !cmpFn) throw cerr('无法识别的比较器');
+          var part = arr.slice(l, r).sort(cmpFn || function (x, y) {
             if (typeof x === 'number' && typeof y === 'number') return x - y;
             return String(x) < String(y) ? -1 : (String(x) > String(y) ? 1 : 0);
           });
@@ -1391,11 +1487,19 @@
         }
       };
       /* swap：交换两个元素（数组+下标 或 两个变量不行，这里支持数组形式） */
+      /* swap(a, b)：支持变量名形式。
+         ⚠ 靠 __swapNames 拿到调用处的实参**名字**，再走作用域交换。
+         因为值传进来只是副本，直接交换改不到外面 ——
+         表面上"跑成功了"但两个变量纹丝不动，这是最隐蔽的一类错。 */
       this.funcs.swap = {
         builtin: function (a, b) {
-          /* swap(a[i], a[j]) 形式：传进来已经是值，改不了 —— 明确告知 */
-          if (!Array.isArray(a)) throw cerr('swap 需要数组形式：swap(a[i], a[j]) 在本环境不支持（无法按引用传值），请手写临时变量');
-          return a;
+          var names = this && this.__swapNames;
+          if (names && names[0] && names[1]) {
+            var sc = INTERP ? INTERP.curScope : null;
+            if (sc) { var tmp = sc.get(names[0]); sc.set(names[0], sc.get(names[1])); sc.set(names[1], tmp); return 0; }
+          }
+          /* 数组形式：swap(a[i], a[j]) 拿不到左值，明确告知 */
+          throw cerr('swap 需要两个变量名：swap(a, b)。数组元素形式 swap(a[i], a[j]) 在本环境不支持，请手写临时变量');
         }
       };
       /* binary_search：存在性二分 */
@@ -1442,6 +1546,10 @@
       }
       if (typeof v === 'string') return v;
       if (Array.isArray(v)) return '[' + v.map(this.str, this).join(', ') + ']';
+      if (v && typeof v === 'object' && v.__manip) {
+        if (v.__manip === 'endl') return '\n';
+        return '';    /* fixed / hex 等只影响格式，不产生字符 */
+      }
       return String(v);
     },
 
@@ -1504,10 +1612,16 @@
             if (node.init && node.init.type === 'CtorArgs' && node.init.a !== null) {
               var cnt = self.eval(node.init.a, scope) | 0;
               var fill = node.init.b !== null ? self.eval(node.init.b, scope) : 0;
-              for (var ci = 0; ci < cnt; ci++) val2.push(fill);
+              /* ⚠ 元素类型本身是容器时（`vector<vector<int>> g(3)`），
+                 每个元素必须建一个空数组而不是填 0 ——
+                 否则 `g[0].push_back(1)` 会报"结构体成员访问"，
+                 因为 g[0] 是数字 0。真实 C++ 里这是 3 个空 vector。 */
+              var elemIsContainer = /vector|map|set|deque|stack|queue|list|pair/.test(node.elem || '');
+              for (var ci = 0; ci < cnt; ci++) val2.push(elemIsContainer ? [] : fill);
             } else if (node.init) {
               var iv = self.eval(node.init, scope);
               if (Array.isArray(iv)) val2 = iv.slice();
+              else if (iv !== null && iv !== undefined) val2 = [iv];
             }
           }
           scope.declare(node.name, val2);
@@ -1730,6 +1844,30 @@
         case 'Bool': return node.v;
         case 'Null': return null;
         case 'Name':
+          /* 函数名当值用：`sort(a, a+n, cmp)`。
+             不查函数表的话会报"变量未定义：cmp"，而 cmp 明明就定义在上面 ——
+             用户会以为自己拼错了，实际是我们不支持函数指针。 */
+          if (this.funcs[node.name] && this.funcs[node.name].node) {
+            return { __fn: node.name };
+          }
+          if (this.funcs[node.name] && this.funcs[node.name].builtin) {
+            return { __builtinFn: this.funcs[node.name].builtin };
+          }
+          /* 流操纵符：endl / fixed / scientific / hex / dec / boolalpha
+             `cout << endl` 在 C++ 里是换行，不是变量 ——
+             当变量查会报"变量未定义：endl"，而这是每行输出都写的东西。 */
+          if (node.name === 'endl') return { __manip: 'endl' };
+          if (node.name === 'fixed') return { __manip: 'fixed' };
+          if (node.name === 'scientific') return { __manip: 'scientific' };
+          if (node.name === 'hex' || node.name === 'dec' || node.name === 'oct') return { __manip: 'base' };
+          if (node.name === 'boolalpha') return { __manip: 'boolalpha' };
+          if (node.name === 'setprecision') return { __manip: 'setprecision' };
+          if (this.funcs[node.name] && this.funcs[node.name].node) {
+            return { __fn: node.name };
+          }
+          if (this.funcs[node.name] && this.funcs[node.name].builtin) {
+            return { __builtinFn: this.funcs[node.name].builtin };
+          }
           try { return scope.get(node.name); } catch (e) {
             /* 与 Scope.get 里同样的宏提示。
                表达式里用到宏（`int x = N;`）走的是这里，
@@ -1746,10 +1884,22 @@
            只接了 BinOp 的话，`a==0 || b==1` 这种最常见的条件判断
            会报"暂不支持的表达式：Logic" —— 而它在 if 里无处不在。 */
         case 'Logic': return this.binop(node, scope);
+        /* 初始化列表 {1,2,3}：求值为数组。
+           数组声明与容器声明都用它，求值一次即可。 */
+        case 'InitList':
+          return node.elts.map(function (e) { return self.eval(e, scope); });
+
         case 'Cast': {
           var cv = this.eval(node.v, scope);
+          if (node.ctype === 'char' || node.ctype === 'unsigned char') {
+            /* (char)65 → 'A'：转成字符。
+               返回数字 65 的话 `cout << (char)65` 打印 65 而不是 A，
+               与真 C++ 不一致。 */
+            if (typeof cv === 'number') return String.fromCharCode(Math.trunc(cv) & 0xff);
+            return cv;
+          }
           if (node.ctype === 'int' || node.ctype === 'long' || node.ctype === 'long long' ||
-              node.ctype === 'short' || node.ctype === 'char' || node.ctype === 'unsigned') {
+              node.ctype === 'short' || node.ctype === 'unsigned') {
             if (typeof cv === 'string' && cv.length === 1) return cv.charCodeAt(0);
             return Math.trunc(Number(cv)) || 0;
           }
@@ -1950,11 +2100,27 @@
         case '>': return a > b;
         case '<=': return a <= b;
         case '>=': return a >= b;
-        case '<<': return (a | 0) << (b | 0);
-        case '>>': return (a | 0) >> (b | 0);
-        case '&': return (a | 0) & (b | 0);
-        case '|': return (a | 0) | (b | 0);
-        case '^': return (a | 0) ^ (b | 0);
+        /* ⚠ JS 的位运算符是 32 位的，且移位量会 mod 32：
+             `1 << 40` 实际算的是 `1 << 8` = 256。
+           而 C++ 的 `1LL << 40` = 1099511627776。
+           这是防溢出的标准写法（快速幂、状压、哈希都用它），
+           算错不报错，只是答案差若干个数量级 —— 最难查的一类错。
+           所以超出 32 位范围时改用 BigInt 并按 64 位回绕。 */
+        case '<<':
+          if (b >= 31 || Math.abs(a) >= 0x40000000) {
+            var sh = BigInt(Math.trunc(a)) << BigInt(Math.trunc(Math.abs(b)));
+            return Number(wrapBigTo64(sh));
+          }
+          return (a | 0) << (b | 0);
+        case '>>':
+          if (b >= 31 || Math.abs(a) >= 0x40000000) {
+            var sh2 = BigInt(Math.trunc(a)) >> BigInt(Math.trunc(Math.abs(b)));
+            return Number(sh2);
+          }
+          return (a | 0) >> (b | 0);
+        case '&': return Number(BigInt(Math.trunc(a)) & BigInt(Math.trunc(b)));
+        case '|': return Number(BigInt(Math.trunc(a)) | BigInt(Math.trunc(b)));
+        case '^': return Number(BigInt(Math.trunc(a)) ^ BigInt(Math.trunc(b)));
       }
       throw cerr('暂不支持的运算符：' + op);
     },
@@ -2029,14 +2195,33 @@
         throw cerr('不是可调用的成员');
       }
       var name = node.callee.type === 'Name' ? node.callee.name : null;
+      /* 记录实参的**名字**与当前作用域：swap 这类需要按引用改写的函数要用。
+         只传值的话 swap 只能改副本，外面看不到变化。 */
+      var argNames = node.args.map(function (a) { return (a && a.type === 'Name') ? a.name : null; });
       var args = node.args.map(function (a) { return self.eval(a, scope); });
+      if (name === 'swap') {
+        var saved = INTERP ? INTERP.curScope : null;
+        if (INTERP) INTERP.curScope = scope;
+        var sv = self.funcs.swap && self.funcs.swap.builtin;
+        if (sv) {
+          var r5 = sv.call({ __swapNames: argNames }, args[0], args[1]);
+          if (INTERP) INTERP.curScope = saved;
+          return r5;
+        }
+        if (INTERP) INTERP.curScope = saved;
+      }
       /* sort(v.begin(), v.end()) —— 迭代器形式。
          竞赛代码里 sort 几乎都写成这样，只支持 sort(a, n) 是不够的。 */
       if (name === 'sort' && args.length >= 2 && args[0] && args[0].__iter) {
         var container = args[0].__iter;
         var l = args[0].__at || 0;
         var r = (args[1] && args[1].__iter === container) ? (args[1].__at || 0) : container.length;
-        var part2 = container.slice(l, r).sort(function (x, y) {
+        /* 第三个参数可能是比较器：sort(v.begin(), v.end(), cmp) */
+        var cmpFn2 = null;
+        if (args[2] && typeof args[2] === 'object' && (args[2].__fn || args[2].__builtinFn || args[2].__lambda)) {
+          cmpFn2 = resolveCmp(this, args[2]);
+        }
+        var part2 = container.slice(l, r).sort(cmpFn2 || function (x, y) {
           if (typeof x === 'number' && typeof y === 'number') return x - y;
           return String(x) < String(y) ? -1 : (String(x) > String(y) ? 1 : 0);
         });
@@ -2047,6 +2232,13 @@
         var f = this.funcs[name];
         if (f.builtin) return f.builtin.apply(null, args);
         return this.callFunc(f.node, args, this.global);
+      }
+      /* 函数作为值调用：cmp(...) 或 sort 收到 __fn 后回调 */
+      if (name) {
+        var vv = null;
+        try { vv = scope.get(name); } catch (e2) { vv = null; }
+        if (vv && typeof vv === 'object' && vv.__fn) return this.callFunc(this.funcs[vv.__fn].node, args, this.global);
+        if (vv && typeof vv === 'object' && vv.__builtinFn) return vv.__builtinFn.apply(null, args);
       }
       throw cerr('暂不支持的函数：' + (name || '(表达式)'));
     },

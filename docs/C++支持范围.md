@@ -5,6 +5,10 @@
 ## 基础
 
 `main` / `cin` `cout` / `printf` / `#include <bits/stdc++.h>` / `using namespace std`
+- 流操纵符 `endl`（换行）、`fixed`、`hex`、`boolalpha` 等（格式类只影响格式，不报错）
+- `cout << bool` 输出 `1`/`0`
+- 数字后缀 `1LL` `1000000007LL` `3.5f`
+- 位运算按 64 位算：`1LL << 40` = 1099511627776（JS 原生 32 位会算成 256）
 
 ## 类型
 
@@ -25,6 +29,8 @@
 ## 数组与容器
 
 - 一维与多维数组 `int a[2][2]`
+- **二维 vector** `vector<vector<int>>`（含 `g(n)` 构造与 `g[i].push_back(x)`）
+- 花括号初始化 `vector<int> v = {3,1,2}`、`int a[3] = {1,2,3}`
 - `vector`（`push_back` `size` `pop_back` `begin` `end` `front` `back`）
 - `set`（`insert` `count` `erase` `size`）
 - `map`（下标读写、`size` `count` `find` `erase`）
@@ -51,6 +57,8 @@
 - 递归、默认参数 `int f(int a, int b = 10)`
 - 引用参数 `int &n`
 - 引用变量 `int &r = x;`（读写转发到原变量）
+- 函数名可当值传（比较器依赖它）
+- `swap(a, b)` 交换变量
 
 ## struct
 

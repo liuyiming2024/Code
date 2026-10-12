@@ -407,10 +407,84 @@ function explainFetchError(err) {
   return m;
 }
 
+/* ================= 网络体检 =================
+ *
+ * 为什么需要它：
+ *   "NetworkError when attempting to fetch resource" 是一句什么都没说的话。
+ *   它可能意味着断网、被公司网拦、被插件拦、CORS 拒绝、或者资源没了 ——
+ *   这五种的处理方式完全不同，但错误信息一模一样。
+ *   用户看到它只能得出一个结论：这软件不能用。
+ *
+ * 判别方法（这是关键）：
+ *   对同一个 URL 分别用 no-cors 和 cors 模式请求一次。
+ *   - no-cors 成功、cors 失败  → 网络是通的，是 CORS 拒绝了读取 → 跨域策略问题
+ *   - 两者都失败               → 网络层就断了 → 断网 / 被拦 / 插件
+ *   - 两者都成功               → 链路正常，下载失败另有原因
+ *   no-cors 的响应是 opaque（读不到内容），但请求确实发出去了，
+ *   所以它能把"网络通不通"和"能不能读"这两件事分开。
+ */
+function probeOnce(url, mode) {
+  var started = Date.now();
+  return origFetch(url, { mode: mode, cache: 'no-store', redirect: 'follow' })
+    .then(function (r) {
+      return { ok: true, status: r.status, type: r.type, ms: Date.now() - started };
+    })
+    .catch(function (e) {
+      return { ok: false, err: String((e && e.message) || e), ms: Date.now() - started };
+    });
+}
+
+function diagnose() {
+  var assetUrl = BASE + 'sql-wasm.js';   /* 体积最小的资产，体检不该让用户等大文件 */
+  var steps = [];
+  var out = { steps: steps };
+
+  function note(name, obj) { steps.push(obj); return obj; }
+
+  /* 第 1 步：GitHub 本身通不通 */
+  return probeOnce('https://github.com/', 'no-cors').then(function (a) {
+    note({ name: 'GitHub 连通性', mode: 'no-cors', r: a });
+    /* 第 2 步：资产直链，no-cors */
+    return probeOnce(assetUrl, 'no-cors');
+  }).then(function (b) {
+    note({ name: '资产直链（不校验跨域）', mode: 'no-cors', r: b });
+    /* 第 3 步：同一 URL，cors（真实下载用的就是这个） */
+    return probeOnce(assetUrl, 'cors');
+  }).then(function (c) {
+    note({ name: '资产直链（校验跨域，下载实际走的）', mode: 'cors', r: c });
+
+    /* 组合判断 */
+    var netOk = b.ok;
+    var corsOk = c.ok;
+    if (!netOk) {
+      out.verdict = 'network';
+      out.text = '网络层就断了：连不校验跨域的请求都发不出去。' +
+        '通常是断网、公司/校园网拦了 GitHub、或浏览器插件拦截。' +
+        '可试着在地址栏直接打开 ' + assetUrl + ' —— 那边也打不开的话就是网络问题，不是本项目的 bug。';
+    } else if (!corsOk) {
+      out.verdict = 'cors';
+      out.text = '网络是通的，但跨域读取被拒绝了 —— 这是 CORS 问题，不是你的网断了。' +
+        'GitHub 的下载直链会 302 跳到 objects.githubusercontent.com，' +
+        '跳转途中缺少跨域头时浏览器就会这样。' +
+        '这条靠本项目改代码绕不过去，需要换下载源。';
+    } else {
+      out.verdict = 'ok';
+      out.text = '链路正常（连通性与跨域都通过）。下载若仍失败，请重试 —— 可能是瞬时抖动。';
+    }
+    out.assetUrl = assetUrl;
+    return out;
+  });
+}
+
 /* ================= 消息入口 ================= */
 
 self.addEventListener('message', function (e) {
   var d = e.data || {};
+  if (d.cmd === 'diag') {
+    diagnose().then(function (r) { say('diag', r); },
+                    function (err) { say('diag', { verdict: 'error', text: String(err && err.message || err) }); });
+    return;
+  }
   if (d.cmd === 'prepare') {
     say('begin', { lang: d.lang, sizeHint: SIZE_HINT[d.lang] || 0 });
     prepare(d.lang).then(function () { say('ready', { lang: d.lang }); },

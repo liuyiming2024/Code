@@ -440,6 +440,56 @@
       U.modal({ title: '扩展中心', body: '<p class="about-p">语言模块未加载，无法列出扩展。</p>', actions: [{ label: '知道了', primary: true }] });
       return;
     }
+    /* 下载失败时最该做的不是重试，而是先弄清楚为什么失败。
+       "NetworkError" 分不清是断网、被拦还是跨域被拒，
+       而这三者的处理方式完全不同。体检按钮一次就能判定。 */
+    var diagBtn = U.el('button', {
+      class: 'btn small', text: '网络体检',
+      onclick: function () {
+        diagBtn.disabled = true;
+        diagBtn.textContent = '体检中…';
+        var box = U.$('#ext-diag');
+        if (box) {
+          box.classList.remove('hidden');
+          box.textContent = '正在检测（约几秒）…';
+        }
+        if (!Code.runtimes || !Code.runtimes.diagnose) {
+          if (box) box.textContent = '运行时管理模块未加载，无法体检。';
+          diagBtn.disabled = false; diagBtn.textContent = '网络体检';
+          return;
+        }
+        Code.runtimes.diagnose({
+          diag: function (r) {
+            diagBtn.disabled = false;
+            diagBtn.textContent = '重新体检';
+            if (!box) return;
+            var head = (r && r.verdict === 'ok') ? '结论：链路正常'
+              : (r && r.verdict === 'cors') ? '结论：跨域被拒（CORS）'
+              : (r && r.verdict === 'network') ? '结论：网络层不通'
+              : '结论：体检未能完成';
+            var txt = head + '\n\n' + (r && r.text ? r.text : '') + '\n';
+            if (r && r.assetUrl) txt += '\n体检用的地址：' + r.assetUrl;
+            if (r && r.steps && r.steps.length) {
+              txt += '\n\n分步结果：';
+              r.steps.forEach(function (st) {
+                var x = st.r || {};
+                txt += '\n  · ' + st.name + '：' +
+                  (x.ok ? ('成功（状态 ' + x.status + '，' + x.ms + 'ms）')
+                        : ('失败（' + (x.err || '?') + '）'));
+              });
+            }
+            box.textContent = txt;
+          },
+          fail: function (d) {
+            diagBtn.disabled = false;
+            diagBtn.textContent = '网络体检';
+            if (box) box.textContent = '体检失败：' + ((d && d.error) || '未知');
+          }
+        });
+      }
+    });
+    rootDiagHolder = diagBtn;
+
     var close = U.modal({
       title: '扩展中心',
       body: '<p class="about-p">这些是可选的运行时扩展。基础功能（JavaScript、HTML、Python 子集、C/C++ 子集）' +
@@ -455,7 +505,10 @@
           '下载与加载链路只做过结构断言，实际能否跑出结果一次都没验过。' +
           '建议先试体积最小的 SQLite（约 0.7 MB），它通了就说明整条链路是好的。</p>' +
         '<div id="ext-list" class="ext-list"></div>',
-      actions: [{ label: '关闭', primary: true }]
+      actions: [
+        (function () { return rootDiagHolder; })(),
+        { label: '关闭', primary: true }
+      ]
     });
 
     var list = U.$('#ext-list');

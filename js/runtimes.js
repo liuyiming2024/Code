@@ -116,6 +116,12 @@
     call({ cmd: 'prepare', lang: lang }, hooks || {}, 10 * 60 * 1000);
   }
 
+  /* 网络体检：把"NetworkError"这种什么都没说的报错，
+     拆成"网络断了"还是"跨域被拒"——这两种的处理方式完全不同。 */
+  function diagnose(hooks) {
+    call({ cmd: 'diag' }, hooks || {}, 45000);
+  }
+
   function clearCache(onDone) {
     call({ cmd: 'drop' }, {
       cleared: function () { onDone && onDone(); },
@@ -126,6 +132,7 @@
   Code.runtimes = {
     run: run,
     prepare: prepare,
+    diagnose: diagnose,
     clearCache: clearCache,
     has: function (lang) { return !!({ sql: 1, python: 1, lua: 1, php: 1, ruby: 1, cpp: 1 })[lang]; },
     label: function (lang) { return LABEL[lang] || lang; },

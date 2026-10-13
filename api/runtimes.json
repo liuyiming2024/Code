@@ -1,5 +1,5 @@
 {
-  "updated": "2026-10-11",
+  "updated": "2026-10-13",
   "source": "https://github.com/liuyiming2024/assets/releases/latest",
   "base": "https://github.com/liuyiming2024/assets/releases/download/latest/",
   "shaSource": "GitHub Release 资产的 digest 字段（sha256:…），非人工抄写",
@@ -12,7 +12,10 @@
     "只列 assets 库 Release 里确实存在的资产，SHA-256 取自 Release API 的 digest 字段。",
     "workerType：classic 用 importScripts 注入 UMD；module 用动态 import 注入 ESM。",
     "entry 是入口胶水；其余是它运行要拉的 wasm / stdlib / sysroot。",
-    "cpp 与 ruby 的入口是 ESM，走 Worker 内的动态 import()；其余是 UMD，走 importScripts。两者在同一 classic Worker 内共存。"
+    "",
+    "端到端验证状态（2026-10-13）：以下运行时尚未在真机跑通过一次，",
+    "沙箱环境无法访问 Release 下载端点。建议先试体积最小的 sqlite（约 692 KB）。",
+    "清单描述的是「资源确实存在」，不是「已经验证可用」。"
   ],
   "runtimes": [
     {
@@ -231,7 +234,14 @@
       "caveat": "clang.wasm 43MB + lld.wasm 23MB + sysroot.tar 29MB，内存占用大、首次编译慢"
     }
   ],
-  "planned": [],
+  "planned": [
+    "找 ruby-wasi.js 的 IIFE 版（当前 ruby 入口是 ESM，需 module Worker）",
+    "给 Ruby 单起 module Worker（与 classic Worker 并存）",
+    "完成 browsercc 的 C++ 接线（资源已就位，链路未通）",
+    "验证 file:// 下 Worker 是否被拦（当前只在 http(s) 下测过）",
+    "Lua 选型决策：docs/runtimes.md 结论选 Wasmley，代码锁 Fengari，需定一个",
+    "quickjs 只登记了 optIn 常量，未实际接入（清单里列了但代码里没接）"
+  ],
   "sizes": {
     "sqlite": 708594,
     "lua": 1688983,

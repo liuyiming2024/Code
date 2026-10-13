@@ -74,6 +74,11 @@
     }
     var mod = Math.pow(2, bits);
     var r2 = ((v % mod) + mod) % mod;
+    /* ⚠ unsigned 不能按有符号回绕（对照测试实测发现）。
+       `unsigned r = u - 1` 此前得到 -1，而 g++ 是 4294967295 ——
+       unsigned 永不為负，这是它最基本的性质。
+       wrapInt 里 unsigned 不匹配任何宽度分支，默认走了有符号回绕。 */
+    if (/unsigned/.test(String(type))) return r2 >>> 0;
     if (r2 >= mod / 2) r2 -= mod;
     return r2;
   }

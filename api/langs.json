@@ -1,4 +1,6 @@
 {
+  "updated": "2026-10-13",
+  "generatedBy": "scripts/gen-api.js（由 js/langs.js 生成，请勿手写）",
   "languages": [
     {
       "name": "JavaScript",
@@ -8,37 +10,8 @@
         "cjs"
       ],
       "run": true,
-      "tier": "builtin"
-    },
-    {
-      "name": "JSON",
-      "ext": [
-        "json"
-      ],
-      "run": false,
-      "tier": "none"
-    },
-    {
-      "name": "Python",
-      "ext": [
-        "py"
-      ],
-      "run": true,
-      "note": "自研子集解释器（非 CPython）：不支持 import 第三方库 / async / 生成器 / 装饰器",
-      "tier": "builtin"
-    },
-    {
-      "name": "C / C++",
-      "ext": [
-        "c",
-        "h",
-        "cpp",
-        "hpp",
-        "cc"
-      ],
-      "run": true,
-      "note": "自研教学级子集：不支持指针与地址运算、struct/class、模板、STL、头文件与多文件",
-      "tier": "builtin"
+      "tier": "builtin",
+      "note": "浏览器原生执行；需下载 quickjs 运行时（约 499 KB），缓存后离线可用"
     },
     {
       "name": "HTML",
@@ -47,15 +20,81 @@
         "htm"
       ],
       "run": true,
-      "note": "在 sandbox 隔离框架里预览",
-      "tier": "builtin"
+      "tier": "builtin",
+      "note": "在 sandbox 隔离框架里预览"
+    },
+    {
+      "name": "Python",
+      "ext": [
+        "py"
+      ],
+      "run": true,
+      "tier": "builtin",
+      "note": "不是 CPython，不支持 import 第三方库 / async / 生成器 / 装饰器；整数超过 2^53 走 BigInt（精确），元组不可变；需下载 pyodide 运行时（约 12152.7 KB），缓存后离线可用"
+    },
+    {
+      "name": "C / C++",
+      "ext": [
+        "c",
+        "h",
+        "cpp",
+        "hpp",
+        "cc",
+        "cxx"
+      ],
+      "run": true,
+      "tier": "builtin",
+      "note": "自研子集：不支持指针与地址运算、class、模板、标准 STL 容器、头文件与多文件；struct（含嵌套）可用；需下载 cpp 运行时（约 92340.2 KB），缓存后离线可用"
+    },
+    {
+      "name": "SQL",
+      "ext": [
+        "sql"
+      ],
+      "run": true,
+      "tier": "download",
+      "note": "SQLite 引擎；需下载 sqlite 运行时（约 692 KB），缓存后离线可用"
+    },
+    {
+      "name": "Lua",
+      "ext": [
+        "lua"
+      ],
+      "run": true,
+      "tier": "download",
+      "note": "Lua 5.4 引擎；需下载 lua 运行时（约 1649.4 KB），缓存后离线可用"
+    },
+    {
+      "name": "Ruby",
+      "ext": [
+        "rb"
+      ],
+      "run": true,
+      "tier": "download",
+      "note": "Ruby 引擎；需下载 ruby 运行时（约 34402.7 KB），缓存后离线可用"
+    },
+    {
+      "name": "PHP",
+      "ext": [
+        "php",
+        "phtml"
+      ],
+      "run": true,
+      "tier": "download",
+      "note": "PHP 8.x 引擎；需下载 php 运行时（约 17080.9 KB），缓存后离线可用"
+    },
+    {
+      "name": "JSON",
+      "ext": [
+        "json"
+      ],
+      "tier": "none"
     },
     {
       "name": "CSS",
       "ext": [
         "css"
       ],
-      "run": false,
       "tier": "none"
     },
     {
@@ -64,7 +103,6 @@
         "md",
         "markdown"
       ],
-      "run": false,
       "tier": "none"
     },
     {
@@ -73,17 +111,7 @@
         "yml",
         "yaml"
       ],
-      "run": false,
       "tier": "none"
-    },
-    {
-      "name": "SQL",
-      "ext": [
-        "sql"
-      ],
-      "run": false,
-      "tier": "download",
-      "note": "需下载 SQLite 引擎（约 660 KB），缓存后离线可用"
     },
     {
       "name": "Shell",
@@ -91,10 +119,16 @@
         "sh",
         "bash"
       ],
-      "run": false,
+      "tier": "none"
+    },
+    {
+      "name": "纯文本",
+      "ext": [
+        "txt"
+      ],
       "tier": "none"
     }
   ],
   "note": "run=true 表示可在页面内执行。tier 说明能力来源：builtin=内置自研或浏览器原生，零依赖离线可用；download=需按需下载 WASM 运行时（首次联网，缓存后离线）；none=仅着色与编辑。Python 与 C/C++ 为自研子集，界面与报错中均如实标注，不冒充完整实现。",
-  "runtimes": "api/runtimes.json"
+  "runtimes": "/Code/api/runtimes.json"
 }

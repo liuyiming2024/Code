@@ -34,7 +34,8 @@
       id: 'python', name: 'Python', exts: ['py'],
       tier: TIER.BUILTIN, runner: 'pylite',
       desc: '自研子集解释器',
-      caveat: '不是 CPython，不支持 import 第三方库 / async / 生成器 / 装饰器',
+      /* 补实测发现的三条（S-057/058/059 已修，但边界要写明） */
+      caveat: '不是 CPython，不支持 import 第三方库 / async / 生成器 / 装饰器；整数超过 2^53 走 BigInt（精确），元组不可变',
       /* upgrade=true：自研已够用，下载真 CPython 后自动切换 */
       wasm: { id: 'pyodide', upgrade: true, desc: '完整 CPython 编译到 WASM，含标准库，可用 micropip 装纯 Python 包' }
     },
@@ -42,7 +43,11 @@
       id: 'cpp', name: 'C / C++', exts: ['c', 'h', 'cpp', 'hpp', 'cc', 'cxx'],
       tier: TIER.BUILTIN, runner: 'cpplite',
       desc: '自研教学级子集',
-      caveat: '不支持指针与地址运算、struct / class、模板、STL、头文件与多文件',
+      /* ⚠ caveat 必须跟着实现走。
+         原文写"不支持 struct / class"，而 struct 单层（S-074）与嵌套（S-127）都已支持 ——
+         这份 caveat 同时喂给界面和 api/langs.json（对外承诺），
+         说"不支持"会让集成方屏蔽一个其实能用的功能。 */
+      caveat: '自研子集：不支持指针与地址运算、class、模板、标准 STL 容器、头文件与多文件；struct（含嵌套）可用',
       wasm: { id: 'cpp', upgrade: true, desc: '真 Clang + LLD，能在浏览器里编译运行完整 C/C++' }
     },
     {

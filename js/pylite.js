@@ -922,7 +922,12 @@
         self.out(parts.join(sep));
         return null;
       });
-      B.len = function (v) { return seq(v).length; };
+      B.len = function (v) {
+        /* dict 先判（S-064）：dict 不是数组，落到 iterable 分支会报
+           "对象不可迭代：{1: 'a'}"，而真 Python 的 len({1:'a'}) 就是 1。 */
+        if (v && v.__dict) return Object.keys(v.__dict).length;
+        return seq(v).length;
+      };
       B.range = function () {
         var a = arguments;
         var start = 0, stop, step = 1;
@@ -944,7 +949,11 @@
       B.float = function (v) { return arguments.length === 0 ? 0.0 : parseFloat(v); };
       B.bool = function (v) { return arguments.length === 0 ? false : self.truthy(v); };
       B.list = function (v) { return arguments.length === 0 ? [] : seq(v).slice(); };
-      B.tuple = function (v) { return arguments.length === 0 ? [] : seq(v).slice(); };
+      B.tuple = function (v) {
+        var a = arguments.length === 0 ? [] : seq(v).slice();
+        a.__tuple = true;
+        return a;
+      };
       B.set = function (v) { return arguments.length === 0 ? [] : dedup(seq(v)); };
       B.dict = function () {
         var d = {};
@@ -979,14 +988,27 @@
       B.reversed = function (v) { return seq(v).slice().reverse(); };
       B.enumerate = function (v, start) {
         var a = seq(v), s = start || 0;
-        return a.map(function (x, i) { return [i + s, x]; });
+        /* 真 Python 的 enumerate 产出**元组**（对照实测：[(0, 'a'), (1, 'b')]） */
+        return a.map(function (x, i) {
+          var e = [i + s, x];
+          e.__tuple = true;
+          return e;
+        });
       };
       B.zip = function () {
+        /* 真 Python 的 zip 产出**元组**（对照实测：[(1, 3), (2, 4)]），
+           此前返回列表的列表 [[1,3],[2,4]] ——
+           打印形式不同，且 `for a,b in zip(...)` 里 a,b 的类型认知会错。
+           内置 tuple() 已打 __tuple 标记，这里复用它。 */
         var arrs = [];
         for (var i = 0; i < arguments.length; i++) arrs.push(seq(arguments[i]));
         var n = arrs.length ? Math.min.apply(null, arrs.map(function (a) { return a.length; })) : 0;
         var out = [];
-        for (var j = 0; j < n; j++) out.push(arrs.map(function (a) { return a[j]; }));
+        for (var j = 0; j < n; j++) {
+          var one = arrs.map(function (a) { return a[j]; });
+          one.__tuple = true;           /* zip 产出元组，不是列表 */
+          out.push(one);
+        }
         return out;
       };
       B.map = function (f, v) { return seq(v).map(function (x) { return self.call(f, [x]); }); };
@@ -999,10 +1021,35 @@
         var p = Math.pow(10, n || 0);
         return Math.round(v * p) / p;
       });
+      /* ⚠ 不能靠 t.name 反查（S-064）。
+         实测 `type(int)` 是 function，但函数对象的 name 是空字符串
+         （注册时被重新赋值过），于是 isinstance 对任何内置类型都返回 False。
+         改成在注册完成后建立"函数对象 → 类型名"的反查表，不依赖 name。 */
+      var BUILTIN_BY_FN = null;
+      function builtinName(t) {
+        if (typeof t !== 'function') return null;
+        if (!BUILTIN_BY_FN) {
+          BUILTIN_BY_FN = new Map();
+          ['int', 'float', 'str', 'list', 'tuple', 'dict', 'bool', 'set'].forEach(function (n) {
+            if (typeof B[n] === 'function') BUILTIN_BY_FN.set(B[n], n);
+          });
+        }
+        return BUILTIN_BY_FN.get(t) || null;
+      }
+
       B.isinstance = function (v, t) {
-        if (t === 'int' || t === 'float') return typeof v === 'number';
+        /* ⚠ 类型在 pylite 里是**函数对象**，不是字符串（S-064）。
+           写 `isinstance(1, int)` 时 t 是内置函数 int，
+           而这里拿 t === 'int' 比较，恒为 false ——
+           于是 isinstance 对任何内置类型都返回 False，
+           用户会以为自己的用法写错了。
+           改：先把函数对象解析成类型名。 */
+        if (typeof t === 'function') t = builtinName(t);
+        if (t === 'int') return typeof v === 'number' && Number.isInteger(v);
+        if (t === 'float') return typeof v === 'number';
         if (t === 'str') return typeof v === 'string';
-        if (t === 'list' || t === 'tuple') return Array.isArray(v);
+        if (t === 'tuple') return !!Array.isArray(v) && v.__tuple === true;
+        if (t === 'list') return Array.isArray(v) && v.__tuple !== true;
         if (t === 'dict') return !!(v && v.__dict);
         if (t === 'bool') return typeof v === 'boolean';
         if (t instanceof PyClass) {
@@ -1100,9 +1147,17 @@
     str: function (v) {
       if (v === null || v === undefined) return 'None';
       if (typeof v === 'boolean') return v ? 'True' : 'False';
+      if (typeof v === 'bigint') return v.toString();
       if (typeof v === 'number') return numStr(v);
       if (typeof v === 'string') return v;
-      if (Array.isArray(v)) return '[' + v.map(this.repr, this).join(', ') + ']';
+      /* 元组打印用圆括号（S-064）。
+         此前 (1,2) 打印成 [1, 2] —— 用户看到的是列表的字面量形式，
+         会以为自己定义的就是列表。 */
+      if (Array.isArray(v)) {
+        var inner = v.map(this.repr, this).join(', ');
+        if (v.length === 1 && v.__tuple) inner += ',';
+        return v.__tuple ? '(' + inner + ')' : '[' + inner + ']';
+      }
       if (v && v.__dict) {
         var parts = [];
         for (var k in v) {
@@ -1138,6 +1193,21 @@
       return 'object';
     },
     compare: function (a, b) {
+      /* ⚠ 回退到"字符串比较"前必须先检查类型是否可比（S-060）。
+         此前 `1 < 'a'` 走到 str() 回退分支，比较 "1" 与 "a" 得 True ——
+         真 Python 抛 TypeError: '<' not supported between instances of 'int' and 'str'。
+         静默给一个"看起来有道理"的答案，比报错危险得多：
+         用户会以为 Python 的数字和字符串可以互相比较。
+         只有 None 参与时才报（真 Python 也是这个错）；
+         其余不可比组合同样报，不回退到字符串。 */
+      if (typeof a !== typeof b) {
+        var ta = this.typeName(a), tb = this.typeName(b);
+        var numA = typeof a === 'number', numB = typeof b === 'number';
+        var strA = typeof a === 'string', strB = typeof b === 'string';
+        if (!((numA && numB) || (strA && strB))) {
+          throw pyErr("TypeError: '<' not supported between instances of '" + ta + "' and '" + tb + "'");
+        }
+      }
       if (typeof a === 'number' && typeof b === 'number') return a === b ? 0 : (a < b ? -1 : 1);
       if (typeof a === 'string' && typeof b === 'string') return a === b ? 0 : (a < b ? -1 : 1);
       if (Array.isArray(a) && Array.isArray(b)) {
@@ -1240,6 +1310,8 @@
       }
       if (target.type === 'Subscript') {
         var obj = this.eval(target.value, scope);
+        /* 元组不可变 */
+        if (obj && obj.__tuple) throw pyErr("TypeError: 'tuple' object does not support item assignment");
         var idx = this.evalIndex(target.slice, scope);
         if (Array.isArray(obj)) {
           if (idx.index !== undefined) {
@@ -1289,11 +1361,13 @@
 
     execWhile: function (node, scope) {
       var n = 0;
+      /* while 的 else 同样只在正常结束时执行（S-062），break 出去不执行 */
+      var wbroken = false;
       while (this.truthy(this.eval(node.test, scope))) {
         this.tick();
         try { this.execBlock(node.body, scope); }
         catch (e) {
-          if (e instanceof PyBreak) break;
+          if (e instanceof PyBreak) { wbroken = true; break; }
           if (e instanceof PyContinue) continue;
           throw e;
         }
@@ -1302,24 +1376,29 @@
             '这不代表你的程序会超时 —— 请用小规模实测外推判断。');
         }
       }
-      if (node.orelse) this.execBlock(node.orelse, scope);
+      if (node.orelse && !wbroken) this.execBlock(node.orelse, scope);
       return null;
     },
 
     execFor: function (node, scope) {
       var it = this.eval(node.iter, scope);
       var arr = this.iterable(it);
+      /* ⚠ for/while 的 else 只在**正常结束**时执行，break 出去时不执行（S-062）。
+         此前无条件执行 orelse，于是 `for ... break` 之后 else 照跑 ——
+         真 Python 里 else 的语义正是"没被 break 打断"，
+         这个错会让用户用错一个本来就冷门但很有用的语法。 */
+      var broken = false;
       for (var i = 0; i < arr.length; i++) {
         this.tick();
         this.assignTo(node.target, arr[i], scope);
         try { this.execBlock(node.body, scope); }
         catch (e) {
-          if (e instanceof PyBreak) break;
+          if (e instanceof PyBreak) { broken = true; break; }
           if (e instanceof PyContinue) continue;
           throw e;
         }
       }
-      if (node.orelse) this.execBlock(node.orelse, scope);
+      if (node.orelse && !broken) this.execBlock(node.orelse, scope);
       return null;
     },
 
@@ -1429,7 +1508,16 @@
             throw e;
           }
         case 'List': return node.elts.map(function (x) { return this.eval(x, scope); }, this);
-        case 'Tuple': return node.elts.map(function (x) { return this.eval(x, scope); }, this);
+        /* ⚠ 元组必须区别于列表（S-058）。
+           此前 (1,2) 求出来就是普通数组，于是 `t[0]=9` 静默成功、
+           `t.append(3)` 也成功、打印成 [9, 2] ——
+           用户会以为 Python 的元组可以改，而真 Python 抛 TypeError。
+           "支持了但行为错"比"不支持"更有害：学错了概念。 */
+        case 'Tuple': {
+          var tv = node.elts.map(function (x) { return this.eval(x, scope); }, this);
+          tv.__tuple = true;
+          return tv;
+        }
         case 'Set': {
           var out = [], seen = {};
           for (var i = 0; i < node.elts.length; i++) {
@@ -1477,17 +1565,61 @@
       return s;
     },
 
+    /* ⚠ 超过 2^53 的整数必须走 BigInt（S-057）。
+       此前 `2**64` → 18446744073709552000（真值 ...551616），
+       `x = 9007199254740992; x + 1` → **x 不变**。
+       数字走 JS double，超过 2^53 后相邻整数无法区分 ——
+       不报错，只是答案错。而"任意精度整数"正是 Python 的核心优势之一，
+       竞赛题常依赖它，静默丢精度等于直接判错。
+       只在两端都是整数时启用，浮点路径完全不动，把风险圈在最小范围。 */
+    bigSafe: function (v) { return typeof v === 'number' && Number.isInteger(v) && Math.abs(v) <= Number.MAX_SAFE_INTEGER; },
+    bigBin: function (op, a, b) {
+      var BA = BigInt(a), BB = BigInt(b);
+      switch (op) {
+        case '+': return BA + BB;
+        case '-': return BA - BB;
+        case '*': return BA * BB;
+        default: return null;
+      }
+    },
+
     binop: function (op, a, b) {
+      /* 大整数：两端都是整数且任一超出安全范围 → 用 BigInt 精确算。
+         ⚠ 已是大整数（bigint）的操作数也要接进来 ——
+         否则 `2**64 - 1` 会因为一端是 bigint 而掉到普通分支报"- 需要数字"。 */
+      if ((op === '+' || op === '-' || op === '*')) {
+        var aB = typeof a === 'bigint', bB = typeof b === 'bigint';
+        var aN = aB ? a : (typeof a === 'number' && Number.isInteger(a) ? BigInt(a) : null);
+        var bN = bB ? b : (typeof b === 'number' && Number.isInteger(b) ? BigInt(b) : null);
+        if (aN !== null && bN !== null && (aB || bB || !this.bigSafe(a) || !this.bigSafe(b))) {
+          var big2 = (op === '+' ? aN + bN : op === '-' ? aN - bN : aN * bN);
+          return (big2 <= BigInt(Number.MAX_SAFE_INTEGER) && big2 >= -BigInt(Number.MAX_SAFE_INTEGER))
+            ? Number(big2) : big2;
+        }
+      }
       switch (op) {
         case '+':
           if (typeof a === 'string' && typeof b === 'string') return a + b;
           if (Array.isArray(a) && Array.isArray(b)) return a.concat(b);
+          /* ⚠ bool 在 Python 里是 int 的子类（S-059）。
+             此前 `True+1` 报错、`True==1` 却是 False、而 `sum([True,True])` 是 2 ——
+             **三种行为互相矛盾**，用户无法通过一条推断另一条。
+             真 Python：True+1 == 2，True == 1 为 True。
+             统一：bool 参与算术时按 1/0。 */
+          if (typeof a === 'boolean') a = a ? 1 : 0;
+          if (typeof b === 'boolean') b = b ? 1 : 0;
           if (typeof a !== 'number' || typeof b !== 'number') throw pyErr('+ 不支持的类型：' + this.typeName(a) + ' 与 ' + this.typeName(b));
           return a + b;
         case '-':
+          if (typeof a === 'boolean') a = a ? 1 : 0;
+          if (typeof b === 'boolean') b = b ? 1 : 0;
           if (typeof a !== 'number' || typeof b !== 'number') throw pyErr('- 需要数字');
           return a - b;
         case '*':
+          /* bool 参与算术按 1/0（S-059），与 + 保持同一套规则 */
+          if (typeof a === 'boolean') a = a ? 1 : 0;
+          if (typeof b === 'boolean') b = b ? 1 : 0;
+          if (typeof a === 'boolean' || typeof b === 'boolean') { }
           if (typeof a === 'number' && typeof b === 'string') return b.repeat(Math.max(0, a));
           if (typeof a === 'string' && typeof b === 'number') return a.repeat(Math.max(0, b));
           if (Array.isArray(a) && typeof b === 'number') { var r = []; for (var i = 0; i < Math.max(0, b); i++) r = r.concat(a); return r; }
@@ -1509,6 +1641,13 @@
           if (b === 0) throw pyErr('取模错误：除数为零');
           return a - b * Math.floor(a / b);
         case '**':
+          /* 大整数幂：2**64 必须精确。pow 的结果若超安全范围就走 BigInt */
+          if (typeof a === 'number' && typeof b === 'number' &&
+              Number.isInteger(a) && Number.isInteger(b) && b >= 0 && b <= 1024 &&
+              Math.abs(Math.pow(Math.abs(a), b)) > Number.MAX_SAFE_INTEGER) {
+            var pb = BigInt(a) ** BigInt(b);
+            return (pb <= BigInt(Number.MAX_SAFE_INTEGER) && pb >= -BigInt(Number.MAX_SAFE_INTEGER)) ? Number(pb) : pb;
+          }
           if (typeof a !== 'number' || typeof b !== 'number') throw pyErr('** 需要数字');
           return Math.pow(a, b);
       }
@@ -1553,6 +1692,11 @@
     },
 
     eq: function (a, b) {
+      /* bool 与数字可比（S-059）：真 Python 里 True == 1 为 True，
+         因为 bool 是 int 的子类。此前 `True+1` 报错、`True==1` 为 False、
+         而 `sum([True,True])` 是 2 —— 三种行为互相矛盾。 */
+      if (typeof a === 'boolean') a = a ? 1 : 0;
+      if (typeof b === 'boolean') b = b ? 1 : 0;
       if (typeof a === 'number' && typeof b === 'number') return a === b;
       if (typeof a === 'string' && typeof b === 'string') return a === b;
       if (typeof a === 'boolean' && typeof b === 'boolean') return a === b;
@@ -1757,7 +1901,13 @@
           for (var j = 0; j < g.ifs.length; j++) if (!self.truthy(self.eval(g.ifs[j], sub))) { ok = false; break; }
           if (!ok) continue;
           var r = rec(gi + 1, sub);
+          /* ⚠ 只有"中间层"的递归结果才展开，最后一层的元素本身要整体 push（S-061）。
+             此前对任何数组都 concat，于是 `[[i,j] for i in range(2) for j in range(2)]`
+             被扁平成 8 个标量（真 Python 是 4 个二元列表），而且不报错 ——
+             用户拿到一个长度翻倍的一维列表，完全无从察觉。
+             判据：gi+1 已经到最后一层时，r 就是元素，不是待展开的中间结果。 */
           if (kind === 'dict') out.push(r);
+          else if (gi + 1 >= node.generators.length) out.push(r);
           else if (Array.isArray(r)) out = out.concat(r);
           else out.push(r);
         }
@@ -1828,7 +1978,15 @@
   }
 
   /* ---------- 列表方法 ---------- */
+  /* 元组只有不可变方法。此前 (1,2).append(3) 静默成功（S-058）——
+     元组内部就是数组，于是列表的方法全都能用。
+     真 Python 抛 AttributeError: 'tuple' object has no attribute 'append'。 */
+  var TUPLE_MUTATORS = ('append extend insert remove pop clear sort reverse').split(' ');
+
   function listMethods(n, arr, I) {
+    if (arr && arr.__tuple && TUPLE_MUTATORS.indexOf(n) >= 0) {
+      throw pyErr("AttributeError: 'tuple' object has no attribute '" + n + "'");
+    }
     var f = {
       append: function (v) { arr.push(v); return null; },
       extend: function (v) { I.iterable(v).forEach(function (x) { arr.push(x); }); return null; },

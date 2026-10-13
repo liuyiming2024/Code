@@ -14,7 +14,12 @@
     {
       "path": "/Code/api/langs.json",
       "method": "GET",
-      "desc": "支持语法着色的语言与对应扩展名"
+      "desc": "支持语法着色的语言与对应扩展名（由 scripts/gen-api.js 从 js/langs.js 生成）"
+    },
+    {
+      "path": "/Code/api/runtimes.json",
+      "method": "GET",
+      "desc": "按需下载的运行时清单：体积、SHA-256、加载方式（唯一权威源）"
     }
   ],
   "pageApi": [
@@ -24,13 +29,20 @@
     "Code.api.remove(path)      删除文件",
     "Code.api.project()         导出整个工程（JSON 字符串）",
     "Code.api.importProject(x)  导入工程",
-    "Code.api.on('change',fn)   订阅变更，返回取消函数"
+    "Code.api.on('change',fn)   订阅变更，返回取消函数",
+    "Code.api.manifest()        返回本清单（可从页面内发现其他接口）"
   ],
   "note": [
-    "站外只有这两个只读的静态 JSON —— 本项目托管在 GitHub Pages，",
-    "是纯静态托管，没有服务端可以代理请求。",
+    "站外有三个只读的静态 JSON（manifest / langs / runtimes）：",
+    "本项目托管在 GitHub Pages，是纯静态托管，没有服务端可以代理请求。",
     "文件读写只在页面内通过 Code.api 可用：数据存在浏览器 IndexedDB 里，",
-    "本来就不该离开这台设备。要跨设备同步必须自己接后端，",
-    "那会改变本项目「算力与数据都在本地」的定位，因此不做。"
-  ]
+    "本来就不该离开这台设备。",
+    "",
+    "云盘说明（2026-10-13 更新）：已内置可选的手动云盘 —— 由你点按钮才上传或下载，",
+    "不做自动同步。它复用 Chat 项目的账号系统，数据存于 Supabase，",
+    "传输走 HTTPS，服务端按用户隔离（不靠 RLS 当防线，函数才是唯一入口）。",
+    "不用云盘时，全部数据仍只在本机 —— 这与「算力与数据都在本地」的定位不矛盾：",
+    "云盘是可选功能，不是默认行为。"
+  ],
+  "updated": "2026-10-13"
 }

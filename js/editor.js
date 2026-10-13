@@ -398,13 +398,21 @@
     var __pending = cur.content;
     /* 写入失败必须向外传播：静默吞掉会让用户以为存住了，实际丢了。
        由调用方（app.js）负责告警并给出导出备份的出路。 */
-    return fs.write(cur.path, cur.content).then(function () {
+    /* ⚠ 必须把 cur 与 path 捕获住（S-032）。
+       此前 then 回调里直接读 `cur` —— 而 fs.write 是异步的，
+       这期间用户可能已经关掉标签页或切到别的文件：
+         · 最后一个文件被关闭时 cur 已是 null → `cur.path` 直接 TypeError
+         · 切到别的文件时 cur 指向新文件 → 把**新**文件误标"已保存"，
+           而真正被保存的那个文件的改动可能还在 debounce 里
+       表现：关闭标签页时偶发报错，或某个标签的"未保存"圆点莫名消失。 */
+    var __cur = cur, __path = cur.path;
+    return fs.write(__path, __cur.content).then(function () {
       /* 只有写入成功才标记已保存（S-036）。失败时 saved 保持旧值，
          于是下一轮仍会重试，而不是静默放弃。 */
-      cur.saved = __pending;
+      if (__cur) __cur.saved = __pending;
       /* 异步落盘成功 → 清掉同步草稿，避免下次启动误报 */
       try { clearDraftSync(); } catch (e) { }
-      emit('save', cur.path);
+      emit('save', __path);
     });
   }
 

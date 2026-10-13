@@ -836,6 +836,8 @@
      n=5e5 的 O(n) 就会被判死循环，而真实 Python 只要 27 毫秒。
      提到 5e7 ≈ 真实 0.68 秒，可覆盖常规规模。 */
   var MAX_STEPS = 50000000;   /* 步数上限：让死循环可以被中断 */
+  /* 递归深度上限（S-044）。实测约 500 层 JS 栈就满，取 400 留余量。 */
+  var MAX_CALL_DEPTH = 400;
 
   function Scope(parent, isGlobal) {
     this.vars = {};
@@ -1848,6 +1850,24 @@
     },
 
     call: function (fn, args, kwargs) {
+      kwargs = kwargs || {};
+      /* ⚠ 递归深度保护（S-044，与 cpplite 同源问题）。
+         不加时无限递归冒出 JS 原生的 "Maximum call stack size exceeded"，
+         一句英文，既不说哪行也不说怎么办。
+         阈值 400 是实测出来的：解释器每层 Python 函数调用吃掉约 20 个 JS 栈帧，
+         实测约 500 层栈就满 —— 写 1000 等于没设。 */
+      if (this.depth == null) this.depth = 0;
+      if (++this.depth > MAX_CALL_DEPTH) {
+        this.depth--;
+        throw pyErr('递归深度超过 ' + MAX_CALL_DEPTH + ' 层，已停止。\n' +
+          '常见原因：递归没有终止条件，或终止条件写错了。\n' +
+          '注意：本环境是解释器，递归上限比真实 Python（默认 1000）低一些，' +
+          '这不代表你的算法在 OJ 上会错。');
+      }
+      try { return this.__call(fn, args, kwargs); }
+      finally { this.depth--; }
+    },
+    __call: function (fn, args, kwargs) {
       kwargs = kwargs || {};
       if (typeof fn === 'function') {
         /* 内置函数：默认按位置传参；若带关键字实参且注册时记过参数名，按名字补位 */

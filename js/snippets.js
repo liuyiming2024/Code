@@ -189,6 +189,7 @@
 
   /* 对外：给定语言、全文、光标位置，返回展开方案或 null */
   function expand(lang, text, pos) {
+    if (off) return null;   /* 用户关掉了 Tab 片段展开（S-040） */
     var t = triggerAt(text, pos);
     if (!t) return null;
     var snip = table(lang)[t.word];
@@ -210,9 +211,28 @@
     });
   }
 
+  /* ⚠ 开关必须真的存在（S-040）。
+     注释里写"片段开关在命令面板"，而命令面板里根本没有这一项、
+     代码里也没有任何判据读这个开关 —— 于是用户无法关闭 Tab 片段展开。
+     对写竞赛代码的人来说，Tab 片段展开很碍事：
+     打 `for` 按 Tab 想缩进，结果被展开成一段模板。
+     他连关掉的地方都找不到。 */
+  var off = false;
+  try {
+    var st = (global.localStorage && global.localStorage.getItem('code_snippets_off'));
+    off = (st === '1');
+  } catch (e) { }
+
   Code.snippets = {
     expand: expand,
     listFor: listFor,
+    isOff: function () { return off; },
+    setOff: function (v) {
+      off = !!v;
+      try { if (global.localStorage) global.localStorage.setItem('code_snippets_off', off ? '1' : '0'); } catch (e) { }
+      return off;
+    },
+    toggle: function () { return this.setOff(!off); },
     /* 给测试用 */
     _render: render,
     _triggerAt: triggerAt

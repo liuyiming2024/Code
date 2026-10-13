@@ -367,6 +367,16 @@
       { label: '搜索文件内容', hint: 'Ctrl+F', icon: 'i-search', act: function () { hooks.cmd && hooks.cmd('search'); } },
       { label: '打开设置', hint: 'Ctrl+,', icon: 'i-gear', act: function () { hooks.cmd && hooks.cmd('settings'); } },
       { label: '清空运行输出', hint: '', icon: 'i-eraser', act: function () { hooks.cmd && hooks.cmd('clear'); } },
+      /* S-040：片段开关此前只存在于注释里，命令面板没有这一项，
+         用户关不掉 Tab 片段展开。写竞赛代码时这个展开很碍事。 */
+      (Code.snippets ? {
+        label: (Code.snippets.isOff() ? '开启' : '关闭') + ' Tab 片段展开',
+        hint: '', icon: 'i-return',
+        act: function () {
+          var now = Code.snippets.toggle();
+          U.toast(now ? '已关闭 Tab 片段展开（按 Tab 只缩进）' : '已开启 Tab 片段展开');
+        }
+      } : null),
       { label: '扩展中心（下载运行时）', hint: 'Ctrl+D', icon: 'i-download', act: function () { UI.extensions(); } },
       /* E-030：命令面板里也要有，否则手机端（没有 Ctrl 组合键）无处可关 */
       { label: '关闭预览', hint: '', icon: 'i-close', act: function () { hooks.cmd && hooks.cmd('close-preview'); } },

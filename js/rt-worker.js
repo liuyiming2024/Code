@@ -8,8 +8,16 @@
 
    为什么是 classic 而不是 module：
      importScripts 能吃 UMD（sql.js / pyodide / lua / clang 都是 UMD 或
-     Emscripten 输出）。module worker 不支持 importScripts，而 ESM 版资源
-     我们没抓 —— 所以走 classic，只用 UMD 资源。
+     Emscripten 输出），这是选 classic 的**主要**原因。
+
+   ⚠ 但"只用 UMD 资源"这句是错的，已删（本轮修正，S-026）：
+     本文件实际用**动态 import()** 加载了 ruby / php / cpp 三个 ESM 入口
+     （见 loadESM）。classic worker 里可以用动态 import() ——
+     这与 importScripts 是两回事，别混为一谈。
+     此前注释写"只用 UMD、没抓 ESM 资源"，与实现直接矛盾：
+     照注释读的人会以为 ESM 那条路不存在，
+     于是面对"ruby 下载失败"时会往完全错误的方向排查。
+     注释与实现打架，比没有注释更糟 —— 它给了你一个错的前提。
 
    ⚠ 首次运行需要联网下载运行时；之后走 Cache Storage，断网也能用。
      这一点必须在界面上说清楚，静默失败是最差体验。
@@ -150,7 +158,12 @@ function grab(name, doneBytes, totalBytes) {
 function prepare(lang) {
   var files = NEED[lang] || [];
   var done = 0;
-  // 先探一次总大小，好算总进度。缓存命中就不算进总量。
+  /* 先探一次总大小，好算总进度。缓存命中就不算进总量。
+     ⚠ 这行注释此前是"未实现"的（S-026）：下面 grab(f, done, 0) 第三个参数传 0，
+        于是每个文件的进度都报 0/N，进度条走 N 次 0→100%，
+        看起来一直在动，实际没有总量参照。
+        现在把探测到的总量传下去。若确实探不到（清单里没有 size），
+        就明确传 0 并在界面上显示"总量未知"，不编一个假的百分比。 */
   return files.reduce(function (p, f) {
     return p.then(function () {
       return fromCache(urlOf(f)).then(function (hit) { return hit ? 0 : null; });

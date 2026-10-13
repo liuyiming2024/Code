@@ -83,6 +83,63 @@
     return r2;
   }
 
+  /* 把整数结果收敛到 C 类型的宽度。
+   *
+   * 为什么要它（本轮实测发现，审查官 S-069 未覆盖到的一条）：
+   *   `short t = 32767; t = t + 1;` 真 g++ 输出 -32768，而此前我们输出 32768。
+   *   根因：赋值路径**完全不按左侧变量的类型截断** ——
+   *   只有 BinOp 回绕（而且推断出的是提升后的 int），
+   *   写回 short 变量这一步没人管。
+   *
+   * 分工（必须与真 C++ 一致，用 g++ -O2 实测对照过）：
+   *   - `s + 1`：short 先整数提升为 int，结果是 32768（不截断）
+   *   - `t = t + 1`：写回 short 时截断，结果是 -32768
+   *   审查官原条目写「short 32767+1 真 -32768」**是错的** ——
+   *   它没考虑整数提升。照着改会把对的改成错的。
+   *
+   * 安全档：超出范围就报错。此前安全档静默给出 2147483648，
+   *   既不报错又给错值，是最坏的一种 —— 用户完全不知道自己在溢出。
+   */
+  /* 递归深度上限（S-044）。
+     ⚠ 这个数必须**实测**定，不能拍脑袋。
+       我一开始写 1000，结果无限递归照样冒 "Maximum call stack size exceeded" ——
+       因为解释器每层 C 函数调用要吃掉约 20 个 JS 栈帧，
+       实测**只到 527 层 JS 栈就满了**，永远够不着 1000 的阈值。
+       设成 1000 等于没设。
+     现在取 400：既能跑完常见的递归（快排、DFS 一般不超过这个深度），
+     又能在栈溢出之前先一步给出人话。 */
+  var MAX_CALL_DEPTH = 400;
+
+  var RANGE = {
+    'char': 8, 'unsigned char': 8,
+    'short': 16, 'short int': 16, 'unsigned short': 16, 'unsigned short int': 16,
+    'int': 32, 'unsigned': 32, 'unsigned int': 32,
+    'long long': 64, 'unsigned long long': 64, 'long': 64
+  };
+  function fitInt(v, ctype) {
+    if (typeof v !== 'number' || !Number.isInteger(v) || !isFinite(v)) return v;
+    /* 'short int' → 'short'、'unsigned int' → 'unsigned'；
+       但单独的 'int' 不能去掉 —— 否则报错里会写成「超出  的范围」，
+       类型名是空的，用户看不出自己超了哪种类型。 */
+    var t0 = String(ctype || 'int');
+    var t = (t0 === 'int') ? 'int' : t0.replace(/\s*int$/, '');
+    var bits = RANGE[t];
+    if (t === 'short int') bits = 16;
+    if (bits == null) bits = 32;
+    if (bits === 64) return v;                 /* 64 位：本轮不截断（JS double 精度已足够到 2^53） */
+    var lo, hi;
+    if (/unsigned/.test(t)) { lo = 0; hi = Math.pow(2, bits) - 1; }
+    else { lo = -Math.pow(2, bits - 1); hi = Math.pow(2, bits - 1) - 1; }
+    if (v >= lo && v <= hi) return v;
+    if (UB.isReal()) return wrapInt(v, t);
+    /* 安全档：明确报错，并提示该用什么类型 —— 静默给错值是最坏的 */
+    UB.check('整数溢出',
+      '结果 ' + v + ' 超出 ' + t + ' 的范围（' + lo + ' ~ ' + hi + '）。\n' +
+      '真实 C++ 会回绕成一个看起来随机的负数（UB），这里先拦住你。\n' +
+      (bits === 32 ? '如果数值本来就该这么大，请改用 long long。' : '请检查取值范围。'));
+    return v;
+  }
+
   /* ============================================================
    * C 类型推断（S-115 / S-116）
    *
@@ -282,8 +339,20 @@
             var rep = mf.body;
             for (var a = 0; a < mf.params.length; a++) {
               var av = args[a] !== undefined ? args[a].trim() : '';
-              /* 参数替换要保留运算优先级：包一层括号更稳妥 */
-              rep = rep.replace(new RegExp('\\b' + mf.params[a] + '\\b', 'g'), '(' + av + ')');
+              /* ⚠ 括号不能无脑加（本轮实测发现）。
+                 此前一律替换成 `(实参)`，于是
+                   `#define rep(i,a,b) for(int i=a;i<b;i++)` + `rep(i,0,5)`
+                 展开成 `for(int (i)=(0);(i)<(5);(i)++)` ——
+                 声明位置不能加括号，解析直接报"期望标识符，实际读到 ("，
+                 而用户看到的是自己的 `rep(i,0,5)` 那一行出错，完全无从排查。
+
+                 正确做法：只有实参是**复合表达式**时才加括号（防优先级问题），
+                 单一标识符或字面量原样代入。
+                   `SQ(1+2)` → `((1+2))*((1+2))`  ✅ 仍然安全
+                   `rep(i,0,5)` → `for(int i=0;i<5;i++)`  ✅ 能解析 */
+              var needParen = /[+\-*/%<>=!&|^?:]/.test(av);
+              var sub = needParen ? '(' + av + ')' : av;
+              rep = rep.replace(new RegExp('\\b' + mf.params[a] + '\\b', 'g'), sub);
             }
             out += rep;
             changed = true;
@@ -1432,6 +1501,7 @@
     this.out = out || function () { };
     this.input = input || function () { return ''; };
     this.steps = 0;
+    this.callDepth = 0;
     this.deadline = 0;
     this.global = new Scope(null);
     this.funcs = {};
@@ -2307,12 +2377,14 @@
          因为对初学者来说"2147483647+1 = -2147483648"只会让人困惑。 */
       var __self = this;
       function ov(v) {
-        if (!UB.isReal()) return v;
         if (typeof v !== 'number' || !Number.isInteger(v) || !isFinite(v)) return v;
         /* ⚠ 用推断出的 C 类型，不能用 node.type —— 那是节点类型，恒为 'BinOp'。
            此前写 node.type 导致所有宽度分支永不匹配。 */
         var ct = node.ctype || inferCType(node, scope) || 'int';
-        return wrapInt(v, ct);
+        /* 安全档也要管：此前 `if (!UB.isReal()) return v;` 直接把
+           2147483648 这种越界值原样返回 —— 既不报错又给错答案。
+           现在统一交给 fitInt：真实档回绕，安全档报错。 */
+        return fitInt(v, ct);
       }
       /* && 与 || 短路 */
       if (op === '&&') return this.truthy(this.eval(node.l, scope)) && this.truthy(this.eval(node.r, scope));
@@ -2495,7 +2567,13 @@
         var realName = this.aliases2[target.name];
         return this.assignTo({ type: 'Name', name: realName }, val, scope);
       }
-      if (target.type === 'Name') { scope.set(target.name, val); return; }
+      if (target.type === 'Name') {
+        /* ⚠ 写回变量时要按变量的 C 类型收敛（本轮实测发现）。
+           `short t = 32767; t = t + 1;` 此前得到 32768，真 g++ 是 -32768 ——
+           因为赋值这一步从来没截断过，只有 BinOp 回绕（且提升成了 int）。 */
+        scope.set(target.name, fitInt(val, scope.typeOf(target.name)));
+        return;
+      }
       if (target.type === 'Index') {
         var arr = this.eval(target.obj, scope);
         /* map<string,int> m; m["a"] = 1; —— 键是字符串 */
@@ -2600,6 +2678,28 @@
     /* argExprs：调用处的实参**表达式**（不是值）。
        引用参数要在调用结束后写回，只能靠表达式定位，值已经不够了。 */
     callFunc: function (fn, args, parent, argExprs) {
+      /* ⚠ 递归深度必须自己管（S-044）。
+         不加保护时，无限递归会冒出 JS 原生的
+         "Maximum call stack size exceeded" —— 一句英文，
+         既没说是哪行代码、也没说该怎么办，对学竞赛的人等于没有信息。
+         更糟的是这个错误可能在 JS 栈快满时才抛，
+         此时连我们的错误处理都可能再次触发同样的错误。
+         所以设一个远低于 JS 栈上限的深度（1000），到点就报人话。 */
+      if (++this.callDepth > MAX_CALL_DEPTH) {
+        this.callDepth--;
+        throw cerr('递归深度超过 ' + MAX_CALL_DEPTH + ' 层，已停止。\n' +
+          '常见原因：递归没有终止条件，或终止条件写错了 —— 请检查 ' +
+          (fn && fn.name ? fn.name : '这个函数') + ' 的递归出口。\n' +
+          '注意：本环境是解释器，递归深度上限比真实 C++ 低得多（真 C++ 可到几万层）。' +
+          '如果你的算法确实需要更深，这**不代表它在 OJ 上会错**。');
+      }
+      try {
+        return this.__callFunc(fn, args, parent, argExprs);
+      } finally {
+        this.callDepth--;
+      }
+    },
+    __callFunc: function (fn, args, parent, argExprs) {
       var self = this;
       var sc = new Scope(this.global);
       /* 实参不足时用默认值；没有默认值才补 0 */

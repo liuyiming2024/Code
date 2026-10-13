@@ -414,10 +414,25 @@
     var reader = res.body.getReader();
     var dec = new TextDecoder();
     var buf = '', full = '';
+    /* ⚠ 错误必须看得见（S-046）。
+       服务端返回 200 + 一个 JSON 错误体（而不是 SSE 流）是很常见的情况：
+       密钥失效、模型不存在、余额不足都这么回。
+       此前 parse 失败就静默跳过，于是一个字都不输出、也不报错 ——
+       用户看到的是"AI 什么都没说"，而不是"你的密钥过期了"。
+       改法：解析成功的 data 块若含 error 字段，或整条流结束却一个字都没有，
+       都要把服务端说的话抛出来。 */
+    var serverErr = '';
     return pump();
     function pump() {
       return reader.read().then(function (step) {
-        if (step.done) return { text: full, raw: null };
+        if (step.done) {
+          if (serverErr) throw new Error(serverErr);
+          if (!full) {
+            throw new Error('AI 返回了空内容。可能是模型名不对、密钥失效或余额不足 —— ' +
+              '请检查设置里的模型与密钥。');
+          }
+          return { text: full, raw: null };
+        }
         buf += dec.decode(step.value, { stream: true });
         var lines = buf.split('\n');
         buf = lines.pop() || '';
@@ -426,12 +441,24 @@
           if (!ln || ln.indexOf('data:') !== 0) return;
           var d = ln.slice(5).trim();
           if (d === '[DONE]') return;
-          try {
-            var j = JSON.parse(d);
-            var delta = (j.choices && j.choices[0] && j.choices[0].delta) || {};
-            var piece = typeof delta.content === 'string' ? delta.content : '';
-            if (piece) { full += piece; onDelta(piece); }
-          } catch (e) { /* 半包或注释行，跳过 */ }
+          var j = null;
+          try { j = JSON.parse(d); }
+          catch (e) {
+            /* 半包会残留到下一轮拼接，真解析不出来的才记一笔。
+               不直接抛，避免把 SSE 的正常分片误判为错误。 */
+            if (d && d !== '[DONE]' && !serverErr && d.length > 2 && /^[{\[]/.test(d)) {
+              serverErr = 'AI 返回了无法解析的内容：' + d.slice(0, 120);
+            }
+            return;
+          }
+          if (j && j.error) {
+            serverErr = 'AI 服务错误：' +
+              (typeof j.error === 'string' ? j.error : (j.error.message || JSON.stringify(j.error)));
+            return;
+          }
+          var delta = (j && j.choices && j.choices[0] && j.choices[0].delta) || {};
+          var piece = typeof delta.content === 'string' ? delta.content : '';
+          if (piece) { full += piece; onDelta(piece); }
         });
         return pump();
       });

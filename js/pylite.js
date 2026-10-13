@@ -881,8 +881,12 @@
   }
 
   Interp.prototype = {
-    tick: function () {
-      if (++this.steps > MAX_STEPS) {
+    /* n：本次操作相当于多少步。默认 1。
+       一次运算就吃掉几千万步的操作（如 [0]*50000000）必须传 n，
+       否则"能中断死循环"只对显式循环成立（S-037）。 */
+    tick: function (n) {
+      this.steps += (typeof n === 'number' && n > 0 ? n : 1);
+      if (this.steps > MAX_STEPS) {
         throw pyErr('本环境已跑满 ' + MAX_STEPS.toLocaleString() + ' 步（相当于真实 CPython 约 ' +
           PERF.human(MAX_STEPS) + '），停止执行。\n' +
           '这不代表你的程序会超时 —— 本环境是解释器，比真实的 Python 慢几个数量级。');
@@ -1620,9 +1624,30 @@
           if (typeof a === 'boolean') a = a ? 1 : 0;
           if (typeof b === 'boolean') b = b ? 1 : 0;
           if (typeof a === 'boolean' || typeof b === 'boolean') { }
-          if (typeof a === 'number' && typeof b === 'string') return b.repeat(Math.max(0, a));
-          if (typeof a === 'string' && typeof b === 'number') return a.repeat(Math.max(0, b));
-          if (Array.isArray(a) && typeof b === 'number') { var r = []; for (var i = 0; i < Math.max(0, b); i++) r = r.concat(a); return r; }
+          /* 字符串重复同样可能一次吃掉几千万步（S-037），先 tick 再算 */
+          if (typeof a === 'number' && typeof b === 'string') {
+            var ns = Math.max(0, a);
+            if (ns * b.length > 100000) this.tick(Math.min(ns * b.length, 100000000));
+            return b.repeat(ns);
+          }
+          if (typeof a === 'string' && typeof b === 'number') {
+            var ns2 = Math.max(0, b);
+            if (ns2 * a.length > 100000) this.tick(Math.min(ns2 * a.length, 100000000));
+            return a.repeat(ns2);
+          }
+          /* ⚠ 列表/字符串重复必须 tick（S-037）。
+             `[0]*50000000` 是一次运算，不进循环体 ——
+             此前 tick() 只挂在循环与函数调用上，运算符一条都没有，
+             于是这条语句**永远不会被中断**：实测 30 秒未中断、进程被强杀（exit=124）。
+             而 `while True` 221ms 就能中断 —— 两种"死循环"表现完全相反，
+             用户会以为中断功能坏了，其实是覆盖不全。 */
+          if (Array.isArray(a) && typeof b === 'number') {
+            var nb = Math.max(0, b);
+            if (nb > 100000) this.tick(Math.min(nb, 100000000));
+            var r = [];
+            for (var i = 0; i < nb; i++) r = r.concat(a);
+            return r;
+          }
           if (typeof a !== 'number' || typeof b !== 'number') throw pyErr('* 不支持的类型');
           return a * b;
         case '/':

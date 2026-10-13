@@ -33,6 +33,45 @@
   }
 
   /* ================= 启动 ================= */
+  /* ===== 崩溃恢复 =====
+   * 上次是不是没写完就走了？是就把内容还给用户，并明确告诉他发生了什么。
+   * 静默恢复同样不行 —— 用户得知道"上次没存住"，否则他会以为自动保存一直管用。
+   */
+  function restoreDraftIfAny() {
+    var d = null;
+    try { d = ed.takeDraft ? ed.takeDraft() : null; } catch (e) { return; }
+    if (!d) return;
+    var same = true;
+    try {
+      var now = fs.read(d.path);
+      same = (now === d.content);
+    } catch (e) { same = false; }
+    if (same) return;   /* 已经落盘了，不必打扰 */
+
+    var mins = Math.max(0, Math.round((Date.now() - (d.t || 0)) / 60000));
+    U.modal({
+      title: '发现上次未保存的内容',
+      body: '<p class="about-p"><b>' + U.esc(d.path) + '</b></p>' +
+        '<p class="about-p">上次离开时这个文件还没写完（约 ' +
+        (mins < 1 ? '不到 1 分钟' : mins + ' 分钟') + '前），' +
+        '浏览器存储里只留下了这份草稿。</p>' +
+        '<p class="about-p">要把它<b>恢复</b>进这个文件吗？' +
+        '选「丢弃」则保留当前已保存的版本。</p>',
+      actions: [
+        { label: '丢弃', primary: true },
+        {
+          label: '恢复草稿', onClick: function () {
+            openPath(d.path).then(function () {
+              if (ed.setValue) ed.setValue(d.content);
+              U.toast('已恢复草稿，记得保存');
+            });
+            return true;
+          }
+        }
+      ]
+    });
+  }
+
   function boot() {
     var prefs = store.load();
     UI.applyPrefs(prefs);
@@ -59,9 +98,14 @@
       /* 启动时探一次云盘状态。失败不能影响编辑器 ——
          没登录是常态，不能因为云端连不上就拦着人写代码。 */
       try { if (UI.refreshCloud) UI.refreshCloud(); } catch (e) { }
+      restoreDraftIfAny();
       ed.on('change', onChange);
       ed.on('cursor', onCursor);
       ed.on('save', onSaved);
+      /* 自动保存失败：状态栏每次都更新，弹窗只弹一次。
+         不弹窗的话用户看不见（他在看代码，不在看控制台）；
+         每次都弹的话又太吵 —— 他已经知道失败了，再弹是骚扰。 */
+      ed.on('save-fail', onAutoSaveFail);
       UI.setView(prefs.sideView || 'files');
       /* E-043：manifest.json 的快捷方式带 ?action=new / ?action=extensions，
          但以前没有任何代码读它 —— 装到桌面后右键点这两个入口，只是原样打开，
@@ -227,8 +271,21 @@
     Promise.resolve().then(function () { return ed.save(); }).catch(onSaveFail);
   }
 
+  var saveFailShown = false;
+  function onAutoSaveFail(err) {
+    /* 状态栏：常驻红色，不自动消失 —— 用户随时抬头都能看见 */
+    UI.status({ left: '自动保存失败！改动只在内存里，请立刻导出备份', warn: true });
+    if (saveFailShown) return;
+    saveFailShown = true;
+    onSaveFail(err);
+  }
+
   function onSaved(path) {
+    /* 成功一次就把失败状态清掉，别让红色警告一直挂着 */
+    saveFailShown = false;
     delete dirty[path];
+    /* 落盘成功了，同步草稿就没用了 —— 留着会导致下次启动误报"有未保存内容" */
+    try { if (ed.onSavedClearDraft) ed.onSavedClearDraft(path); } catch (e) { }
     refreshTabs();
     UI.status({ left: '已保存到本机浏览器 · ' + path });
   }
@@ -492,6 +549,9 @@
 
     var chain = Promise.resolve(), zips = 0, singles = 0;
     var importFailures = [];
+    /* 单文件导入的失败也要计入（S-049）：此前它们被静默吞掉，
+       界面只显示成功数，用户不会知道有文件没进来。 */
+    var fails = 0, allErrs = [];
     picked.forEach(function (f) {
       chain = chain.then(function () {
         if (/\.zip$/i.test(f.name)) {
@@ -504,16 +564,21 @@
         if (/\.json$/i.test(f.name)) {
           return U.readFileAsText(f).then(function (t) {
             try { return fs.importPack(t).then(function (n) { singles += n; }); }
-            catch (e) { return fs.importFiles([f]).then(function (n) { singles += n; }); }
+            catch (e) { return fs.importFiles([f]).then(function (r) { singles += r.imported; fails += (r.failed || 0); allErrs = allErrs.concat(r.errors || []); }); }
           });
         }
-        return fs.importFiles([f]).then(function (n) { singles += n; });
+        return fs.importFiles([f]).then(function (r) { singles += r.imported; fails += (r.failed || 0); allErrs = allErrs.concat(r.errors || []); });
       });
     });
 
     chain.then(function () {
       refreshTree(); refreshTargets();
       var done = zips + singles;
+      if (fails) {
+        importFailures = importFailures.concat(allErrs.map(function (x) {
+          return { name: x, err: '读取或写入失败' };
+        }));
+      }
 
       if (importFailures.length) {
         var names = importFailures.slice(0, 5).map(function (x) { return x.name; }).join('、');
@@ -686,6 +751,17 @@
     UI.status({ left: '运行 ' + path });
   }
 
+  /* 只允许 http/https —— 挡掉 javascript: 与 data: 这类伪协议 */
+  function safeURL(u) {
+    return /^https?:\/\//i.test(String(u || '').trim());
+  }
+  /* 属性内转义：引号、尖括号、& 都要处理 */
+  function escAttr(v) {
+    return String(v == null ? '' : v)
+      .replace(/&/g, '&amp;').replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  }
+
   function command(name) {
     switch (name) {
       case 'new-file': newFile(); break;
@@ -779,6 +855,15 @@
         } catch (e) { }
         U.toast('已刷新文件树');
         break;
+    /* ⚠ 未知命令必须有 default（S-052）。
+       此前没有 default：命令名写错、或面板里多出一个没接的条目时，
+       点了**毫无反应** —— 用户会以为是界面卡了，而不是功能没接。
+       至少要说一句人话。 */
+    default:
+      if (global.Code.util && global.Code.util.toast) {
+        global.Code.util.toast('命令未接入：' + name, 'err');
+      }
+      break;
     }
   }
 
@@ -799,8 +884,13 @@
     var p = Code.ai.preset(a.preset);
     var txt = '';
     if (p && p.note) txt += p.note;
-    if (p && p.keyURL) {
-      txt += ' <a href="' + p.keyURL + '" target="_blank" rel="noopener">去拿密钥</a>';
+    /* ⚠ 拼进 HTML 前必须转义，且要校验协议（S-050）。
+       这是全仓唯一一处把变量拼进 innerHTML 的地方。
+       keyURL 来自内置 preset（不是用户输入），所以当前不会真的被利用 ——
+       但它是一份"可以这么写"的示范，后来的人照抄就会引入真漏洞。
+       两道防线：① 属性转义 ② 只允许 http/https（挡掉 javascript:）。 */
+    if (p && p.keyURL && safeURL(p.keyURL)) {
+      txt += ' <a href="' + escAttr(p.keyURL) + '" target="_blank" rel="noopener">去拿密钥</a>';
     }
     /* 计费状态直接告诉用户，不让他猜 */
     var bt = Code.ai.billingText(a.model);
@@ -1042,6 +1132,13 @@
                   if (r && r.failed) msg += '，失败 ' + r.failed + ' 个';
                   U.toast(msg, r && r.failed ? 'err' : 'ok');
                   if (UI.refreshCloud) UI.refreshCloud();
+                  /* ⚠ 下载完必须刷新树并重载编辑器（S-039）。
+                     此前只弹了个 toast —— 文件树还是旧的，
+                     编辑器里打开的还是**旧内容**。
+                     用户接着打字 → debounce 触发保存 →
+                     **刚下载的云端内容被旧内容覆盖**，等于白下载一场，
+                     而且毫无提示。这是"会让用户丢东西"的那类错。 */
+                  return reloadAfterCloudPull(r);
                 })
                 .catch(function (e) { U.toast(String(e.message || e), 'err'); });
             }
@@ -1049,6 +1146,26 @@
         ]
       });
     });
+
+    /* 云端下载后：刷新文件树 + 重载当前编辑器的内容。
+       不做这一步，用户继续打字会把旧内容回写覆盖刚下载的新内容（S-039）。 */
+    function reloadAfterCloudPull(r) {
+      var paths = (r && r.paths) || [];
+      try {
+        if (Code.tree && Code.tree.refresh) Code.tree.refresh();
+      } catch (e) { }
+      try {
+        var cur = Code.editor && Code.editor.current ? Code.editor.current() : null;
+        var p = cur && cur.path;
+        /* 只重载确实被这次下载覆盖到的文件，避免打断没动过的标签 */
+        if (p && (!paths.length || paths.indexOf(p) >= 0)) {
+          return Code.fs.read(p).then(function (txt) {
+            if (Code.editor && Code.editor.setContent) Code.editor.setContent(p, txt);
+          }).catch(function () { });
+        }
+      } catch (e) { }
+      return Promise.resolve();
+    }
 
     on('#btn-cloud-reset', 'click', function () {
       U.modal({
@@ -1295,8 +1412,27 @@
       }
     });
 
-    /* 离开前保存 */
-    global.addEventListener('beforeunload', function () { flushAll(); });
+    /* ===== 离开前保存 =====
+     *
+     * ⚠ 只写 beforeunload 是不够的，三条理由：
+     *   1. 它调的 idb.put() 是异步的，处理器一返回浏览器就卸载，事务来不及提交；
+     *   2. iOS Safari 基本不触发 beforeunload —— 移动端等于没有钩子；
+     *   3. 手机上最常见的是"切到别的 App 再回来"，只有 visibilitychange 抓得到。
+     *
+     * 所以：三个事件都接，且每个都**先同步写 localStorage 草稿**
+     * （同步 API，卸载路径里一定能写完），异步那条照跑、成功更好。
+     */
+    function leaveSave() {
+      try { if (ed.saveDraftSync) ed.saveDraftSync(); } catch (e) { }
+      try { flushAll().catch(function (e) { if (onSaveFail) onSaveFail(e); }); } catch (e) { }
+    }
+    global.addEventListener('beforeunload', leaveSave);
+    /* pagehide：iOS Safari 唯一可靠的卸载信号 */
+    global.addEventListener('pagehide', leaveSave);
+    /* visibilitychange：切后台/切 App。手机上这是最常见的"离开"方式 */
+    global.document.addEventListener('visibilitychange', function () {
+      if (global.document.visibilityState === 'hidden') leaveSave();
+    });
   }
 
   Code.app = {

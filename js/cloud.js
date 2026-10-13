@@ -45,6 +45,8 @@
 
   /* 自己的键名：只在没有共享会话、用户在本页单独登录时才用 */
   var OWN_TOKEN_KEY = 'code_cloud_token';
+  /* 用户主动退出过的标记（S-047）。不删 Chat 的数据，只在本应用侧记一笔。 */
+  var OPT_OUT_KEY = 'code_cloud_optout';
   var OWN_UID_KEY = 'code_cloud_uid';
   var CFG_KEY = 'code_cloud_cfg';
 
@@ -91,6 +93,8 @@
      读的顺序：自己本页登的 → Chat 共享的。
      写的时候两边都写，这样在 Code 登录，回到 Chat 也是同一个人。 */
   function token() {
+    /* 主动退出过就别再沿用 —— 否则"退出"是假的（S-047） */
+    if (optedOut()) return ls(OWN_TOKEN_KEY) || null;
     return ls(OWN_TOKEN_KEY) || ls(CHAT_TOKEN_KEY) || null;
   }
   function uid() {
@@ -98,6 +102,8 @@
   }
   function setSession(tok, id) {
     ls(OWN_TOKEN_KEY, tok || null);
+    /* 主动登录 → 撤销之前的"已退出"标记 */
+    if (tok) ls(OPT_OUT_KEY, null);
     ls(OWN_UID_KEY, id || null);
     /* 同步给 Chat：让它那边也认出这次登录 */
     if (tok) {
@@ -107,10 +113,19 @@
   }
   function dropSession() {
     ls(OWN_TOKEN_KEY, null); ls(OWN_UID_KEY, null);
-    /* 只清自己写的。Chat 的会话由 Chat 自己管，
-       这里不越权删——用户可能只是想在 Code 退出，而不是退出全部。 */
+    /* ⚠ 借用来的会话必须能退掉（S-047）。
+       此前只清自己的 key，而登录态是从 Chat 的 localStorage "沿用"来的 ——
+       **刷新一下又被沿用回来**，用户点退出、界面显示已退出、
+       刷新发现还登着，会以为程序有鬼。
+       解法：写一个本地的"拒绝沿用"标记。不是去删 Chat 的数据（那确实越权），
+       而是在本应用这一侧记下"用户已经退出过"，沿用逻辑读到这里就停手。
+       这样既尊重 Chat 的会话所有权，又让"退出"真的是退出。 */
+    ls(OPT_OUT_KEY, '1');
     self = null;
   }
+
+  /* 用户主动退出过 → 不再沿用 Chat 的登录态，直到他再次主动登录 */
+  function optedOut() { return ls(OPT_OUT_KEY) === '1'; }
 
   /* 是否"借"到了 Chat 的登录态（自己没单独登过） */
   function isSharedSession() {
@@ -309,7 +324,7 @@
       var arr = Array.isArray(list) ? list : [];
       if (!arr.length) return { pulled: 0, failed: 0, total: 0 };
 
-      var pulled = 0, failed = 0, lastErr = '';
+      var pulled = 0, failed = 0, lastErr = '', written = [];
       var i = 0, doneBytes = 0;
       /* 与 pushAll 同一套口径：按字节算。size 是云端记的字节数，
          取不到就按 0 计入 —— 宁可进度条走得慢一点，也不要报一个假数字。 */
@@ -323,7 +338,9 @@
 
       function step() {
         if (i >= arr.length) {
-          return Promise.resolve({ pulled: pulled, failed: failed, total: arr.length, lastErr: lastErr });
+          /* paths：本次实际写入的路径，供调用方重载编辑器（S-039） */
+          return Promise.resolve({ pulled: pulled, failed: failed, total: arr.length,
+                                   lastErr: lastErr, paths: written.slice() });
         }
         var item = arr[i];
         i++;
@@ -334,7 +351,7 @@
           var content = (r && r.content != null) ? r.content : '';
           if (global.Code.fs && global.Code.fs.write) {
             return global.Code.fs.write(p, content)
-              .then(function () { doneBytes += txt_len(content); });
+              .then(function () { doneBytes += txt_len(content); written.push(p); });
           }
           return null;
         }).then(function () {

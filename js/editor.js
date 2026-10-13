@@ -8,6 +8,25 @@
 
   var el = {};              // DOM 引用
   var docs = {};            // path -> {content, undo, redo, sel, scroll}
+
+  /* 撤销栈上限：份数与字节两条都要（S-035） */
+  var UNDO_MAX = 300;
+  var UNDO_BYTES = 8 * 1024 * 1024;   /* 8 MB 全文副本，够几百次撤销，不会吃掉整个标签页 */
+  var COALESCE_MS = 600;              /* 连续操作间隔小于此值才合并（S-055） */
+
+  function bytesOf(stack) {
+    var n = 0;
+    for (var i = 0; i < stack.length; i++) {
+      var c = stack[i] && stack[i].v;
+      n += (typeof c === 'string' ? c.length : 0) + 64;  /* +64 粗算对象开销 */
+    }
+    return n;
+  }
+  /* 从最旧的开始丢，直到总字节达标。至少保留 1 份 ——
+     否则大文件一编辑就"撤销不可用"，比内存爆掉更早让人困惑。 */
+  function trimStack(stack, limit) {
+    while (stack.length > 1 && bytesOf(stack) > limit) stack.shift();
+  }
   var cur = null;           // 当前文档对象
   var lineH = 22, padTop = 10;
   var handlers = { change: [], cursor: [], save: [] };
@@ -112,9 +131,28 @@
     if (!cur) return;
     var snap = snapshot();
     var last = cur.undo[cur.undo.length - 1];
-    if (coalesce && last && Math.abs(last.v.length - snap.v.length) < 3) return;
+    /* ⚠ 合并判据不能只看长度差（S-055）。
+       原文 `Math.abs(last.v.length - snap.v.length) < 3` 就合并 ——
+       打 200 个字符，每次差 1，于是 200 次全部合并成**一份**，
+       Ctrl+Z 一下全没了。用户以为撤销坏了。
+       改：长度差与"上次入栈至今的时间"两条都要满足才合并。
+       连续打字（<600ms 且差 1）才合并成一个编辑块；
+       中间停顿过就一定是新的一块。这符合主流编辑器的手感。 */
+    var now = Date.now();
+    if (coalesce && last && Math.abs(last.v.length - snap.v.length) < 3 &&
+        last.__t && (now - last.__t) < COALESCE_MS) {
+      last.__t = now;
+      return;
+    }
+    snap.__t = now;
     cur.undo.push(snap);
-    if (cur.undo.length > 300) cur.undo.shift();
+    /* ⚠ 只限制"份数"是不够的（S-035）。
+       300 份 × 500 KB 文件 ≈ 150 MB —— 而且这些副本常驻内存，
+       浏览器不会替你回收。份数上限防不住大文件，
+       必须同时按**字节**限：先按份数，再按总字节从最旧的开始丢弃。
+       redo 此前连 300 上限都没有（无限增长）。 */
+    if (cur.undo.length > UNDO_MAX) cur.undo.shift();
+    trimStack(cur.undo, UNDO_BYTES);
     cur.redo.length = 0;
   }
   function applySnap(snap) {
@@ -131,6 +169,8 @@
     if (!cur || !cur.undo.length) return;
     var snap = cur.undo.pop();
     cur.redo.push(snapshot());
+    if (cur.redo.length > UNDO_MAX) cur.redo.shift();
+    trimStack(cur.redo, UNDO_BYTES);
     applySnap(snap);
   }
   function redo() {
@@ -326,7 +366,23 @@
 
   function queueSave() {
     clearTimeout(saveTimer);
-    saveTimer = setTimeout(flushSave, 700);
+    /* ⚠ 自动保存的失败必须有人接（本轮新增）。
+       此前这里是 `setTimeout(flushSave, 700)` —— flushSave 返回 Promise，
+       在定时器回调里**没有任何 .catch()**，
+       于是写入失败就是一个 unhandled rejection：
+       控制台里也许有一行警告，**界面上什么都不显示**。
+
+       这正是"以为有自动保存、实际某环节断了"的精确形态：
+       用户一直在打字，以为每 700ms 存一次，
+       实际上从某一刻起每次都在失败，而他毫不知情 —— 直到崩溃或刷新，全丢。
+
+       手动保存（Ctrl+S）走的是另一条路径，有 onSaveFail 会弹窗；
+       唯独自动这条是彻底静默的。所以这里补 catch 并向外发事件。 */
+    saveTimer = setTimeout(function () {
+      Promise.resolve().then(flushSave).catch(function (e) {
+        emit('save-fail', e);
+      });
+    }, 700);
   }
   function flushSave() {
     clearTimeout(saveTimer);
@@ -346,6 +402,8 @@
       /* 只有写入成功才标记已保存（S-036）。失败时 saved 保持旧值，
          于是下一轮仍会重试，而不是静默放弃。 */
       cur.saved = __pending;
+      /* 异步落盘成功 → 清掉同步草稿，避免下次启动误报 */
+      try { clearDraftSync(); } catch (e) { }
       emit('save', cur.path);
     });
   }
@@ -659,7 +717,69 @@
     paint();
   }
 
+  /* ============ 崩溃兜底草稿 ============
+   *
+   * 判据（来自 Chat 体验官，对本项同样适用）：
+   *   "在任意一个瞬间拔电源，用户会失去多少东西，他事前能不能知道？"
+   *
+   * 本编辑器之前的答案很糟，而且**比"没有钩子"更隐蔽**：
+   *   - 有 beforeunload → flushAll() → ed.save() → idb.put()
+   *   - 但 idb.put() 是**异步**的，beforeunload 处理器一返回浏览器就卸载，
+   *     事务根本来不及提交 → 最后 700ms（以及此后所有改动）必丢
+   *   - 读代码的人看到 beforeunload 会以为"关闭时会保存"，于是不会去查
+   *
+   * 更糟的是移动端：**iOS Safari 基本不触发 beforeunload**，
+   * 而 pagehide / visibilitychange 一个都没接 —— 手机上切个 App 回来，
+   * 从上次 debounce 到切走之间的内容全没了。
+   *
+   * 解法：卸载时先做一次**同步**写。localStorage 是同步 API，
+   * 在卸载路径里一定能写完 —— 用它存"最后的草稿"，
+   * 下次打开时检测到就提示恢复。IndexedDB 那条异步路径照旧跑，
+   * 能成更好，不成还有这一层兜着。
+   */
+  var DRAFT_KEY = 'code_draft_v1';
+  var DRAFT_MAX = 2 * 1024 * 1024;   /* 单文件草稿 2 MB 上限，避免把 localStorage 5 MB 撑爆 */
+
+  function saveDraftSync() {
+    try {
+      if (!cur || !cur.path) return false;
+      if (cur.saved === cur.content) return false;   /* 已落盘，不必写 */
+      if (cur.content.length > DRAFT_MAX) return false;
+      var rec = { path: cur.path, content: cur.content, t: Date.now() };
+      global.localStorage.setItem(DRAFT_KEY, JSON.stringify(rec));
+      return true;
+    } catch (e) { return false; }
+  }
+  function clearDraftSync() {
+    try { global.localStorage.removeItem(DRAFT_KEY); } catch (e) { }
+  }
+  /* 启动时检查：上次是不是没写完就走了 */
+  function takeDraft() {
+    try {
+      var raw = global.localStorage.getItem(DRAFT_KEY);
+      if (!raw) return null;
+      clearDraftSync();
+      var r = JSON.parse(raw);
+      if (!r || !r.path || typeof r.content !== 'string') return null;
+      return r;
+    } catch (e) { return null; }
+  }
+  /* 落盘成功后清掉草稿 —— 否则下次打开会误报"有未恢复内容" */
+  function onSavedClearDraft(path) {
+    try {
+      var raw = global.localStorage.getItem(DRAFT_KEY);
+      if (!raw) return;
+      var r = JSON.parse(raw);
+      if (r && r.path === path) clearDraftSync();
+    } catch (e) { }
+  }
+
   Code.editor = {
+    /* 崩溃兜底：同步草稿。卸载路径必须调它，不能只靠异步的 idb */
+    saveDraftSync: saveDraftSync,
+    clearDraftSync: clearDraftSync,
+    takeDraft: takeDraft,
+    onSavedClearDraft: onSavedClearDraft,
     init: init, open: open, close: close, current: current, value: value, setValue: setValue,
     applyPrefs: applyPrefs, on: on, undo: undo, redo: redo, save: flushSave,
     focus: function () { el.ta.focus(); },

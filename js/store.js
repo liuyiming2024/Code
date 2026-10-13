@@ -17,7 +17,11 @@
     panelOpen: true,
     sideWidth: 250,
     sideView: 'files',        // files | search | run | settings
-    autorun: false,
+    /* ⚠ 删掉了 autorun（S-053）。
+       它连同 syncEnabled / syncUrl / syncKey 是三四个"配置项但没有任何代码读"的死配置 ——
+       界面上如果有人把它暴露出来，用户勾了却毫无反应，
+       而代码里没有任何一处判据说明"这个还没实现"。
+       死配置比没有配置更糟：它承诺了一件事，然后什么都没做。 */
     syncEnabled: false,       // 可选：把工程同步到外部数据库，默认关闭
     syncUrl: '',
     syncKey: '',

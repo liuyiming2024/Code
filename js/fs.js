@@ -302,7 +302,12 @@
       chain = chain.then(function () {
         var name = U.normPath(e.name.replace(/^\/+/, ''));
         if (!name) return;
-        if (/\/$/.test(e.name) || e.usize === 0) {
+        /* ⚠ `usize === 0` 不能当目录判据（S-048）。
+           空文件（0 字节）与目录的 usize 都是 0 ——
+           于是导入 ZIP 时**所有空文件都被变成目录**，
+           用户之后往里写内容会失败，而且看不出原因。
+           真实判据：名字以 / 结尾，或外部属性里带目录位。 */
+        if (isDirEntry(e)) {
           if (!cache[name]) return create(name, 'dir', '').catch(function () {});
           return;
         }
@@ -337,7 +342,8 @@
     entries.forEach(function (e) {
       var name = U.normPath(e.name.replace(/^\/+/, ''));
       if (!name) return;
-      if (/\/$/.test(e.name) || e.usize === 0) return;   /* 目录项不算文件 */
+      /* 同上：不能用 usize===0 判目录，否则空文件被当成目录跳过（S-048） */
+      if (isDirEntry(e)) return;
       names.push(name);
     });
     return Promise.resolve(names);
@@ -407,8 +413,25 @@
 
   /* ---------- 导入本地文件 / 文件夹 ---------- */
   /* files: File[]（webkitRelativePath 存在时按目录还原） */
+  /* 目录判据：名字以 / 结尾，或外部属性高 16 位的目录位（0x10 / S_IFDIR 0x4000）。
+     不能用 usize===0 —— 空文件也是 0（S-048）。 */
+  function isDirEntry(e) {
+    if (/\/$/.test(e.name || '')) return true;
+    var extAttr = Number(e && e.extAttr);
+    if (!extAttr) return false;
+    var hi = (extAttr >>> 16) & 0xFFFF;
+    if (hi === 0) return false;                 /* 没有外部属性信息，只能靠名字 */
+    return (hi & 0x10) !== 0 || (hi & 0xF000) === 0x4000;
+  }
+
   function importFiles(files) {
-    var chain = Promise.resolve(), n = 0;
+    /* ⚠ 失败必须统计并如实报出（S-049）。
+       此前每个文件的 catch 里什么都不做，最后只返回成功数 n ——
+       导入 100 个、成功 60 个，界面显示「已导入 60」，
+       用户以为另外 40 个根本不在他选的列表里，
+       不会知道它们失败了、也不知道为什么。
+       同一处谎报的第四份拷贝：别处都改了，这里漏了。 */
+    var chain = Promise.resolve(), n = 0, failed = 0, errs = [];
     Array.prototype.slice.call(files).forEach(function (f) {
       chain = chain.then(function () {
         var rel = U.normPath((f.webkitRelativePath || f.name).replace(/^\/+/, ''));
@@ -417,10 +440,16 @@
           n++;
           if (cache[rel]) return write(rel, text);
           return create(rel, 'file', text);
-        }).catch(function () { /* 二进制文件跳过 */ });
+        }).catch(function (e) {
+          failed++;
+          if (errs.length < 5) errs.push(rel + '：' + String((e && e.message) || e));
+        });
       });
     });
-    return chain.then(function () { emit('import'); return n; });
+    return chain.then(function () {
+      emit('import');
+      return { imported: n, failed: failed, errors: errs, total: n + failed };
+    });
   }
 
   function exportPack() {

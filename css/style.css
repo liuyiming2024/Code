@@ -293,7 +293,6 @@ svg { width: 18px; height: 18px; display: block; }
 #editor::selection { background: var(--sel); color: transparent; }
 #editor::-moz-selection { background: var(--sel); color: transparent; }
 #highlight .curline { display: block; background: var(--cur-line); }
-#editor .sel-none { color: transparent; }
 
 /* 语法高亮 token */
 .tk-key { color: var(--tk-key); }
@@ -330,10 +329,6 @@ svg { width: 18px; height: 18px; display: block; }
 }
 .pt:hover { color: var(--fg); background: var(--bg-3); }
 .pt.active { color: var(--fg); background: var(--bg-3); }
-.badge {
-  display: inline-block; min-width: 16px; padding: 0 4px; border-radius: 8px;
-  background: var(--line); color: var(--fg-2); font-size: 11px; text-align: center;
-}
 .panel-body {
   flex: 1 1 auto; overflow: auto; padding: 8px 12px;
   font: 12.5px/1.6 var(--font-mono); white-space: pre-wrap; word-break: break-word;
@@ -345,10 +340,6 @@ svg { width: 18px; height: 18px; display: block; }
 .panel-body .info { color: var(--fg-3); }
 .panel-body .ok { color: var(--ok); }
 .panel-body .head { color: var(--fg-3); border-bottom: 1px solid var(--line-2); margin: 4px 0 6px; }
-.prob { display: flex; gap: 8px; padding: 3px 0; cursor: pointer; }
-.prob:hover { background: var(--bg-3); }
-.prob .sev { flex: 0 0 auto; }
-.prob .loc { color: var(--fg-3); }
 .panel-input {
   flex: 0 0 auto; display: flex; align-items: center; gap: 6px;
   padding: 5px 10px; border-top: 1px solid var(--line-2);
@@ -913,4 +904,10 @@ body.has-vkb .mobile-bar { display: none; }   /* 互斥：有键盘就不显示�
   font-family: var(--mono, monospace); font-size: 12px; line-height: 1.7;
   white-space: pre-wrap; word-break: break-all;
   max-height: 240px; overflow: auto; color: var(--fg-2);
+}
+
+/* 保存失败等必须立刻看见的状态：红色加粗，不能和普通提示混在一起 */
+#st-left.st-warn {
+  color: #ff6b6b;
+  font-weight: 700;
 }

@@ -186,12 +186,21 @@
   };
 
   /* ================= 状态栏 ================= */
+  /* opt.warn = true 时把左侧文字标红并加粗。
+     保存失败这类"用户必须立刻知道"的事，不能和普通提示一个样式 ——
+     他扫一眼状态栏就该看出不对劲。 */
   UI.status = function (opt) {
     if (opt.pos != null) U.$('#st-pos').textContent = opt.pos;
     if (opt.lang != null) U.$('#st-lang').textContent = opt.lang;
     if (opt.size != null) U.$('#st-size').textContent = opt.size;
     if (opt.mode != null) U.$('#st-mode').textContent = opt.mode;
-    if (opt.left != null) U.$('#st-left').textContent = opt.left;
+    if (opt.left != null) {
+      var el = U.$('#st-left');
+      el.textContent = opt.left;
+      /* warn：红色加粗。保存失败必须一眼看出来，不能和普通提示一个样。 */
+      if (opt.warn) { el.classList.add('st-warn'); }
+      else { el.classList.remove('st-warn'); }
+    }
   };
 
   /* ================= 主题 ================= */

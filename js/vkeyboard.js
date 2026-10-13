@@ -300,11 +300,20 @@
             .catch(function () { hint('无法读取剪贴板'); });
         } else hint('此浏览器不支持读取剪贴板');
         return;
+      /* ⚠ 不能走 document.execCommand('undo')（S-104）。
+         编辑器自研撤销栈的原因（editor.js 注释里写着）正是
+         "程序化赋值会破坏浏览器原生栈"—— 而虚拟键盘的输入**全是**程序化赋值。
+         于是：①原生栈里没有这些记录，按了没反应；
+              ②execCommand 改 ta.value 不触发 input 事件，
+                cur.content 与 textarea 不同步，下一次保存会把旧内容写回。
+         同一个功能两条路径、行为互不一致，必须统一走自研栈。 */
       case 'undo':
-        try { document.execCommand('undo'); } catch (e) { hint('撤销不可用'); }
+        if (Code.editor && Code.editor.undo) { try { Code.editor.undo(); } catch (e) { hint('撤销不可用'); } }
+        else { try { document.execCommand('undo'); } catch (e) { hint('撤销不可用'); } }
         return;
       case 'redo':
-        try { document.execCommand('redo'); } catch (e) { hint('重做不可用'); }
+        if (Code.editor && Code.editor.redo) { try { Code.editor.redo(); } catch (e) { hint('重做不可用'); } }
+        else { try { document.execCommand('redo'); } catch (e) { hint('重做不可用'); } }
         return;
       case 'save':
         if (Code.ui && Code.util.toast) Code.util.toast('内容会自动保存');

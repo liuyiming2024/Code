@@ -582,8 +582,16 @@
     var b = v.indexOf('\n', en); if (b < 0) b = v.length;
     var block = v.slice(a, b), unit = indentUnit();
     var lines = block.split('\n').map(function (l) {
-      if (dir > 0) return unit + l;
-      return l.replace(new RegExp('^(\\t| {1,' + (store.prefs.tabSize | 0) + '})'), '');
+      if (dir > 0) {
+        /* 空行不加缩进 —— 主流编辑器都这么做。
+           给空行也加会在行尾留尾随空白，而很多 OJ 与 lint 对此敏感。 */
+        if (l.trim() === '') return l;
+        return unit + l;
+      }
+      /* ⚠ tabSize 为 0 时拼出 {1,0} → SyntaxError: numbers out of order
+         in {} quantifier，整个反缩进崩溃。默认值 4 所以平时不触发，
+         但 localStorage 被改成 0 或未来加了设置项就炸。 */
+      return l.replace(new RegExp('^(\\t| {1,' + Math.max(1, store.prefs.tabSize | 0) + '})'), '');
     });
     pushUndo(false);
     var nb = lines.join('\n');
@@ -654,7 +662,16 @@
       if (!cur) return [0, 0];
       return [el.ta.selectionStart, el.ta.selectionEnd];
     },
-    replace: function (a, b, text, sa, se) { replaceRange(a, b, text, sa, se); },
+    /* ⚠ 必须先压撤销栈再替换（S-102 / S-103）。
+       编辑器自己的按键路径都是 pushUndo + replaceRange 成对出现，
+       唯独对外暴露的 replace 没有 —— 于是：
+         - AI「插入到光标处」提示"已插入，可撤销"，而这句是假的
+         - **虚拟键盘的每一次输入都不可撤销**（移动端全部输入）
+       在手机上 Ctrl+Z 会把整段退回打开时的状态，而不是逐字符撤销。 */
+    replace: function (a, b, text, sa, se) {
+      if (cur) { try { pushUndo(false); } catch (e) { } }
+      replaceRange(a, b, text, sa, se);
+    },
     pushUndo: pushUndo,
     /* 缩进单元，片段里用它而不是硬编码空格 */
     indentUnit: indentUnit,

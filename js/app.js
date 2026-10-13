@@ -345,18 +345,31 @@
     });
   }
 
+  /* ⚠ 三处问题（S-106 / S-107）：
+     ① 只 setSelectionRange 不调滚动 —— 在几百行的文件里跳到后面，
+        光标过去了但视口不动，用户看不到任何变化，会以为点击没生效；
+     ② openPath().then() 没有 .catch —— 打开失败时静默无反馈；
+     ③ 自己 U.$('#editor') 拿 textarea，而虚拟键盘走 ed.el().ta、
+        编辑器内部走 el.ta —— 同一个 textarea 三种拿法。 */
   function jumpTo(path, line) {
     openPath(path).then(function () {
-      if (line > 0) {
-        var ta = U.$('#editor');
-        var v = ta.value, idx = 0;
-        for (var i = 1; i < line && idx >= 0; i++) idx = v.indexOf('\n', idx) + 1;
-        if (idx >= 0) {
-          ta.focus();
-          ta.setSelectionRange(idx, idx);
-          ed.refresh();
-        }
-      }
+      if (!(line > 0)) return;
+      var ta = (ed.el && ed.el()) ? ed.el().ta : U.$('#editor');
+      if (!ta) return;
+      var v = ta.value, idx = 0;
+      for (var i = 1; i < line && idx >= 0; i++) idx = v.indexOf('\n', idx) + 1;
+      if (idx < 0) return;
+      ta.focus();
+      ta.setSelectionRange(idx, idx);
+      /* 让目标行居中：先估算行高，再把 scrollTop 调到目标位置减半屏 */
+      try {
+        var lh = parseFloat(getComputedStyle(ta).lineHeight) || 20;
+        var targetLine = line - 1;
+        ta.scrollTop = Math.max(0, targetLine * lh - ta.clientHeight / 2 + lh / 2);
+      } catch (e) { }
+      ed.refresh();
+    }).catch(function (e) {
+      U.toast('跳转失败：' + ((e && e.message) || e), 'err');
     });
   }
 
@@ -734,6 +747,25 @@
          这是"时间同步"的落地入口 —— 解释器跑不出的规模，
          靠外推告诉用户真实环境会怎样。 */
       case 'tle': runTLEPredict(); break;
+      /* 清空本地工程（S-110）：clearAll 此前定义了、导出了，但全仓零调用，
+         用户只能一个个删文件；而云盘反倒有「清空云盘」按钮 ——
+         本地比云端还没得清。这是危险操作，必须二次确认。 */
+      case 'clear-all': {
+        U.modal({
+          title: '清空本地工程',
+          body: '<p style="margin:0 0 8px;color:#ff6b6b"><b>这会删除本地所有文件，且无法撤销。</b></p>' +
+                '<p style="margin:0;color:#9aa4b2;font-size:12px">' +
+                '云端文件不受影响。建议先「导出全部文件（ZIP）」留一份备份。</p>',
+          okText: '确认清空',
+          onOk: function () {
+            Promise.resolve().then(function () { return Code.fs.clearAll(); })
+              .then(function () { tree.render(); U.toast('已清空本地工程'); })
+              .catch(function (e) { U.toast('清空失败：' + ((e && e.message) || e), 'err'); });
+            return true;
+          }
+        });
+        break;
+      }
       /* E-030：预览必须有关闭出口。按钮、命令面板、Esc 三条路都给上。 */
       case 'close-preview':
         if (runner.hidePreview) runner.hidePreview();

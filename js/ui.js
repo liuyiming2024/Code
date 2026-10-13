@@ -346,6 +346,7 @@
       /* TLE 预测：超时是竞赛里最贵的错，入口必须显眼 ——
          藏在设置里等于没有，用户根本不会想到要找它。 */
       { label: 'TLE 预测（会不会超时）', hint: 'C++', icon: 'i-run', act: function () { hooks.cmd && hooks.cmd('tle'); } },
+      { label: '清空本地工程（危险）', hint: '', icon: 'i-trash', act: function () { hooks.cmd && hooks.cmd('clear-all'); } },
       { label: '导出全部文件（ZIP）', hint: 'Ctrl+E', icon: 'i-download', act: function () { hooks.cmd && hooks.cmd('export'); } },
       { label: '导入文件或 ZIP', hint: 'Ctrl+O', icon: 'i-upload', act: function () { hooks.cmd && hooks.cmd('import'); } },
       /* E-048：以前写死 'i-sun'，而顶栏真按钮是动态的（浅色显示月亮）。

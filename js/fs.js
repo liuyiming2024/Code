@@ -67,7 +67,9 @@
 
   function create(path, type, content) {
     path = safePath(path);
-    if (cache[path]) throw new Error('已存在：' + path);
+    /* ⚠ 同步 throw 时调用方的 .then() 链还没建立，.catch() 接不到，
+       用户看不到任何提示。必须 return Promise.reject。 */
+    if (cache[path]) return Promise.reject(new Error('已存在：' + path));
     return mkdirp(path).then(function () {
       var rec = { path: path, type: type || 'file', content: content == null ? '' : content, mtime: Date.now() };
       return idb.put(STORE, rec);
@@ -110,7 +112,8 @@
   function move(from, to) {
     from = safePath(from); to = safePath(to);
     if (from === to) return Promise.resolve();
-    if (cache[to]) throw new Error('目标已存在：' + to);
+    /* 同上：同步 throw 会让 app.js 的 .catch 完全接不到 */
+    if (cache[to]) return Promise.reject(new Error('目标已存在：' + to));
     var jobs = [];
     if (cache[from] && cache[from].type === 'dir') {
       var prefix = from + '/';

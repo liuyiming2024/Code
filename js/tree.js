@@ -90,7 +90,10 @@
       var nodes = sortNodes(byDir[dir] || []);
       nodes.forEach(function (n) {
         var isDir = n.kind === 'dir';
-        var open = isDir && expanded[n.path] !== false;
+        /* 默认**折叠**。此前写 `!== false` 即默认展开 ——
+         那"记住展开状态"就失去意义（用户从不需要展开），
+         且深层目录初次渲染全铺开反而更难用。 */
+      var open = isDir && expanded[n.path] === true;
         var pad = 4 + depth * 12;
         html += '<div class="tree-row' + (n.path === selPath ? ' sel' : '') + '" data-path="' + U.esc(n.path) + '"' +
           /* 标出类型，键盘交互（E-052）要靠它判断展开还是打开 */
@@ -197,22 +200,42 @@
     var cs = U.$('#search-case') && U.$('#search-case').checked;
     var word = U.$('#search-word') && U.$('#search-word').checked;
     var needle = cs ? q : q.toLowerCase();
-    var pat = word ? new RegExp('(^|[^\\w])' + escapeRe(q) + '(?=$|[^\\w])', cs ? 'g' : 'gi') : null;
-    var files = Code.fs.list().filter(function (p) { var s = Code.fs.stat(p); return s && s.type !== 'dir'; });
+    var pat = word ? new RegExp('(^|[^\\w])(' + escapeRe(q) + ')(?=$|[^\\w])', cs ? 'g' : 'gi') : null;
+    /* ⚠ Code.fs.list() 返回的是**记录对象数组**（{path,type,content,mtime}），不是路径字符串。
+       此前直接把它当路径传给 fs.stat()，拿对象查缓存恒为 undefined，
+       于是**所有文件都被过滤掉** —— 工程内搜索 100% 失效，任何关键词都返回"没有找到"。
+       佐证在同一文件：render() 写的是 .map(r => r.path)，这里写的是 p —— 笔误不是设计。 */
+    var files = Code.fs.list()
+      .map(function (r) { return typeof r === 'string' ? r : (r && r.path); })
+      .filter(function (p) { var s = Code.fs.stat(p); return s && s.type !== 'dir'; });
     var html = '', total = 0, cap = 300;
     /* E-027：同一个搜索里有三种截断，以前只有"总数超 300"有提示，
        另外两种是静默的 —— 用户明明记得某个大文件里有这个词却搜不到，
        会以为自己记错了。所以被跳过的文件单独记下来，最后列出来。 */
     var skipped = [], truncated = [];
     files.forEach(function (p) {
-      if (total >= cap) return;
+      /* 因总数上限跳过的文件也要记下来 ——
+         只说"只显示前 300 条"却不说哪些文件没搜，
+         用户按文件名找不到时无法判断是"没有"还是"没搜到"。 */
+      if (total >= cap) { skipped.push(p); return; }
       var text = Code.fs.read(p) || '';
-      if (text.length > 400000) { skipped.push(p.path || p); return; }
+      if (text.length > 400000) { skipped.push(p); return; }
       var lines = text.split('\n'), hits = [];
       for (var i = 0; i < lines.length && hits.length < 40; i++) {
         var ln = lines[i];
         var ok = word ? (pat.lastIndex = 0, pat.test(ln)) : (cs ? ln.indexOf(needle) >= 0 : ln.toLowerCase().indexOf(needle) >= 0);
-        if (ok) hits.push({ n: i + 1, text: ln });
+        if (ok) {
+          /* 截断窗口以**命中位置**为中心 ——
+             固定从头截 160 字符的话，长行命中常在 160 之后，
+             用户看到一行结果却找不到关键词在哪。 */
+          var at = cs ? ln.indexOf(needle) : ln.toLowerCase().indexOf(needle);
+          var shown = ln;
+          if (ln.length > 160 && at >= 0) {
+            var from = Math.max(0, at - 60);
+            shown = (from > 0 ? '…' : '') + ln.slice(from, from + 160) + ((from + 160) < ln.length ? '…' : '');
+          } else if (ln.length > 160) { shown = ln.slice(0, 160) + '…'; }
+          hits.push({ n: i + 1, text: shown });
+        }
       }
       if (!hits.length) return;
       /* 每文件 40 条上限：显示成「≥40」而不是「40」，
@@ -250,9 +273,23 @@
   function escapeRe(s) { return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
   function mark(text, q, cs, word) {
     var out = '', i = 0;
+    /* ⚠ 不能"先 esc 再用 re 去替换"（原实现）——
+       文本里 < 已变成 &lt;，而 (^|[^\w]) 会匹配 &lt; 里的 ; 之后……
+       更根本的是：esc 后的文本里 < 根本不存在，搜 << / & / -> 全部不高亮，
+       而这在 C/C++ 里是高频操作。
+       正确做法：在**原文**上定位命中区间，逐段 esc，再拼 <mark>。 */
     if (word) {
       var re = new RegExp('(^|[^\\w])(' + escapeRe(q) + ')(?=$|[^\\w])', cs ? 'g' : 'gi');
-      return U.esc(text).replace(re, function (m, a, b) { return U.esc(a) + '<mark>' + U.esc(b) + '</mark>'; });
+      var res = '', lastIdx = 0, m2;
+      while ((m2 = re.exec(text)) !== null) {
+        var st = m2.index + m2[1].length;
+        if (st > lastIdx) res += U.esc(text.slice(lastIdx, st));
+        res += '<mark>' + U.esc(m2[2]) + '</mark>';
+        lastIdx = st + m2[2].length;
+        if (m2.index === re.lastIndex) re.lastIndex++;
+      }
+      if (lastIdx < text.length) res += U.esc(text.slice(lastIdx));
+      return res;
     }
     var hay = cs ? text : text.toLowerCase(), n = cs ? q : q.toLowerCase();
     while (true) {

@@ -79,6 +79,50 @@
   }
 
   /* ============================================================
+   * C 类型推断（S-115 / S-116）
+   *
+   * 为什么需要：AST 节点的 `type` 字段是**节点类型**（恒为 'BinOp'），
+   * 不能拿来存 C 类型 —— 之前直接用 `node.type` 传给 wrapInt，
+   * 于是所有宽度分支永不匹配，short/char/long long/unsigned 全按 int32 处理。
+   * 这也是为什么"同一个键写了两次"是危险写法（范围 for 那次踩过同一个坑）。
+   *
+   * 这里按 C 的**整型提升规则**推断：
+   *   - 一端是 unsigned 且宽度 >= 另一端 → 结果为 unsigned
+   *   - 否则取两端中更宽的那个
+   * ============================================================ */
+  var CTYPE_RANK = {
+    'char': 1, 'unsigned char': 1, 'signed char': 1,
+    'short': 2, 'short int': 2, 'unsigned short': 2,
+    'int': 3, 'unsigned int': 3, 'unsigned': 3,
+    'long': 4, 'unsigned long': 4,
+    'long long': 5, 'unsigned long long': 5
+  };
+  function isUnsignedCType(t) { return !!t && /unsigned/.test(t); }
+  function ctypeRank(t) { return CTYPE_RANK[t] || 3; }
+
+  /* 从表达式节点推断 C 类型 */
+  function inferCType(node, scope) {
+    if (!node) return null;
+    if (node.type === 'Name') return scope && scope.typeOf ? (scope.typeOf(node.name) || null) : null;
+    if (node.type === 'Num') return node.isFloat ? 'double' : 'int';
+    if (node.type === 'Str') return 'string';
+    /* 二元运算：整型提升 —— unsigned 优先，其次取更宽者 */
+    if (node.type === 'BinOp') {
+      var lt = inferCType(node.l, scope), rt = inferCType(node.r, scope);
+      if (isUnsignedCType(lt) || isUnsignedCType(rt)) {
+        /* 一端 unsigned → 结果 unsigned，宽度取较大者 */
+        return (ctypeRank(lt) >= ctypeRank(rt) ? lt : rt).indexOf('unsigned') >= 0
+          ? (ctypeRank(lt) >= ctypeRank(rt) ? lt : rt)
+          : 'unsigned ' + (ctypeRank(lt) >= ctypeRank(rt) ? lt : rt);
+      }
+      return ctypeRank(lt) >= ctypeRank(rt) ? (lt || rt) : (rt || lt);
+    }
+    if (node.type === 'Cast') return node.ctype || null;
+    if (node.type === 'Index') return scope && scope.typeOf ? (scope.typeOf(node.obj && node.obj.name) || null) : null;
+    return null;
+  }
+
+  /* ============================================================
    * 预处理宏（#define）
    *
    * 为什么不再"记录名字然后报错"：
@@ -97,19 +141,60 @@
   var MACRO_FNS = {};     /* 宏函数：名 → {params, body} */
 
   /* 收集源码里的 #define。返回去掉预处理行之后的源码。 */
+  var MACRO_ERRS = [];   /* 预处理阶段收集到的明确不支持项 */
+
   function collectAndStripMacros(src) {
     var lines = src.split('\n'), out = [];
+    var stack = [];        /* 条件编译栈，支持嵌套 */
     for (var i = 0; i < lines.length; i++) {
       var ln = lines[i];
       var tr = ln.replace(/^\s+/, '');
-      if (tr.charAt(0) !== '#') { out.push(ln); continue; }
-      var body = tr.slice(1);
+      /* ⚠ 指令不一定在行首。实测用例写成 `int main(){ #ifdef X`，
+         按"行首 # 才是指令"判定会漏掉，于是两个分支都保留，
+         输出变成 "yesno"（真 C++ 只输出一个分支）。
+         所以行内出现 `#指令` 时，从 # 处把该行拆成"代码 + 指令"两段。 */
+      var hashAt = ln.indexOf('#');
+      var inline = false;
+      if (hashAt > 0) {
+        var after = ln.slice(hashAt + 1);
+        if (/^\s*(ifdef|ifndef|if|else|elif|endif|define|pragma)\b/.test(after)) inline = true;
+      }
+      if (tr.charAt(0) !== '#' && !inline) {
+        /* 条件不成立的行整行丢弃 ——
+           不能只是"跳过预处理指令"，否则两个分支都留下。 */
+        var inactive = false;
+        for (var k = 0; k < stack.length; k++) if (!stack[k].active) { inactive = true; break; }
+        out.push(inactive ? '' : ln);
+        continue;
+      }
+      var codeBefore = '';
+      var body;
+      if (inline) {
+        codeBefore = ln.slice(0, hashAt);
+        body = ln.slice(hashAt + 1);
+        var inact2 = false;
+        for (var k2 = 0; k2 < stack.length; k2++) if (!stack[k2].active) { inact2 = true; break; }
+        out.push(inact2 ? '' : codeBefore);
+      } else {
+        body = tr.slice(1);
+      }
       var dm = /^\s*define\s+([A-Za-z_]\w*)/.exec(body);
       if (dm) {
         var name = dm[1];
         var rest = body.slice(dm[0].length);
-        /* 宏函数：名字后紧跟着左括号（不能有空格，这是 C 的规定） */
-        if (/^\s*\(/.test(rest) && !/^\s*\(\s*\)/.test(rest)) {
+        /* 宏函数：名字后紧跟左括号，且括号内是逗号分隔的**标识符**列表。
+           ⚠ 不能只看"有没有左括号" —— `#define B (A*3)` 紧跟括号，
+           但括号里是表达式不是参数。按"有括号就是宏函数"判定，
+           B 会被当成需要一个名为 `A*3` 的参数的宏函数，
+           于是 `cout << B` 报"变量未定义：B"（S-123），
+           而用户明明写了 #define B，完全无从排查。 */
+        var paren = /^\s*\(([^)]*)\)/.exec(rest);
+        var isFn = false;
+        if (paren && paren[1].trim() !== '') {
+          var parts = paren[1].split(',').map(function (x) { return x.trim(); });
+          isFn = parts.every(function (x) { return /^[A-Za-z_]\w*$/.test(x); });
+        }
+        if (isFn) {
           var pm = /^\s*\(([^)]*)\)\s*([\s\S]*)$/.exec(rest);
           if (pm) {
             var params = pm[1].split(',').map(function (x) { return x.trim(); })
@@ -122,8 +207,35 @@
         /* 常量宏：剩余部分就是替换文本 */
         MACROS[name] = rest.trim();
       }
-      /* #ifdef / #pragma 等：明确不支持，但只在用到条件编译分支时才可能出错，
-         这里静默跳过（条件编译在竞赛里相对少见，且不影响主流程） */
+      /* ============================================================
+       * 条件编译 #ifdef / #ifndef / #else / #endif（S-117）
+       *
+       * ⚠ 宏已经能展开了（S-076），但条件编译没跟着走：
+       *   `#define X 1` + `#ifdef X / cout<<"yes" / #else / cout<<"no" / #endif`
+       *   实测输出 "no"（真 C++ 是 "yes"）—— 两个分支都被保留了。
+       *   用户看到程序正常运行、输出另一个分支的结果，完全无从察觉。
+       *
+       * 不支持的（#if 表达式求值 / #pragma / # 字符串化 / ## 连接）：明确报出。
+       * ============================================================ */
+      var cond = /^\s*(ifdef|ifndef|if|else|elif|endif)\b/.exec(body);
+      if (cond) {
+        var kw = cond[1];
+        var arg = body.slice(cond[0].length).trim();
+        if (kw === 'ifdef') { stack.push({ active: MACROS[arg] !== undefined || MACRO_FNS[arg] !== undefined, taken: true }); out.push(''); continue; }
+        if (kw === 'ifndef') { stack.push({ active: MACROS[arg] === undefined && MACRO_FNS[arg] === undefined, taken: true }); out.push(''); continue; }
+        if (kw === 'else') {
+          if (stack.length) { stack[stack.length - 1].active = !stack[stack.length - 1].active; }
+          out.push(''); continue;
+        }
+        if (kw === 'endif') { stack.pop(); out.push(''); continue; }
+        if (kw === 'if' || kw === 'elif') {
+          /* #if 需要常量表达式求值，本环境不做 —— 明确说出，不静默取错分支 */
+          MACRO_ERRS.push('暂不支持 #' + kw + '（需要常量表达式求值）。请用 #ifdef / #ifndef 代替。');
+          stack.push({ active: false, taken: true });
+          out.push(''); continue;
+        }
+      }
+      /* #pragma 等其他指令：静默跳过 */
       out.push('');
     }
     return out.join('\n');
@@ -222,8 +334,10 @@
   function preprocess(src) {
     /* 每次处理前清空，否则多次 run 之间会互相污染 ——
        前一个文件定义的 N 会跑到后一个文件里。 */
-    MACROS = {}; MACRO_FNS = {};
+    MACROS = {}; MACRO_FNS = {}; MACRO_ERRS = [];
     var stripped = collectAndStripMacros(src);
+    /* 预处理阶段发现的"明确不支持"要报出来，不能静默取错分支 */
+    if (MACRO_ERRS.length) throw cerr(MACRO_ERRS.join('\n'));
     return expandMacros(stripped);
   }
 
@@ -565,9 +679,18 @@
       this.expect('OP', '{');
       var fields = [];
       while (!this.atOp('}') && !this.at('EOF')) {
-        /* 成员声明：类型 名字;  —— 同样支持 long long */
+        /* 成员声明：类型 名字;  —— 同样支持 long long。
+           ⚠ 成员类型可以是另一个 struct（S-127）：
+             `struct A{int v;}; struct B{ A a; int w; };`
+             链表节点、树节点全靠嵌套结构体，数据结构入门必需。
+             此前只认 TYPE token，而 A 是 NAME，
+             于是 `A a;` 报"语法错误：期望 ;，实际读到 a" ——
+             这个措辞会让人以为是自己的分号写错了。 */
         while (this.at('TYPE') && (this.peek().v === 'const' || this.peek().v === 'unsigned' || this.peek().v === 'signed')) this.p++;
-        var ftype = this.at('TYPE') ? this.next().v : 'int';
+        var ftype;
+        if (this.at('TYPE')) { ftype = this.next().v; }
+        else if (this.at('NAME') && this.structNames && this.structNames[this.peek().v]) { ftype = this.next().v; }
+        else { ftype = 'int'; }
         while (this.at('TYPE') && this.peek().v !== 'const') {
           var nx3 = this.peek().v;
           if (ftype === 'long' && (nx3 === 'long' || nx3 === 'double')) { ftype += ' ' + nx3; this.p++; }
@@ -1129,6 +1252,18 @@
         this.p++;
         var raw = String(t.raw !== undefined ? t.raw : t.v);
         var flt = /[.eE]/.test(raw);
+        /* ⚠ 超过 2^53 的整数字面量，JS 的 number 存不准。
+           `long long x = 9223372036854775807LL` 会被读成 ...775808，
+           差了 200 多 —— 不报错，只是答案错，用户无从察觉。
+           这里对超范围字面量改用 BigInt 精确保存（只在这一处引入，
+           不改动整个解释器的数值模型，把风险圈在最小范围）。 */
+        if (!flt && /^\d+$/.test(raw) && raw.length > 15) {
+          var bigv;
+          try { bigv = BigInt(raw); } catch (e) { bigv = null; }
+          if (bigv !== null && (bigv > BigInt(Number.MAX_SAFE_INTEGER) || bigv < BigInt(Number.MIN_SAFE_INTEGER))) {
+            return { type: 'Num', v: t.v, isFloat: false, __big: bigv };
+          }
+        }
         return { type: 'Num', v: t.v, isFloat: flt };
       }
       if (t.t === 'STR') { this.p++; return { type: 'Str', v: t.v }; }
@@ -1206,7 +1341,12 @@
      真正的兜底交给 runner 的墙钟超时，而不是步数。 */
   var MAX_STEPS = 50000000;
 
-  function Scope(parent) { this.v = {}; this.parent = parent || null; }
+  /* ⚠ 变量必须记住自己的 C 类型。
+     此前只有值没有类型，于是 `unsigned u=1; int i=-1; i<u` 只能按 JS 数字比较，
+     得到 1 而真 C++ 是 0（int 被提升成 unsigned，-1 变成 4294967295）。
+     short / char / long long 的宽度回绕同理 —— 不知道类型就没法按宽度回绕。
+     类型表与值表平行维护，读写走同样的作用域链。 */
+  function Scope(parent) { this.v = {}; this.t = {}; this.parent = parent || null; }
   Scope.prototype.get = function (n) {
     var s = this;
     while (s) { if (n in s.v) return s.v[n]; s = s.parent; }
@@ -1227,7 +1367,19 @@
     this.v[n] = val;
   };
   /* 声明：必须落在当前层，否则 for(int i...) 会去改外层同名变量 */
-  Scope.prototype.declare = function (n, val) { this.v[n] = val; };
+  Scope.prototype.declare = function (n, val, ctype) { this.v[n] = val; if (ctype) this.t[n] = ctype; };
+  /* 取变量的 C 类型：沿链向上找，与 get 一致 */
+  Scope.prototype.typeOf = function (n) {
+    var s = this;
+    while (s) { if (s.t && n in s.t) return s.t[n]; s = s.parent; }
+    return null;
+  };
+  Scope.prototype.setType = function (n, ctype) {
+    var s = this;
+    while (s) { if (n in s.v) { if (!s.t) s.t = {}; s.t[n] = ctype; return; } s = s.parent; }
+    if (!this.t) this.t = {};
+    this.t[n] = ctype;
+  };
 
   /* 控制流信号用异常实现。
      ⚠ 必须带可识别的标记 —— 否则 switch / 循环分不清是哪个信号，
@@ -1604,6 +1756,11 @@
          以前统一走 Math.round(v*1e10)/1e10，超过 2^53 精度的大整数
          会被表示成 7778742049.000001 —— 而 long long 输出的正是这类数，
          竞赛答案错一位就是 WA，这种"看起来差不多"的输出最危险。 */
+      /* C++ 的 cout 打印浮点无穷是 `inf` / `-inf`，不是 JS 的 `Infinity`。
+         写 Infinity 的话，用户照着这个输出去对 OJ 的样例就对不上。 */
+      if (v === Infinity) return 'inf';
+      if (v === -Infinity) return '-inf';
+      if (typeof v === 'object' && v !== null && typeof v.__big === 'bigint') return v.__big.toString();
       if (typeof v === 'number') {
         if (Number.isInteger(v)) return String(v);
         return String(Math.round(v * 1e10) / 1e10);
@@ -1634,8 +1791,14 @@
       });
       if (!main) throw cerr('没有找到 main 函数');
       var g = this.global;
+      /* ⚠ StructDecl 必须在这里 exec 一遍（此前漏了）。
+         不 exec 的话 `self.structs` 永远是空表，
+         于是 struct 实例建出来没有任何字段 ——
+         单层 struct 靠"赋值时动态加属性"侥幸能用，
+         但嵌套字段（S-127）建不出来，`b.a.v=5` 报
+         "不能给非对象赋值成员：v"。 */
       tree.body.forEach(function (n) {
-        if (n.type === 'VarDecl') self.exec(n, g);
+        if (n.type === 'VarDecl' || n.type === 'StructDecl') self.exec(n, g);
       });
       this.callFunc(main, [], g);
       return {
@@ -1702,20 +1865,29 @@
         /* struct 变量：按登记的字段建对象，数值字段默认 0 */
         case 'StructVarDecl': {
           var fields = self.structs[node.typeName] || [];
-          var mkInst = function () {
-            var o = { __struct: true, __type: node.typeName };
-            fields.forEach(function (f) {
-              o[f.name] = (f.type === 'char') ? '' : (f.type === 'string' ? '' : 0);
+          /* ⚠ 字段本身是 struct 时要递归建对象（S-127）。
+             此前统一填 0，于是 `b.a.v = 5` 报"不能给非对象赋值成员：v" ——
+             语法解析过了、赋值却失败，用户会以为是自己的访问方式写错了。
+             嵌套结构体是链表节点、树节点的基础，数据结构入门必需。 */
+          var mkInst = function (tn, d) {
+            d = d || 0;
+            var o = { __struct: true, __type: tn };
+            var fs2 = self.structs[tn] || [];
+            fs2.forEach(function (f) {
+              if (self.structs[f.type] && d < 8) o[f.name] = mkInst(f.type, d + 1);
+              else if (Array.isArray(f.arr)) o[f.name] = [];
+              else o[f.name] = (f.type === 'char' || f.type === 'string') ? '' : 0;
             });
             return o;
           };
+          var mkInstTop = function () { return mkInst(node.typeName, 0); };
           if (node.sizes) {
             var cnt2 = self.eval(node.sizes[0] || { type: 'Num', v: 0 }, scope) | 0;
             var arr2 = [];
-            for (var si = 0; si < cnt2; si++) arr2.push(mkInst());
+            for (var si = 0; si < cnt2; si++) arr2.push(mkInstTop());
             scope.declare(node.name, arr2);
           } else {
-            scope.declare(node.name, mkInst());
+            scope.declare(node.name, mkInstTop());
           }
           return null;
         }
@@ -1801,8 +1973,18 @@
             } else {
               val = d.init ? self.eval(d.init, scope) : (d.type === 'char' ? '' : 0);
               if (d.type === 'int' && typeof val === 'number') val = Math.trunc(val);
+              /* ⚠ 赋值时按**目标类型**回绕（S-115）。
+                 C 的整型提升让 `short s; s + 1` 的结果是 int（32768），
+                 只有赋回 short 时才截断成 -32768。
+                 只在运算处回绕、赋值处不回绕的话，
+                 `short r = s+1` 会得到 32768 —— 而 g++ 是 -32768。 */
+              if (UB.isReal() && d.type && typeof val === 'number' && Number.isInteger(val)) {
+                val = wrapInt(val, d.type);
+              }
             }
-            scope.declare(d.name, val);
+            /* 第三个参数是 C 类型 —— 不存的话后面无法按宽度回绕，
+               也无法做 unsigned 的整型提升（S-115 / S-116）。 */
+            scope.declare(d.name, val, d.type || node.type2 || null);
           });
           return null;
         case 'Expr': this.eval(node.expr, scope); return null;
@@ -1918,7 +2100,7 @@
       var self = this;
       if (!node) return 0;
       switch (node.type) {
-        case 'Num': return node.v;
+        case 'Num': return node.__big !== undefined ? { __big: node.__big } : node.v;
         case 'Str': return node.v;
         case 'Char': return node.v;
         case 'InitList': return node.elts.map(function (e) { return self.eval(e, scope); });
@@ -2122,12 +2304,84 @@
       function ov(v) {
         if (!UB.isReal()) return v;
         if (typeof v !== 'number' || !Number.isInteger(v) || !isFinite(v)) return v;
-        return wrapInt(v, node.type || 'int');
+        /* ⚠ 用推断出的 C 类型，不能用 node.type —— 那是节点类型，恒为 'BinOp'。
+           此前写 node.type 导致所有宽度分支永不匹配。 */
+        var ct = node.ctype || inferCType(node, scope) || 'int';
+        return wrapInt(v, ct);
       }
       /* && 与 || 短路 */
       if (op === '&&') return this.truthy(this.eval(node.l, scope)) && this.truthy(this.eval(node.r, scope));
       if (op === '||') return this.truthy(this.eval(node.l, scope)) || this.truthy(this.eval(node.r, scope));
       var a = this.eval(node.l, scope), b = this.eval(node.r, scope);
+
+      /* BigInt 操作数：超大整数（>2^53）必须精确算，不能退回 number。
+         不处理的话 9223372036854775807 + 1 会得到 ...775808 而不是回绕到负值。 */
+      var aIsBig = a && typeof a === 'object' && typeof a.__big === 'bigint';
+      var bIsBig = b && typeof b === 'object' && typeof b.__big === 'bigint';
+      if (aIsBig || bIsBig) {
+        var ba = aIsBig ? a.__big : (typeof a === 'number' && Number.isInteger(a) ? BigInt(a) : null);
+        var bb = bIsBig ? b.__big : (typeof b === 'number' && Number.isInteger(b) ? BigInt(b) : null);
+        if (ba !== null && bb !== null) {
+          var big;
+          switch (op) {
+            case '+': big = ba + bb; break;
+            case '-': big = ba - bb; break;
+            case '*': big = ba * bb; break;
+            case '/': if (bb === 0n) throw cerr('除零错误'); big = ba / bb; break;
+            case '%': if (bb === 0n) throw cerr('除零错误'); big = ba % bb; break;
+            case '<': return ba < bb ? 1 : 0;
+            case '>': return ba > bb ? 1 : 0;
+            case '<=': return ba <= bb ? 1 : 0;
+            case '>=': return ba >= bb ? 1 : 0;
+            case '==': return ba === bb ? 1 : 0;
+            case '!=': return ba !== bb ? 1 : 0;
+            default: big = null;
+          }
+          if (big !== null) {
+            /* 按 64 位回绕（long long），与 wrapInt 的 64 位分支一致 */
+            var m64 = 1n << 64n;
+            var r64 = ((big % m64) + m64) % m64;
+            if (r64 >= (1n << 63n)) r64 -= m64;
+            /* 结果能安全表示就转回 number，否则继续用 BigInt */
+            if (r64 <= BigInt(Number.MAX_SAFE_INTEGER) && r64 >= BigInt(Number.MIN_SAFE_INTEGER)) {
+              return Number(r64);
+            }
+            return { __big: r64 };
+          }
+        }
+      }
+
+      /* ============================================================
+       * unsigned 整型提升（S-116）
+       *
+       * C++ 最著名的坑之一，竞赛高频：
+       *   ① `unsigned u=1; int i=-1; i<u`  → 真 C++ 是 **0**（不是 1）
+       *      因为 int 被转成 unsigned，-1 变成 4294967295
+       *   ② `unsigned u=2; int i=-3; u+i`  → 真 C++ 是 4294967295（不是 -1）
+       *   ③ `for(unsigned j=3; j>=0; j--)` → 死循环（unsigned 永不 < 0）
+       *
+       * 三条都是"跑通了、给了个错的数"，用户不会怀疑解释器 ——
+       * 这是比"报错"严重得多的一类错。
+       * ============================================================ */
+      var ctL = inferCType(node.l, scope), ctR = inferCType(node.r, scope);
+      var resultUnsigned = isUnsignedCType(ctL) || isUnsignedCType(ctR);
+      if (resultUnsigned && typeof a === 'number' && typeof b === 'number' &&
+          Number.isInteger(a) && Number.isInteger(b)) {
+        /* 把两端都转成 32 位无符号语义 */
+        a = a >>> 0; b = b >>> 0;
+        switch (op) {
+          case '+': return (a + b) >>> 0;
+          case '-': return (a - b) >>> 0;
+          case '*': return Math.imul(a, b) >>> 0;
+          case '<': return a < b ? 1 : 0;
+          case '>': return a > b ? 1 : 0;
+          case '<=': return a <= b ? 1 : 0;
+          case '>=': return a >= b ? 1 : 0;
+          case '==': return a === b ? 1 : 0;
+          case '!=': return a !== b ? 1 : 0;
+        }
+      }
+
       var isArith = (op === '+' || op === '-' || op === '*' || op === '<<');
       var bothInt = isArith && Number.isInteger(a) && Number.isInteger(b) &&
                     typeof a === 'number' && typeof b === 'number';
@@ -2158,19 +2412,33 @@
              真 C++ 打印 inf，这里却抛"除零错误" ——
              而整数除零才是 UB（真机上通常是 SIGFPE）。 */
           if (b === 0) {
-            /* 只要有一端是浮点（或字面量带小数），就按 IEEE 754 走 */
-            /* 判据：值本身是浮点，或任一端字面量带小数点/指数 */
-          var isFloatExpr = !Number.isInteger(a) || !Number.isInteger(b) ||
-                            (node.l && node.l.isFloat) || (node.r && node.r.isFloat);
-            if (isFloatExpr || a === 0) {
+            /* ⚠ 判据不能看**运行时值**（S-119）。
+               此前用 `!Number.isInteger(a)` 判断，而 `1.0` 在 JS 里就是整数 1，
+               与 `int 1` 无法区分 —— 于是同一个表达式 `d/z`，
+               d=2.5 时返回 inf、d=1.0 时抛"除零错误"。
+               **同一个表达式两种行为**，用户完全无法预测。
+               改看声明类型：变量表里标了 double/float 就按 IEEE 754 走。 */
+            var ctA = inferCType(node.l, scope), ctB = inferCType(node.r, scope);
+            var isFloating = /double|float/.test(ctA || '') || /double|float/.test(ctB || '') ||
+                             (node.l && node.l.isFloat) || (node.r && node.r.isFloat) ||
+                             !Number.isInteger(a) || !Number.isInteger(b);
+            if (isFloating) {
               if (a === 0) return NaN;
               return (a > 0) ? Infinity : -Infinity;
             }
-            /* 整数除零：安全档报错，真实档也报错（真机 SIGFPE，不是可模拟的值） */
+            /* 整数除零：真机 SIGFPE */
             throw cerr('除零错误（整数除零在真实 C++ 里会导致程序崩溃）');
           }
           /* 两个整数相除按 C 语义取整 */
-          if (Number.isInteger(a) && Number.isInteger(b)) return Math.trunc(a / b);
+          if (Number.isInteger(a) && Number.isInteger(b)) {
+            /* ⚠ INT_MIN / -1 是 UB（S-126）：结果 2147483648 无法用 int32 表示，
+               真机 x86 上会 SIGFPE 崩溃。此前返回 2147483648，
+               一个"不可能存在的 int 值" —— 既不回绕也不报 UB。 */
+            if (UB.isReal() && b === -1 && a === -2147483648) {
+              throw cerr('程序异常终止（对应真机的 SIGFPE）：INT_MIN / -1 是未定义行为');
+            }
+            return Math.trunc(a / b);
+          }
           return a / b;
         case '%':
           if (b === 0) throw cerr('取模错误：除数为零');
@@ -2312,7 +2580,7 @@
       if (name && this.funcs[name]) {
         var f = this.funcs[name];
         if (f.builtin) return f.builtin.apply(null, args);
-        return this.callFunc(f.node, args, this.global);
+        return this.callFunc(f.node, args, scope, node.args);
       }
       /* 函数作为值调用：cmp(...) 或 sort 收到 __fn 后回调 */
       if (name) {
@@ -2324,21 +2592,38 @@
       throw cerr('暂不支持的函数：' + (name || '(表达式)'));
     },
 
-    callFunc: function (fn, args, parent) {
+    /* argExprs：调用处的实参**表达式**（不是值）。
+       引用参数要在调用结束后写回，只能靠表达式定位，值已经不够了。 */
+    callFunc: function (fn, args, parent, argExprs) {
       var self = this;
       var sc = new Scope(this.global);
       /* 实参不足时用默认值；没有默认值才补 0 */
+      var refArgs = [];   /* 记录引用参数对应的实参表达式，调用结束写回 */
       (fn.args || []).forEach(function (a, i) {
         var v;
         if (i < args.length) v = args[i];
         else if (a.def !== null && a.def !== undefined) v = self.eval(a.def, self.global);
         else v = 0;
-        sc.declare(a.name, v);
+        sc.declare(a.name, v, a.type || null);
+        /* ⚠ 引用参数必须在调用结束后写回实参（S-118）。
+           实测 `void f(int &x){ x=9; }` 调用后 a 仍是 1（真 C++ 是 9）。
+           而范围 for 的引用写回是对的 —— 同一份代码里引用有两种行为，
+           用户会以为自己没传对，而不是我们的实现有问题。 */
+        if (a.byRef && argExprs && i < argExprs.length) refArgs.push({ name: a.name, expr: argExprs[i] });
       });
+      /* 引用写回：把形参的最终值写回实参表达式 */
+      function writeBackRefs(sc2) {
+        for (var ri = 0; ri < refArgs.length; ri++) {
+          try {
+            self.assignTo(refArgs[ri].expr, sc2.get(refArgs[ri].name), parent || self.global);
+          } catch (e2) { /* 写不回去就跳过，不因此中断整个调用 */ }
+        }
+      }
       try {
         for (var i = 0; i < fn.body.length; i++) this.exec(fn.body[i], sc);
+        writeBackRefs(sc);
       } catch (e) {
-        if (e instanceof CReturn) return e.value === undefined ? 0 : e.value;
+        if (e instanceof CReturn) { writeBackRefs(sc); return e.value === undefined ? 0 : e.value; }
         throw e;
       }
       return 0;

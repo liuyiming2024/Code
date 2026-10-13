@@ -38,11 +38,15 @@
 
   var api = {
     /* ---- 文件读写 ---- */
+    /* ⚠ Code.fs.list() **同步**返回数组，没有 .then。
+       此前写 .then 会抛 TypeError: Code.fs.list(...).then is not a function，
+       而 list() 正是 manifest.json 对外承诺的方法 ——
+       任何按文档集成的第三方第一次调用就崩。
+       （fs 的同步/异步分工见 fs.js 文件头；已加断言防复发，见 S-109） */
     list: function () {
-      return Code.fs.list().then(function (paths) {
-        return paths.map(function (p) {
-          return { path: p, lang: (Code.app && Code.app.langOf ? Code.app.langOf(p) : '') };
-        });
+      return Code.fs.list().map(function (r) {
+        var p = typeof r === 'string' ? r : (r && r.path);
+        return { path: p, lang: (Code.app && Code.app.langOf ? Code.app.langOf(p) : '') };
       });
     },
 
@@ -53,7 +57,9 @@
     write: function (path, text) {
       /* fs.write 只能写已存在的文件；不存在要先 create。
          不做这层判断的话，新建一个文件会静默失败。 */
-      return Code.fs.exists(path).then(function (has) {
+      /* fs.exists() 也是同步返回布尔，不能 .then */
+      var has = Code.fs.exists(path);
+      return (function () {
         var job = has ? Code.fs.write(path, text)
                       : Code.fs.create(path, 'file', text);
         return job.then(function () {

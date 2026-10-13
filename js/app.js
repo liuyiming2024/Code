@@ -580,6 +580,86 @@
   }
 
   /* ================= 运行 ================= */
+  /* ============================================================
+   * TLE 预测
+   *
+   * 为什么需要它：
+   *   竞赛里超时（TLE）是最贵的一类错 —— 逻辑全对，只是慢了，
+   *   交上去一片红，而本地怎么跑都发现不了。
+   *   本环境是解释器，比真实编译器慢几个数量级，
+   *   **在这里跑不完 ≠ 你的算法会超时**（很可能只跑了真实 1 毫秒）。
+   *   反过来，**在这里跑得飞快也不代表安全** —— 小规模看不出问题。
+   *
+   *   所以正确的做法是外推：小规模测两点 → 求增长阶数 → 推到目标规模。
+   * ============================================================ */
+  function runTLEPredict() {
+    var cur = ed.current();
+    if (!cur) { U.toast('请先打开一个文件'); return; }
+    var L = Code.langs ? Code.langs.byPath(cur.path) : null;
+    var kind = L && L.runner;
+    if (kind !== 'cpplite') {
+      U.modal({
+        title: 'TLE 预测',
+        body: '<p style="margin:0 0 10px">当前文件不是 C++（' + ((L && L.name) || cur.path) + '）。</p>' +
+              '<p style="margin:0;color:#9aa4b2">TLE 预测目前只支持 C++（cpplite）。' +
+              'Python 侧的等效时间已在每次运行后显示。</p>',
+        okText: '知道了'
+      });
+      return;
+    }
+
+    U.modal({
+      title: 'TLE 预测（按小规模外推）',
+      body: '<p style="margin:0 0 8px;color:#9aa4b2;font-size:12px">' +
+            '本环境是解释器，比真实编译器慢几个数量级 —— 在这里跑不完不代表会超时。' +
+            '下面用小规模实测增长阶数，外推到你的目标规模。</p>' +
+            '<label style="display:block;margin:8px 0 4px">目标规模 n（竞赛常见 1e5 / 1e6）</label>' +
+            '<input id="tle-target" type="number" value="100000" style="width:100%;padding:6px">' +
+            '<label style="display:block;margin:8px 0 4px">时限（秒，通常为 1）</label>' +
+            '<input id="tle-limit" type="number" value="1" step="0.1" style="width:100%;padding:6px">' +
+            '<p style="margin:8px 0 0;color:#9aa4b2;font-size:12px">' +
+            '假设程序从输入读第一个整数作为规模 n。</p>',
+      okText: '开始预测',
+      onOk: function () {
+        var tn = parseInt((U.$('#tle-target') || {}).value, 10);
+        var tl = parseFloat((U.$('#tle-limit') || {}).value);
+        if (!isFinite(tn) || tn < 2) tn = 100000;
+        if (!isFinite(tl) || tl <= 0) tl = 1;
+        doTLEPredict(cur.content, tn, tl);
+        return true;
+      }
+    });
+  }
+
+  function doTLEPredict(code, target, limitSec) {
+    var r;
+    try {
+      r = Code.cpplite.predictTLE(code, { target: target, limitSec: limitSec });
+    } catch (e) {
+      U.modal({ title: 'TLE 预测', body: '<p style="margin:0">' + String(e && e.message || e) + '</p>', okText: '关闭' });
+      return;
+    }
+
+    var html;
+    if (!r.ok) {
+      html = '<p style="margin:0 0 8px">无法外推：</p>' +
+             '<p style="margin:0;color:#9aa4b2">' + String(r.reason).replace(/\n/g, '<br>') + '</p>';
+    } else {
+      var verdict = r.willTLE
+        ? '<b style="color:#ff6b6b">会 TLE</b> —— 超出时限约 ' + (r.estSec / r.limitSec).toFixed(1) + ' 倍'
+        : '<b style="color:#51cf66">可以过</b>';
+      html =
+        '<p style="margin:0 0 6px">推测复杂度：<b>' + r.complexity + '</b>（实测阶数 k=' + r.k.toFixed(2) + '）</p>' +
+        '<p style="margin:0 0 6px">n = ' + r.target.toLocaleString() + ' 时，等效真实 C++ 耗时约 <b>' + r.estText + '</b></p>' +
+        '<p style="margin:0 0 6px">结论（时限 ' + r.limitSec + ' 秒）：' + verdict + '</p>' +
+        '<p style="margin:0 0 6px;color:#9aa4b2">在该时限下能过的最大规模：n ≈ ' + r.maxN.toLocaleString() + '</p>' +
+        '<p style="margin:8px 0 0;color:#9aa4b2;font-size:12px">' +
+        '换算依据：实测 cpplite 12 步 ≈ 真实 C++ 1 次迭代，真实 C++ -O2 约 1e8 次迭代/秒。' +
+        '换机器不改变数量级结论。</p>';
+    }
+    U.modal({ title: 'TLE 预测结果', body: html, okText: '关闭' });
+  }
+
   function doRun() {
     var sel = U.$('#run-target');
     var path = (sel && sel.value) || ed.current();
@@ -650,6 +730,10 @@
         break;
       }
       case 'ext': UI.extensions(); break;
+      /* TLE 预测：按小规模外推到目标规模，判断会不会超时。
+         这是"时间同步"的落地入口 —— 解释器跑不出的规模，
+         靠外推告诉用户真实环境会怎样。 */
+      case 'tle': runTLEPredict(); break;
       /* E-030：预览必须有关闭出口。按钮、命令面板、Esc 三条路都给上。 */
       case 'close-preview':
         if (runner.hidePreview) runner.hidePreview();

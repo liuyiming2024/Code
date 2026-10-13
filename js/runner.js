@@ -227,7 +227,9 @@
       if (CAVEAT.pylite) printSys(CAVEAT.pylite);
       try {
         var r = I.run(code, { timeout: 5000 });
-        printSys('结束，' + r.steps + ' 步');
+        var perf1 = Code.pylite.PERF;
+        printSys('结束，' + r.steps.toLocaleString() + ' 步' +
+          (perf1 ? '（≈ 真实 CPython ' + perf1.human(r.steps) + '）' : ''));
       } catch (e) {
         line('err', String(e && e.message || e));
       }
@@ -239,7 +241,16 @@
       if (CAVEAT.cpplite) printSys(CAVEAT.cpplite);
       try {
         var r2 = C.run(code, { timeout: 5000 });
-        printSys('结束，' + r2.steps + ' 步');
+        /* 时间同步：把解释器的步数换算成"等效真实 C++ 耗时"。
+           只报步数的话，用户看到的是解释器自己的量，
+           跟真实 OJ 完全对不上 —— "跑了多少步"对他判断会不会超时毫无帮助。 */
+        var perf2 = Code.cpplite.PERF;
+        printSys('结束，' + r2.steps.toLocaleString() + ' 步' +
+          (perf2 ? '（≈ 真实 C++ ' + perf2.human(r2.steps) + '）' : ''));
+        if (perf2 && r2.steps > perf2.stepsPerIter * perf2.realOpsPerSec * 0.5) {
+          /* 半秒以上就要提醒 —— 这正是"快到 TLE 边缘"的量级 */
+          line('warn', '等效真实耗时已接近 1 秒。竞赛通常限时 1 秒，建议用「TLE 预测」按目标规模外推确认。');
+        }
       } catch (e) {
         line('err', String(e && e.message || e));
       }

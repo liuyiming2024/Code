@@ -805,7 +805,37 @@
    * 三、执行
    * ============================================================ */
 
-  var MAX_STEPS = 2000000;   /* 步数上限：让死循环可以被中断 */
+  /* 时间同步（与 cpplite 同一套思路，但系数必须单独标定 ——
+     Python 和 C++ 的性能不是一个量级，共用系数会差十几倍）。
+
+     标定（实测）：
+       - pylite 一次简单循环迭代 ≈ 4 步
+         （实测：n=5000 → 20006 步，n=10000 → 40006 步 → 每迭代 4 步）
+       - 真实 CPython 约 1.86e7 次迭代/秒
+         （实测本机：n=1e7 循环 537ms → 53.7 ns/迭代）
+       → 1 真实秒 ≈ 4 × 1.86e7 ≈ 7.4e7 pylite 步
+
+     对比 C++：1 真实秒 ≈ 1.2e9 cpplite 步
+     → Python 比 C++ 慢约 16 倍（与常识吻合：通常认为慢 10~50 倍）
+
+     标定环境：CPython 3.10，2026-10-13。 */
+  var PERF = {
+    stepsPerIter: 4,
+    realOpsPerSec: 1.86e7,
+    toRealSec: function (steps) { return steps / PERF.stepsPerIter / PERF.realOpsPerSec; },
+    human: function (steps) {
+      var sec = PERF.toRealSec(steps);
+      if (sec < 0.001) return (sec * 1e6).toFixed(1) + ' 微秒';
+      if (sec < 1) return (sec * 1000).toFixed(2) + ' 毫秒';
+      if (sec < 60) return sec.toFixed(2) + ' 秒';
+      return (sec / 60).toFixed(1) + ' 分钟';
+    }
+  };
+
+  /* 步数上限：原为 200 万 ≈ 真实 CPython 27 毫秒 ——
+     n=5e5 的 O(n) 就会被判死循环，而真实 Python 只要 27 毫秒。
+     提到 5e7 ≈ 真实 0.68 秒，可覆盖常规规模。 */
+  var MAX_STEPS = 50000000;   /* 步数上限：让死循环可以被中断 */
 
   function Scope(parent, isGlobal) {
     this.vars = {};
@@ -852,8 +882,15 @@
 
   Interp.prototype = {
     tick: function () {
-      if (++this.steps > MAX_STEPS) throw pyErr('执行步数超过 ' + MAX_STEPS + ' 步，已中断（可能存在死循环）');
-      if (this.deadline && Date.now() > this.deadline) throw pyErr('执行超时，已中断（可能存在死循环）');
+      if (++this.steps > MAX_STEPS) {
+        throw pyErr('本环境已跑满 ' + MAX_STEPS.toLocaleString() + ' 步（相当于真实 CPython 约 ' +
+          PERF.human(MAX_STEPS) + '），停止执行。\n' +
+          '这不代表你的程序会超时 —— 本环境是解释器，比真实的 Python 慢几个数量级。');
+      }
+      if (this.deadline && Date.now() > this.deadline) {
+        throw pyErr('本环境已跑满时间预算，停止执行。\n' +
+          '这不代表你的程序会超时 —— 本环境比真实的 Python 慢几个数量级。');
+      }
     },
 
     /* ---------- 内置函数 ---------- */
@@ -1123,7 +1160,7 @@
       var toks = tokenize(src);
       var tree = new Parser(toks).parse();
       this.execBlock(tree.body, this.global);
-      return { steps: this.steps };
+      return { steps: this.steps, realSec: PERF.toRealSec(this.steps), realText: PERF.human(this.steps) };
     },
 
     execBlock: function (body, scope) {
@@ -1260,7 +1297,10 @@
           if (e instanceof PyContinue) continue;
           throw e;
         }
-        if (++n > 1000000) throw pyErr('循环次数过多，已中断（可能存在死循环）');
+        if (++n > 20000000) {
+          throw pyErr('单次循环超过 2000 万次，本环境停止执行。\n' +
+            '这不代表你的程序会超时 —— 请用小规模实测外推判断。');
+        }
       }
       if (node.orelse) this.execBlock(node.orelse, scope);
       return null;
@@ -1891,6 +1931,7 @@
     tokenize: tokenize,
     parse: function (src) { return new Parser(tokenize(src)).parse(); },
     create: function (stdout, stdin) { return new Interp(stdout, stdin); },
-    MAX_STEPS: MAX_STEPS
+    MAX_STEPS: MAX_STEPS,
+    PERF: PERF
   };
 })(typeof window !== 'undefined' ? window : globalThis);

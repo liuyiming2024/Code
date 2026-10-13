@@ -1156,7 +1156,55 @@
   /* ============================================================
    * 三、执行
    * ============================================================ */
-  var MAX_STEPS = 2000000;
+  /* ============================================================
+   * 时间同步（TLE 预测）—— 本轮最重要的一件事
+   *
+   * 问题：这是**解释器**，不是编译器。它跑一步的代价和真实 C++ 差几个数量级。
+   *   如果直接把"我跑不动"当成"你的算法太慢"报出去，
+   *   用户得到的结论就是错的 —— 一个在 OJ 上 10 毫秒通过的 O(n) 算法，
+   *   在这里会被判"可能存在死循环"。
+   *   **用自己的能力上限冒充用户的错误，是最坏的一类错。**
+   *
+   * 所以要做两件事：
+   *   1) 把步数换算成"等效真实 C++ 时间"，让用户知道真实的量级
+   *   2) 中断时明确区分"本环境跑不动"和"你的算法会 TLE"
+   *
+   * 标定（实测，非估计）：
+   *   - cpplite 一次简单循环迭代 ≈ 12 步
+   *     （实测：n=1e4 求和 120010 步，n=2e4 求和 240010 步 → 每迭代 12 步）
+   *   - 真实 C++ -O2：约 1e8 次基本操作/秒
+   *     （竞赛界通用估算口径；实测本机 -O2 依赖链约 2.75ns/迭代，量级吻合）
+   *   → 1 真实秒 ≈ 12 × 1e8 = 1.2e9 cpplite 步
+   *   → 1 真实毫秒 ≈ 1.2e6 cpplite 步
+   *
+   * 标定环境：g++ 11.4.0 -O2，2026-10-13。换机器不改数量级结论。
+   * ============================================================ */
+  var PERF = {
+    /* 一次简单循环迭代对应的步数（实测） */
+    stepsPerIter: 12,
+    /* 真实 C++ -O2 每秒可执行的基本操作次数（竞赛通用口径） */
+    realOpsPerSec: 1e8,
+    /* 步数 → 等效真实秒 */
+    toRealSec: function (steps) {
+      return steps / PERF.stepsPerIter / PERF.realOpsPerSec;
+    },
+    /* 等效真实秒的可读形式 */
+    human: function (steps) {
+      var sec = PERF.toRealSec(steps);
+      if (sec < 0.001) return (sec * 1e6).toFixed(1) + ' 微秒';
+      if (sec < 1) return (sec * 1000).toFixed(2) + ' 毫秒';
+      if (sec < 60) return sec.toFixed(2) + ' 秒';
+      return (sec / 60).toFixed(1) + ' 分钟';
+    }
+  };
+
+  /* 步数上限。
+     ⚠ 原来是 200 万 —— 只相当于真实 C++ 的 1.7 毫秒，
+     于是 n=20 万的 O(n) 循环就被判"可能存在死循环"，
+     而它在真实环境里只要 2 毫秒。**这是把本环境的上限说成了用户的错。**
+     提到 5e7：可覆盖 n=1e6 的 O(n)（约 1.2e7 步）与 n=1e4 的 O(n²)（约 1.2e8 超出，靠墙钟兜底）。
+     真正的兜底交给 runner 的墙钟超时，而不是步数。 */
+  var MAX_STEPS = 50000000;
 
   function Scope(parent) { this.v = {}; this.parent = parent || null; }
   Scope.prototype.get = function (n) {
@@ -1239,8 +1287,24 @@
 
   Interp.prototype = {
     tick: function () {
-      if (++this.steps > MAX_STEPS) throw cerr('执行步数超过 ' + MAX_STEPS + ' 步，已中断（可能存在死循环）');
-      if (this.deadline && Date.now() > this.deadline) throw cerr('执行超时，已中断（可能存在死循环）');
+      if (++this.steps > MAX_STEPS) {
+        /* 措辞必须说清：这是**本环境的能力上限**，不等于用户的算法会 TLE。
+           原措辞"可能存在死循环"会让用户以为自己写错了，
+           而实际上可能只是 n 开得比解释器能跑的大而已。 */
+        throw cerr('本环境已跑满 ' + MAX_STEPS.toLocaleString() + ' 步（相当于真实 C++ 约 ' +
+          PERF.human(MAX_STEPS) + '），停止执行。\n' +
+          '这不代表你的程序会超时 —— 本环境是解释器，比真实编译器慢几个数量级。\n' +
+          '要判断会不会 TLE，请用「TLE 预测」（按小规模外推），而不是看这里跑不跑得完。');
+      }
+      /* 墙钟超时也要说清：这是**本环境的时间预算**，不等于真实超时。
+         解释器跑 5 秒对应的真实 C++ 时间往往只有几十毫秒 ——
+         用"可能存在死循环"会让用户怀疑自己的代码，而它可能完全正常。 */
+      if (this.deadline && Date.now() > this.deadline) {
+        throw cerr('本环境已跑满时间预算（' +
+          ((this.deadline - this.t0) / 1000).toFixed(1) + ' 秒），停止执行。\n' +
+          '这不代表你的程序会超时 —— 本环境比真实编译器慢几个数量级，\n' +
+          '要判断是否 TLE，请用「TLE 预测」按目标规模外推。');
+      }
     },
 
     install: function () {
@@ -1574,7 +1638,14 @@
         if (n.type === 'VarDecl') self.exec(n, g);
       });
       this.callFunc(main, [], g);
-      return { steps: this.steps };
+      return {
+        steps: this.steps,
+        /* 等效真实 C++ 耗时。这是"时间同步"的核心输出 ——
+           用户看到的应该是"我的程序在真实环境里要多久"，
+           而不是"这个解释器跑了多久"。 */
+        realSec: PERF.toRealSec(this.steps),
+        realText: PERF.human(this.steps)
+      };
     },
 
     exec: function (node, scope) {
@@ -1797,7 +1868,14 @@
       var n = 0;
       while (!node.cond || this.truthy(this.eval(node.cond, sc))) {
         this.tick();
-        if (++n > 1000000) throw cerr('循环次数过多，已中断（可能存在死循环）');
+        /* 单次循环的迭代上限。原来是 100 万 —— 而 n=1e6 的 O(n) 是
+           完全正常的规模，会被这里直接掐断。
+           且措辞"可能存在死循环"同样把本环境的限制说成了用户的错。
+           提高到 2e7，并给出等效真实时间让用户自己判断。 */
+        if (++n > 20000000) {
+          throw cerr('单次循环超过 2000 万次，本环境停止执行。\n' +
+            '这不代表你的程序会超时 —— 请用「TLE 预测」按目标规模外推判断。');
+        }
         try { this.execBody(node.body, sc); } catch (e) {
           if (e instanceof CBreak) break;
           if (e instanceof CContinue) { if (node.step) this.eval(node.step, sc); continue; }
@@ -1815,7 +1893,10 @@
       while (first && isDo || this.truthy(this.eval(node.cond, sc))) {
         first = false;
         this.tick();
-        if (++n > 1000000) throw cerr('循环次数过多，已中断（可能存在死循环）');
+        if (++n > 20000000) {
+          throw cerr('单次循环超过 2000 万次，本环境停止执行。\n' +
+            '这不代表你的程序会超时 —— 请用「TLE 预测」按目标规模外推判断。');
+        }
         try { this.execBody(node.body, sc); } catch (e) {
           if (e instanceof CBreak) break;
           if (e instanceof CContinue) continue;
@@ -2302,6 +2383,104 @@
     parse: function (src) { return new Parser(tokenize(preprocess(src))).parse(); },
     create: function (out, input) { return new Interp(out, input); },
     MAX_STEPS: MAX_STEPS,
+    PERF: PERF,
+
+    /* ============================================================
+     * TLE 预测：用小规模外推到真实规模
+     *
+     * 为什么必须外推而不是硬跑：
+     *   解释器比编译器慢几个数量级。真实环境 1 秒 = 1.2e9 步，
+     *   而解释器每秒只跑得了几百万步 ——
+     *   **物理上不可能在这里"跑满 1 秒"来测试**。
+     *   硬跑的结果只有一个：跑不完，然后被误判成死循环。
+     *
+     * 正确做法：小规模测两次 → 求出增长阶数 → 外推到目标规模。
+     *   1) 用 n1、n2 两个小规模跑，得步数 S1、S2
+     *   2) 阶数 k = log(S2/S1) / log(n2/n1)
+     *      k≈1 → O(n)，k≈2 → O(n²)，k≈3 → O(n³)
+     *   3) 外推 S(target) = S2 × (target/n2)^k
+     *   4) 换算成等效真实秒，与时限比较
+     *
+     * 局限（会如实报出，不假装）：
+     *   - 假设程序从 stdin 读第一个整数作为规模 n（竞赛惯例）
+     *   - 若两次步数几乎相同，说明规模不影响耗时 → 无法外推
+     *   - 分治/递归等复杂形态可能拟合不准
+     * ============================================================ */
+    predictTLE: function (code, opts) {
+      opts = opts || {};
+      var n1 = opts.n1 || 1000, n2 = opts.n2 || 2000;
+      var target = opts.target || 100000;
+      var limitSec = opts.limitSec || 1;
+
+      function runAt(n) {
+        var I = new Interp(function () { }, function () { return String(n) + '\n'; });
+        var r = I.run(code, { timeout: opts.timeout || 15000 });
+        return r.steps;
+      }
+
+      /* ⚠ 探测规模必须自适应，不能写死。
+         第一版写死 n=1000/2000，结果 O(n²) 在 n=1000 就跑满了 5000 万步 ——
+         **探测本身先把解释器拖垮了**，用户等十几秒只等到一句"跑不完"。
+         改成从很小规模起步，逐步翻倍，一旦步数够拟合就停。 */
+      var sizes = opts.sizes || [50, 100, 200, 400, 800, 1600, 3200];
+      var probeCap = opts.probeCap || 2000000;   /* 探测阶段步数上限，防止探测太慢 */
+      var points = [];
+      for (var pi = 0; pi < sizes.length; pi++) {
+        var st;
+        try { st = runAt(sizes[pi]); } catch (e2) { break; }   /* 跑不动就停在这里 */
+        points.push({ n: sizes[pi], s: st });
+        if (st > probeCap) break;                               /* 够拟合了，停 */
+      }
+
+      if (points.length < 2) {
+        return {
+          ok: false,
+          reason: '连最小规模 ' + sizes[0] + ' 都无法完成，请检查程序是否有死循环或语法错误。'
+        };
+      }
+
+      /* 取最大的两个可用点做拟合（样本大，比值更稳） */
+      var p1 = points[points.length - 2], p2 = points[points.length - 1];
+      var S1 = p1.s, S2 = p2.s, n1 = p1.n, n2 = p2.n;
+
+      /* 规模不影响步数 → 无法外推（如实说，不编一个） */
+      var ratio = S2 / Math.max(1, S1);
+      if (ratio < 1.05) {
+        return {
+          ok: false,
+          reason: '规模从 ' + n1 + ' 增至 ' + n2 + '，步数几乎没变（' + S1 + ' → ' + S2 + '）。\n' +
+                  '说明耗时与读入的规模无关（程序可能没把第一个数当作规模使用），无法外推。'
+        };
+      }
+
+      var k = Math.log(ratio) / Math.log(n2 / n1);
+      var estSteps = S2 * Math.pow(target / n2, k);
+      var estSec = PERF.toRealSec(estSteps);
+
+      var complexity;
+      if (k < 0.6) complexity = 'O(1) 或 O(log n)';
+      else if (k < 1.4) complexity = 'O(n)';
+      else if (k < 1.8) complexity = 'O(n log n)';
+      else if (k < 2.4) complexity = 'O(n²)';
+      else if (k < 3.4) complexity = 'O(n³)';
+      else complexity = 'O(n^' + k.toFixed(1) + ') 或指数级';
+
+      return {
+        ok: true,
+        k: k,
+        complexity: complexity,
+        steps: { n1: S1, n2: S2 },
+        probes: points,
+        target: target,
+        estSteps: estSteps,
+        estSec: estSec,
+        estText: PERF.human(estSteps),
+        limitSec: limitSec,
+        willTLE: estSec > limitSec,
+        /* 在给定时限下能过的最大规模（反推） */
+        maxN: Math.floor(n2 * Math.pow(limitSec * PERF.stepsPerIter * PERF.realOpsPerSec / S2, 1 / k))
+      };
+    },
     /* UB 模拟开关（S-082）。
        'safe'（默认）：危险 UB 明确报错 —— 适合初学与教学
        'real'        ：真模拟 UB（溢出回绕、越界读垃圾值）—— 适合竞赛

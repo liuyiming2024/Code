@@ -315,6 +315,10 @@
   /* 注册表 id → runtimes.js 用的语言键。
      两套命名并存是历史原因：注册表按"运行时"命名（sqlite/pyodide），
      runtimes.js 按"语言"命名（sql/python）。在这里对齐，不让差异外溢。 */
+  /* ⚠ 唯一定义（S-041）。ui.js:629 曾抄了第二份同样的表 ——
+     运行时 id 与语言 id 的映射只有一处真相，抄两份就必然漂移；
+     runner.js:252 的注释写着"不让差异外溢"，而抄表正是让差异外溢。
+     ui.js 改为引用 Code.runner.RT_KEY。 */
   var RT_KEY = {
     sqlite: 'sql', pyodide: 'python', lua: 'lua',
     php: 'php', ruby: 'ruby', cpp: 'cpp'
@@ -328,126 +332,18 @@
      因此统一用"依次尝试常见导出名"的策略，
      全都对不上时报出实际的导出清单 —— 让用户和后续接手的人一眼看到真相，
      而不是静默失败或者伪造输出。 */
-  var GLUE = {
+  /* ⚠ 这里曾有一套与 rt-worker.js 并行的第二套执行实现（S-019）：
+     GLUE / probeGlue / buildRuntimeScript 共约 110 行。
+     它从未被调用（buildRuntimeScript 零调用），
+     而它依赖的 asset() / RT / USER / log() 在 rt-worker.js 里根本不存在 ——
+     就算接上也跑不了。更要命的是 GLUE.cpp 写着"执行链路尚未接线"，
+     与 rt-worker.js 里完整实现的 runCpp **直接矛盾**：
+     后来的人读到哪一句，就会对现状得出相反的结论。
 
-    sqlite: [
-      "var wasmUrl = await asset('sql-wasm.wasm');",
-      "var SQL = await initSqlJs({ locateFile: function () { return wasmUrl; } });",
-      "var db = new SQL.Database();",
-      "try {",
-      "  var res = db.exec(USER);",
-      "  if (!res || !res.length) log('（语句已执行，无结果集）');",
-      "  else res.forEach(function (t) {",
-      "    log(t.columns.join(' | '));",
-      "    t.values.forEach(function (row) { log(row.join(' | ')); });",
-      "  });",
-      "} catch (e) { log('SQL 错误：' + (e && e.message || e)); }",
-      "db.close();"
-    ].join('\n'),
+     删掉。执行只保留 rt-worker.js 一条路径 ——
+     两套实现并存的地方，坏的总是没人在用的那一套，
+     而它提供的信息是错的。 */
 
-    pyodide: [
-      "/* indexURL 指向 Release 目录：Pyodide 会自己拼出 pyodide.asm.wasm 与",
-      "   python_stdlib.zip 的地址，那些正是我们缓存过的直链，fetch 补丁会命中。 */",
-      "var BASE = 'https://github.com/liuyiming2024/assets/releases/download/latest/';",
-      "var py = await loadPyodide({ indexURL: BASE });",
-      "py.setStdout({ batched: function (s) { log(s); } });",
-      "py.setStderr({ batched: function (s) { log(s); } });",
-      "try { await py.loadPackagesFromImports(USER); } catch (e) { }",
-      "var r = await py.runPythonAsync(USER);",
-      "if (r !== undefined && r !== null && r !== 0) log(String(r));"
-    ].join('\n'),
-
-    /* Fengari：纯 JS 的 Lua VM，UMD，无 wasm —— 加载链路最短，最不容易出岔子 */
-    lua: [
-      "var f = self.fengari || RT.fengari || RT;",
-      "if (!f || !f.lua) throw new Error('没拿到 fengari。RT 导出：' + Object.keys(RT || {}).join(', '));",
-      "var lua = f.lua, laux = f.lauxlib, lualib = f.lualib;",
-      "var tls = f.to_luastring, tjs = f.to_jsstring;",
-      "var L = laux.luaL_newstate();",
-      "lualib.luaL_openlibs(L);",
-      "/* 把 print 重定向到输出面板 */",
-      "lua.lua_pushcfunction(L, function (st) {",
-      "  var n = lua.lua_gettop(st), parts = [];",
-      "  for (var i = 1; i <= n; i++) {",
-      "    var t = lua.lua_type(st, i);",
-      "    if (t === lua.LUA_TSTRING) parts.push(tjs(lua.lua_tostring(st, i)));",
-      "    else if (t === lua.LUA_TNUMBER) parts.push(String(lua.lua_tonumber(st, i)));",
-      "    else if (t === lua.LUA_TBOOLEAN) parts.push(lua.lua_toboolean(st, i) ? 'true' : 'false');",
-      "    else parts.push(lua.luaL_typename(st, i));",
-      "  }",
-      "  log(parts.join('\\t'));",
-      "  return 0;",
-      "});",
-      "lua.lua_setglobal(L, tls('print'));",
-      "var ok = laux.luaL_dostring(L, tls(USER));",
-      "if (ok !== lua.LUA_OK) {",
-      "  log('Lua 错误：' + tjs(lua.lua_tostring(L, -1) || new Uint8Array(0)));",
-      "}"
-    ].join('\n'),
-
-    php: probeGlue('php', "['php-web.js.wasm']", ["PhpWeb", "PHP", "default"],
-      ["run", "eval", "exec", "runCode"]),
-
-    ruby: probeGlue('ruby', "['ruby+stdlib.wasm']", ["RubyVM", "default"],
-      ["eval", "evalAsync", "run"]),
-
-    quickjs: probeGlue('quickjs', "['quickjs.wasm']", ["getQuickJS", "default", "newQuickJS"],
-      ["evalCode", "run", "eval"]),
-
-    cpp: [
-      "/* browsercc 要同时驱动 clang.wasm(43MB) + lld.wasm(23MB) + sysroot.tar(29MB)，",
-      "   三件各有加载协议，无法在未知 API 的前提下可靠接线。如实报错，不伪造编译过程。 */",
-      "var keys = Object.keys(RT || {});",
-      "log('C/C++ 真编译器（browsercc）资源已下载，但执行链路尚未接线。');",
-      "log('glue 实际导出：' + (keys.length ? keys.join(', ') : '(空)'));",
-      "log('当前请用内置的自研 C/C++ 子集运行（无需下载，够做语法练习与基础算法）。');"
-    ].join('\n')
-  };
-
-  /* 生成"先探测导出形状，再依次尝试执行方法"的脚本。
-     对不上时把实际导出列出来 —— 比静默失败有用得多。 */
-  function probeGlue(id, assetsJson, factories, methods) {
-    var lines = [];
-    lines.push("var urls = {};");
-    lines.push("var names = " + assetsJson + ";");
-    lines.push("for (var i = 0; i < names.length; i++) { urls[names[i]] = await asset(names[i]); }");
-    lines.push("var m = RT || {};");
-    lines.push("var keys = Object.keys(m);");
-    lines.push("var factory = null, fname = null;");
-    factories.forEach(function (f) {
-      lines.push("if (!factory && m[" + JSON.stringify(f) + "]) { factory = m[" + JSON.stringify(f) + "]; fname = " + JSON.stringify(f) + "; }");
-    });
-    lines.push("if (!factory && typeof m === 'function') { factory = m; fname = '(module itself)'; }");
-    lines.push("if (!factory) {");
-    lines.push("  throw new Error(" + JSON.stringify(id) + " + ' 胶水没有可识别的导出。实际导出：' + (keys.length ? keys.join(', ') : '(空)') +");
-    lines.push("    '。请核对清单里 entry 的 workerType 与该版本的真实 API。');");
-    lines.push("}");
-    lines.push("var inst = await factory({ locateFile: function (f) { return urls[f] || f; } });");
-    lines.push("if (inst && typeof inst.then === 'function') inst = await inst;");
-    lines.push("var fn = null;");
-    methods.forEach(function (mm) {
-      lines.push("if (!fn && inst && typeof inst[" + JSON.stringify(mm) + "] === 'function') fn = inst[" + JSON.stringify(mm) + "].bind(inst);");
-    });
-    lines.push("if (!fn && typeof inst === 'function') fn = inst;");
-    lines.push("if (!fn) {");
-    lines.push("  var instKeys = inst ? Object.keys(inst) : [];");
-    lines.push("  throw new Error(" + JSON.stringify(id) + " + ' 实例没有可识别的执行方法。实例导出：' + (instKeys.length ? instKeys.join(', ') : '(空)'));");
-    lines.push("}");
-    lines.push("var out = await fn(USER);");
-    lines.push("if (out && typeof out.then === 'function') out = await out;");
-    lines.push("if (out !== undefined && out !== null) log(String(out));");
-    return lines.join('\n');
-  }
-
-  /* 拼装要在 Worker 里跑的脚本：先注入引擎，再跑用户代码。
-     各引擎注入方式不同，按 id 分派。 */
-  function buildRuntimeScript(id, code) {
-    var body = GLUE[id];
-    if (!body) {
-      return "log('该运行时还没有接线脚本：' + " + JSON.stringify(id) + ");";
-    }
-    return body;
-  }
 
   function run(path, code, lang) {
     count = 0; muted = false; t0 = (global.performance ? performance.now() : Date.now());
@@ -505,6 +401,7 @@
   }
 
   Code.runner = {
+    RT_KEY: RT_KEY,
     init: init, run: run, preview: preview, hidePreview: hidePreview,
     clear: clear, stop: stop, evalExpr: evalExpr, print: print, printSys: printSys,
     hasRuntime: function (path) {

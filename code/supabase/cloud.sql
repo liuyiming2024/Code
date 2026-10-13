@@ -254,8 +254,20 @@ $$;
 -- PostgREST 以 anon / authenticated 角色调用，必须显式授权，
 -- 否则函数存在但调不通，报的是 404 而不是权限错误（很难查）。
 grant usage on schema public to anon, authenticated;
-grant select, insert, update, delete on code_files to authenticated;
-revoke all on code_files from anon;
+
+/* ⚠ 不能给表级 DML（S-027）。
+   此前 `grant select,insert,update,delete on code_files to authenticated`
+   且零 RLS —— 而 `content text` 存的是用户代码原文。
+   后果：PostgREST 直接暴露全表，任何登录用户可读改删**所有人**的文件。
+   而且这是"配置和意图相反"的那类错：函数里明明逐个校验了
+   `code_me()`（服务端取当前用户），却又把整张表的钥匙发出去了，
+   于是那层校验形同虚设 —— 绕过函数直接打表即可。
+
+   正解不是补 policy：Chat 的文件头硬约定明写"别把 RLS 当防线"，
+   policy 写错就是全表泄露，而函数只有几条、看得过来。
+   这里与 Chat 对齐：表对 anon 与 authenticated 一律 revoke，
+   唯一入口是 security definer 函数（它们内部按 code_me() 隔离）。 */
+revoke all on code_files from anon, authenticated;
 grant execute on function code_path_norm(text) to anon, authenticated;
 grant execute on function code_me() to anon, authenticated;
 grant execute on function code_file_list() to anon, authenticated;

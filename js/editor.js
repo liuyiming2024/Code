@@ -334,10 +334,18 @@
     cur.scroll = el.ta.scrollTop;
     try { cur.sel = [el.ta.selectionStart, el.ta.selectionEnd]; } catch (e) { }
     if (cur.saved === cur.content) return;
-    cur.saved = cur.content;
+    /* ⚠ 成功标记必须在写入成功之后（S-036）。
+       此前 `cur.saved = cur.content` 写在 fs.write 之前 ——
+       一旦写入失败（配额满、IndexedDB 异常），saved 也已经等于 content，
+       于是下一轮"有改动吗"的判断永远是"没有"，**永不重试**。
+       用户以为存住了，刷新后改动全丢，且不会有任何提示。 */
+    var __pending = cur.content;
     /* 写入失败必须向外传播：静默吞掉会让用户以为存住了，实际丢了。
        由调用方（app.js）负责告警并给出导出备份的出路。 */
     return fs.write(cur.path, cur.content).then(function () {
+      /* 只有写入成功才标记已保存（S-036）。失败时 saved 保持旧值，
+         于是下一轮仍会重试，而不是静默放弃。 */
+      cur.saved = __pending;
       emit('save', cur.path);
     });
   }

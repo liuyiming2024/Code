@@ -626,7 +626,8 @@
       });
     }
 
-    var RT_KEY = { sqlite: 'sql', pyodide: 'python', lua: 'lua', php: 'php', ruby: 'ruby', cpp: 'cpp' };
+    /* 不在这里抄第二份（S-041）：唯一定义在 runner.js，抄表必然漂移 */
+    var RT_KEY = (Code.runner && Code.runner.RT_KEY) || {};
 
     /* 启动时探一次缓存状态，界面才知道谁已下载。
        E-055：refreshStatus() 是异步探测，以前这里调用完立刻同步 render()，

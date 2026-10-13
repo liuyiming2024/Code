@@ -47,6 +47,12 @@
   /* ---------- IndexedDB 薄封装（无第三方依赖） ---------- */
   var dbp = null;
   function open() {
+    /* ⚠ 失败过一次不能永久缓存这个 rejected Promise（S-034）。
+       此前 dbp 是模块级变量，reject 后没有任何重置路径 ——
+       于是 IndexedDB 打开失败一次（隐私模式、配额、浏览器策略），
+       **整个会话再也读不到任何文件**，刷新都没用，
+       而这个失败在界面上只表现为"文件树空的"。
+       改法：失败时把 dbp 置回 null，下次重试；并挂 onblocked 给出人话。 */
     if (dbp) return dbp;
     dbp = new Promise(function (res, rej) {
       var req = indexedDB.open('code-workspace', 1);
@@ -55,8 +61,19 @@
         if (!db.objectStoreNames.contains('files')) db.createObjectStore('files', { keyPath: 'path' });
         if (!db.objectStoreNames.contains('meta')) db.createObjectStore('meta', { keyPath: 'k' });
       };
+      req.onblocked = function () {
+        /* 另一个标签页占着旧版本连接时会触发。不说人话的话，
+           用户只会看到"文件树空的"，完全无从下手。 */
+        rej(new Error('IndexedDB 被其他标签页占用（onblocked）：' +
+          '请关闭本项目的其他标签页后刷新。'));
+      };
       req.onsuccess = function () { res(req.result); };
-      req.onerror = function () { rej(req.error); };
+      req.onerror = function () { rej(req.error || new Error('IndexedDB 打开失败')); };
+    }).catch(function (e) {
+      /* 关键：失败就丢弃这个 Promise，下次调用重新尝试。
+         不这样做的话，一次失败 = 整个会话永久不可用。 */
+      dbp = null;
+      throw e;
     });
     return dbp;
   }

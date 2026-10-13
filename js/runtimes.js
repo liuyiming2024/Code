@@ -22,6 +22,7 @@
 
   var worker = null;
   var pending = null;      // 当前等待的请求
+  var seq = 0;             // 请求序号：用来识别过期回调（S-022）
   var supported = null;    // 是否支持 Worker（file:// 下会失败）
   var lastWorkerError = null;
 
@@ -67,12 +68,21 @@
       });
       return;
     }
-    pending = { on: on };
+    /* ⚠ 每个请求要有自己的 token（S-022）。
+       此前 pending 是单例：第二次 run 覆盖第一个的回调，
+       而第一个的超时定时器到期时把 pending 置 null ——
+       于是**第二个请求永久挂起**，界面一直转圈，没有任何报错。
+       而且全程无 worker.terminate()，跑飞的请求也收不回来。
+       改法：pending 记 token，回调与定时器都先比对 token 再生效。 */
+    var token = ++seq;
+    pending = { on: null, token: token };
     var timer = null;
     if (timeoutMs) {
       timer = setTimeout(function () {
-        if (!pending) return;
+        if (!pending || pending.token !== token) return;
         pending = null;
+        if (w) { try { w.terminate(); } catch (e) { } }
+        w = null;
         on.fail && on.fail({ error: '运行时超时（' + Math.round(timeoutMs / 1000) + ' 秒）。' +
           'C/C++ 首次编译需要下载约 90 MB，请耐心等待或稍后重试。' });
       }, timeoutMs);
@@ -84,7 +94,8 @@
        而且不报错（on[k] 不存在就静默跳过），最难查。 */
     ['begin', 'progress', 'ready', 'done', 'fail', 'diag'].forEach(function (k) {
       wrapped[k] = function (d) {
-        if (!pending) return;
+        /* 过期请求的回调一律丢弃 —— 否则会打到新请求的回调上 */
+        if (!pending || pending.token !== token) return;
         if (k === 'done' || k === 'fail') {
           if (timer) clearTimeout(timer);
           pending = null;

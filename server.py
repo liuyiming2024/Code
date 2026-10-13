@@ -37,8 +37,30 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 def main():
     port = int(sys.argv[1]) if len(sys.argv) > 1 else 8000
     socketserver.TCPServer.allow_reuse_address = True
-    with socketserver.TCPServer(('', port), Handler) as httpd:
+    # ⚠ 端口被占时不能崩（S-030）。
+    #   真机实证：用户访问 http://localhost:8000/ 返回的是 EShare 投屏软件页面，
+    #   而 Code 这边早已因 Address already in use 直接退出、且无提示 ——
+    #   用户看到的是"别的东西占了这个端口"，完全不知道 Code 根本没起来。
+    #   改法：占用则自动 +1 重试，并把实际端口打出来。
+    httpd = None
+    tried = 0
+    while tried < 20:
+        try:
+            httpd = socketserver.TCPServer(('', port), Handler)
+            break
+        except OSError as e:
+            if getattr(e, 'errno', None) not in (98, 48, 10013):
+                raise
+            print('端口 %d 已被占用（%s），改用 %d' % (port, e.strerror or e, port + 1))
+            port += 1
+            tried += 1
+    if httpd is None:
+        print('连续 20 个端口都被占用，放弃。请用 python3 server.py <端口> 指定。')
+        sys.exit(1)
+    with httpd:
         print('服务已启动：http://localhost:%d/' % port)
+        if port != (int(sys.argv[1]) if len(sys.argv) > 1 else 8000):
+            print('注意：实际端口与请求的端口不同，请用上面这个地址。')
         print('根目录：%s' % ROOT)
         print('按 Ctrl+C 停止')
         try:

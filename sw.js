@@ -83,7 +83,13 @@ self.addEventListener('activate', function (e) {
   e.waitUntil(
     caches.keys().then(function (keys) {
       return Promise.all(keys.map(function (k) {
-        if (k !== CACHE) return caches.delete(k);
+        /* ⚠ 不能无差别删（S-038）。
+           运行时缓存（code-runtimes-v1）是长效的、达 90 MB，
+           每次 SW 激活都删掉 = 用户每次更新都要重新下载一遍 C++ 工具链。
+           只删本项目自己的旧版本缓存。 */
+        if (k === CACHE) return;
+        if (k.indexOf('code-runtimes') === 0) return;   /* 运行时：不删 */
+        if (k.indexOf('code-') === 0) return caches.delete(k);  /* 本项目旧版本：删 */
       }));
     }).then(function () {
       return self.clients.claim();

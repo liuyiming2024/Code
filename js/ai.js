@@ -293,6 +293,13 @@
   function endpoint(base) {
     var b = String(base || '').trim().replace(/\/+$/, '');
     if (!b) return '';
+    /* ⚠ 明文 HTTP 会把密钥以明文发出（S-045）。
+       `http://` 走公网 = API Key 可被任何中间人抓包拿到。
+       本机回环例外：不经过网络，Ollama 等本地服务默认就是 http。 */
+    if (/^http:\/\//i.test(b) && !/^http:\/\/(localhost|127\.0\.0\.1|\[::1\])(:\d+)?(\/|$)/i.test(b)) {
+      throw new Error('拒绝使用明文 http 地址：API Key 会以明文传输，可被中间人获取。\n' +
+        '请改用 https:// —— 若对方确实只有 http，只能是本机服务（localhost）。');
+    }
     if (/\/chat\/completions$/.test(b)) return b;
     if (/\/v\d+$/.test(b)) return b + '/chat/completions';
     return b + '/v1/chat/completions';

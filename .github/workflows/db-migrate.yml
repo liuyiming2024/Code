@@ -9,9 +9,18 @@ name: 数据库迁移（已迁至 Chat 仓库）
 #   而且 GitHub 的 Secret 只能写不能读 —— 拿不到 Chat 的正确值，
 #   也就没法"复制一份过来"修好它。所以只能让执行走 Chat 那边。
 #
-# 因此：本条跑失败（报 password authentication failed）是**已知状态**，
-# 不是数据库出问题。真要修，去 Settings → Secrets 更新 SUPABASE_DB_URL，
-# 与 Chat 仓库的保持一致。
+# 2026-10-13 再更新：Code 这份 Secret **已删除**（此前存的是假的 `[密码]`）。
+#
+#   为什么删掉而不是留着：假凭据比没有凭据更糟。
+#   留着会报 password authentication failed，看起来跟"密码写错了"一模一样，
+#   于是会去查密码、查网络、查端口 —— 全查错方向。
+#   删掉之后这里明确报「未配置 SUPABASE_DB_URL」，一眼就知道是没配，不是配错了。
+#
+# 因此：本条现在跑会失败在「未配置 SUPABASE_DB_URL」，这是**预期状态**。
+#   云盘功能不受影响 —— 云盘走前端 → Supabase REST（anon key + 用户 token），
+#   不碰这个连接串。它只在改表结构时才用得到。
+#
+# 真要建表/改表：Chat 仓库 → Actions → 执行 Code 云盘建表（那边凭据有效）。
 
 on:
   workflow_dispatch:

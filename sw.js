@@ -89,6 +89,7 @@ self.addEventListener('activate', function (e) {
            只删本项目自己的旧版本缓存。 */
         if (k === CACHE) return;
         if (k.indexOf('code-runtimes') === 0) return;   /* 运行时：不删 */
+        if (k.indexOf('code-rt-partial') === 0) return; /* 续传中的部分数据：不删 */
         if (k.indexOf('code-') === 0) return caches.delete(k);  /* 本项目旧版本：删 */
       }));
     }).then(function () {

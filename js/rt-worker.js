@@ -107,46 +107,135 @@ function fromCache(url) {
   return caches.open(CACHE).then(function (c) { return c.match(url); });
 }
 
-/* 下载单个文件，带进度。已缓存则直接跳过（不产生流量）。 */
+/* ============ 断点续传 ============
+ *
+ * 为什么要它（本轮实测发现的一句谎话）：
+ *   错误提示里写着「已下载的部分会留在缓存里，重试不会从头开始」——
+ *   但这是假的。此前 grab() 只有在**整个文件下完**之后才 caches.put()，
+ *   中途断掉的话 chunks 全部丢弃，下次 fromCache 查不到，照样从头下。
+ *
+ *   对 40 MB 的 clang.wasm 来说，这句话的代价很高：
+ *   用户下了 38 MB 断线，重试又从 0 开始，如此反复，永远下不完。
+ *   而他**是因为看到那句话才愿意重试的** —— 谎报在这里直接导致放弃。
+ *
+ * 所以两件事选一件：要么把话改掉，要么把功能做出来。
+ *   做出来更有价值（尤其用户决定改用官方运行时，体积只会更大），
+ *   于是实现续传：失败时保留已下部分，下次带 Range 头接着下。
+ *
+ * 兼容性：若服务端不支持 Range（返回 200 而非 206），
+ *   就丢弃部分数据从头下 —— 不会比现在更差。
+ */
+var PARTIAL_CACHE = 'code-rt-partial-v1';
+var PARTIAL_MIN = 256 * 1024;      /* 小于这个不值得存（缓存开销比收益大） */
+var PARTIAL_FLUSH = 2 * 1024 * 1024;  /* 每攒够 2 MB 落一次，别每片都写 */
+
+function partialKey(url) { return 'partial:' + url; }
+
+function readPartial(url) {
+  return caches.open(PARTIAL_CACHE)
+    .then(function (c) { return c.match(partialKey(url)); })
+    .then(function (r) { return r ? r.arrayBuffer() : null; })
+    .catch(function () { return null; });   /* 读不到就当没有，从头下 */
+}
+function writePartial(url, buf) {
+  if (!buf || buf.byteLength < PARTIAL_MIN) return Promise.resolve(false);
+  return caches.open(PARTIAL_CACHE).then(function (c) {
+    return c.put(partialKey(url), new Response(buf, {
+      headers: { 'content-type': 'application/octet-stream' }
+    })).then(function () { return true; });
+  }).catch(function () { return false; });   /* 配额满：降级为不续传，不报错 */
+}
+function dropPartial(url) {
+  return caches.open(PARTIAL_CACHE)
+    .then(function (c) { return c.delete(partialKey(url)); })
+    .catch(function () { });
+}
+
+/* 下载单个文件，带进度与续传。已缓存则直接跳过（不产生流量）。 */
 function grab(name, doneBytes, totalBytes) {
   var url = urlOf(name);
   return fromCache(url).then(function (hit) {
     if (hit) return { buf: null, cached: true };
-    var resp;
-    return origFetch(url).then(function (r) {
-      if (!r.ok) throw new Error(name + ' 下载失败：HTTP ' + r.status);
-      resp = r;
-      var len = parseInt(r.headers.get('content-length') || '0', 10);
-      if (!r.body || !len) return r.arrayBuffer().then(function (b) {
-        return { buf: b, size: b.byteLength };
-      });
-      // 分片读取，边下边报进度 —— 大文件不报进度等于让用户干等
-      var reader = r.body.getReader(), chunks = [], got = 0;
-      function pump() {
-        return reader.read().then(function (x) {
-          if (x.done) {
-            var all = new Uint8Array(got), at = 0;
-            for (var i = 0; i < chunks.length; i++) { all.set(chunks[i], at); at += chunks[i].length; }
-            return { buf: all.buffer, size: got };
-          }
-          chunks.push(x.value); got += x.value.length;
-          say('progress', { file: name, loaded: doneBytes + got,
-                            total: totalBytes || len,
-                            pct: totalBytes ? Math.floor((doneBytes + got) / totalBytes * 100)
-                                            : Math.floor(got / len * 100) });
-          return pump();
+    return readPartial(url).then(function (partial) {
+      var offset = (partial && partial.byteLength) || 0;
+      var opts = {};
+      if (offset > 0) opts.headers = { Range: 'bytes=' + offset + '-' };
+
+      return origFetch(url, opts).then(function (r) {
+        /* 206 = 服务端接受续传；200 = 它不支持 Range 或忽略了 Range，从头下 */
+        var resumed = (r.status === 206);
+        if (!resumed) offset = 0;
+        if (!r.ok && !resumed) throw new Error(name + ' 下载失败：HTTP ' + r.status);
+
+        /* 不支持流式读取或没有长度：一次性读完（小文件常见） */
+        var len = parseInt(r.headers.get('content-length') || '0', 10);
+        if (!r.body || !len) {
+          return r.arrayBuffer().then(function (b) {
+            if (offset > 0 && partial) {
+              var m = new Uint8Array(offset + b.byteLength);
+              m.set(new Uint8Array(partial), 0);
+              m.set(new Uint8Array(b), offset);
+              return { buf: m.buffer, size: m.byteLength };
+            }
+            return { buf: b, size: b.byteLength };
+          });
+        }
+
+        var reader = r.body.getReader();
+        var chunks = offset > 0 ? [new Uint8Array(partial)] : [];
+        var got = offset;
+        var sinceFlush = 0;
+
+        function snapshot() {
+          var all = new Uint8Array(got), at = 0;
+          for (var i = 0; i < chunks.length; i++) { all.set(chunks[i], at); at += chunks[i].length; }
+          return all.buffer;
+        }
+        function pump() {
+          return reader.read().then(function (x) {
+            if (x.done) return { buf: snapshot(), size: got };
+            chunks.push(x.value); got += x.value.length; sinceFlush += x.value.length;
+            /* 边下边存：真断线时这部分才留得下来 */
+            if (sinceFlush >= PARTIAL_FLUSH) {
+              sinceFlush = 0;
+              writePartial(url, snapshot());
+            }
+            say('progress', { file: name, loaded: doneBytes + got,
+                              total: totalBytes || (len + offset),
+                              pct: totalBytes ? Math.floor((doneBytes + got) / totalBytes * 100)
+                                              : Math.floor(got / (len + offset) * 100),
+                              resumed: offset > 0 });
+            return pump();
+          });
+        }
+        return pump().catch(function (e) {
+          /* 断线了：把已下的存下来，下次接着下。
+             存失败无所谓 —— 最坏情况就是退化成从头下（当前行为）。 */
+          if (got > 0) writePartial(url, snapshot());
+          throw e;
         });
-      }
-      return pump();
+      });
     }).then(function (res) {
       if (res.buf) {
-        return caches.open(CACHE).then(function (c) {
-          try {
-            c.put(url, new Response(res.buf, {
-              headers: { 'content-type': 'application/octet-stream' }
-            }));
-          } catch (e) { /* 配额满就算了，下次重新下 */ }
-          return { buf: res.buf, size: res.size };
+        /* ⚠ 校验必须在入缓存之前。进了缓存就很难被发现是坏的 ——
+           之后每次都命中它，表现是"能加载但一跑就炸"。 */
+        return verifyOrThrow(name, res.buf).catch(function (e) {
+          if (e && e.__badFile) {
+            /* 连带把续传的半成品也删掉：它是坏数据的一部分 */
+            dropPartial(url);
+            caches.open(CACHE).then(function (c) { return c.delete(url); }).catch(function () { });
+          }
+          throw e;
+        }).then(function () {
+          return caches.open(CACHE).then(function (c) {
+            try {
+              c.put(url, new Response(res.buf, {
+                headers: { 'content-type': 'application/octet-stream' }
+              }));
+            } catch (e) { /* 配额满就算了，下次重新下 */ }
+            /* 完整文件已入缓存，部分数据就没用了 */
+            return dropPartial(url).then(function () { return { buf: res.buf, size: res.size }; });
+          });
         });
       }
       return res;
@@ -155,26 +244,96 @@ function grab(name, doneBytes, totalBytes) {
 }
 
 /* 预下载某语言需要的全部文件，逐个报进度。 */
+/* ============ 文件元信息（大小 + SHA-256）============
+ *
+ * 为什么要在 Worker 里再拿一份清单：
+ *   续传会把多次下载的数据拼起来，拼错一个字节就是一个坏文件；
+ *   而坏文件一旦进缓存，之后每次都命中它，表现是"能用但一跑就炸"，
+ *   用户完全不知道是文件坏了。所以**必须校验**。
+ *
+ *   清单用 Code 仓库自己的 `api/runtimes.json`（同源，一定拿得到），
+ *   而不是 assets 仓库的 —— 后者在 GitHub Release 上，正是可能被挡的那个。
+ *   校验值取自 Release API 的 digest 字段，不是人工抄写（见 runtime.js 头部说明）。
+ */
+var RT_META = null, metaP = null;
+function loadMeta() {
+  if (RT_META) return Promise.resolve(RT_META);
+  if (metaP) return metaP;
+  var u;
+  try { u = new URL('../api/runtimes.json', self.location.href).href; }
+  catch (e) { u = '../api/runtimes.json'; }
+  metaP = origFetch(u).then(function (r) {
+    if (!r.ok) throw new Error('运行时清单加载失败：HTTP ' + r.status);
+    return r.json();
+  }).then(function (j) {
+    var m = {};
+    (j.runtimes || []).forEach(function (rt) {
+      (rt.files || []).forEach(function (f) {
+        if (f && f.name) m[f.name] = { size: f.size || 0, sha256: f.sha256 || '' };
+      });
+    });
+    RT_META = m;
+    return m;
+  }).catch(function (e) {
+    RT_META = {}; metaP = null;
+    throw e;
+  });
+  return metaP;
+}
+
+/* 返回小写 hex；环境不支持 subtle 就返回 null（不假装校验过） */
+function sha256hex(buf) {
+  if (!(self.crypto && self.crypto.subtle && self.crypto.subtle.digest)) return Promise.resolve(null);
+  return self.crypto.subtle.digest('SHA-256', buf).then(function (d) {
+    var a = new Uint8Array(d), out = '';
+    for (var i = 0; i < a.length; i++) out += ('0' + a[i].toString(16)).slice(-2);
+    return out;
+  }).catch(function () { return null; });
+}
+
+function verifyOrThrow(name, buf) {
+  var meta = (RT_META && RT_META[name]) || null;
+  if (!meta || !meta.sha256) return Promise.resolve(null);   /* 清单没给，跳过 */
+  return sha256hex(buf).then(function (hex) {
+    if (hex == null) return null;                 /* 环境不支持，跳过（不谎报已校验） */
+    if (hex === String(meta.sha256).toLowerCase()) return true;
+    /* 校验失败：坏文件绝不能进缓存，否则以后每次都命中它 */
+    var e = new Error(name + ' 内容校验失败（SHA-256 不匹配）。\n' +
+      '可能是网络传输中被截断或篡改。已丢弃这个文件，请重试下载。');
+    e.__badFile = name;
+    throw e;
+  });
+}
+
 function prepare(lang) {
   var files = NEED[lang] || [];
   var done = 0;
   /* 先探一次总大小，好算总进度。缓存命中就不算进总量。
-     ⚠ 这行注释此前是"未实现"的（S-026）：下面 grab(f, done, 0) 第三个参数传 0，
-        于是每个文件的进度都报 0/N，进度条走 N 次 0→100%，
-        看起来一直在动，实际没有总量参照。
-        现在把探测到的总量传下去。若确实探不到（清单里没有 size），
-        就明确传 0 并在界面上显示"总量未知"，不编一个假的百分比。 */
-  return files.reduce(function (p, f) {
-    return p.then(function () {
-      return fromCache(urlOf(f)).then(function (hit) { return hit ? 0 : null; });
-    }).then(function (skip) {
-      if (skip === 0) return 0;
-      return grab(f, done, 0).then(function (r) {
-        done += r.size || 0;
-        return r.size || 0;
-      });
+     ⚠ 上一版注释写"现在把探测到的总量传下去"，但**代码没改** ——
+       下面依然是 grab(f, done, 0)，第三个参数恒为 0。
+       于是每个文件的进度都报 0/N，进度条走 N 次 0→100%，
+       看起来一直在动，实际没有总量参照。
+       这是我自己在注释里宣布做完、代码里没做的一例，本轮真正实现。
+        总量取自同源的 api/runtimes.json（拿不到就传 0，界面显示"总量未知"，
+        绝不编一个假的百分比）。 */
+  return loadMeta().catch(function () { return {}; }).then(function (meta) {
+    var total = 0;
+    files.forEach(function (f) {
+      var m = meta[f];
+      if (m && m.size) total += m.size;
     });
-  }, Promise.resolve(0)).then(function () {
+    return files.reduce(function (p, f) {
+      return p.then(function () {
+        return fromCache(urlOf(f)).then(function (hit) { return hit ? 0 : null; });
+      }).then(function (skip) {
+        if (skip === 0) return 0;
+        return grab(f, done, total).then(function (r) {
+          done += r.size || 0;
+          return r.size || 0;
+        });
+      });
+    }, Promise.resolve(0));
+  }).then(function () {
     say('progress', { file: '', pct: 100 });
   });
 }

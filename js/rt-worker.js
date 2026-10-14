@@ -430,9 +430,42 @@ function prepare(lang) {
   });
 }
 
+/* ============ 运行时复用（S-023）============
+ *
+ * 此前每次 run 都重做两件很贵的事：
+ *   ① importScripts 同一个胶水脚本 —— 浏览器会缓存"下载"，
+ *      但**每次都会重新求值**。pyodide.js 那层求值不是免费的。
+ *   ② 重新初始化运行时 —— pyodide 每次都重新实例化 12 MB 的 wasm。
+ *
+ * 于是同一个用户连着跑十次 Python，就要初始化十次 pyodide。
+ * 这是"能跑但很慢"，比报错更难察觉 —— 用户只会觉得这软件卡。
+ *
+ * 现在改成：脚本只求值一次，运行时实例也只建一次，之后复用。
+ */
+var LOADED = {};      /* 已求值过的胶水脚本 */
+var RT_INST = {};     /* 已初始化好的运行时实例 */
+var PY_OUT = [];      /* 本次运行收集的 Python stdout */
+
 function load(name) {
   // importScripts 是同步的，加载失败会抛 —— 直接冒泡出去
+  if (LOADED[name]) return;     /* 已求值过，不再重复 */
   importScripts(urlOf(name));
+  LOADED[name] = true;
+}
+
+/* 取（或首次创建）某个运行时的实例。
+   make 只在第一次调用时执行。 */
+function rtInst(key, make) {
+  if (RT_INST[key]) return Promise.resolve(RT_INST[key]);
+  return Promise.resolve().then(make).then(function (inst) {
+    RT_INST[key] = inst;
+    return inst;
+  });
+}
+
+function rtDrop(key) {
+  delete RT_INST[key];
+  delete LOADED[key];
 }
 
 /* ESM 胶水（ruby-wasi.js）不能走 importScripts。
@@ -458,8 +491,10 @@ function loadESM(name) {
 
 function runSQL(code) {
   load('sql-wasm.js');
-  return Promise.resolve(self.initSqlJs({ locateFile: function (f) { return urlOf(f); } }))
-    .then(function (SQL) {
+  /* initSqlJs 会实例化 wasm，不便宜 —— 复用同一个引擎 */
+  return rtInst('sql', function () {
+    return self.initSqlJs({ locateFile: function (f) { return urlOf(f); } });
+  }).then(function (SQL) {
       var db = new SQL.Database();
       var out = [];
       try {
@@ -482,15 +517,38 @@ function runSQL(code) {
 function runPython(code) {
   load('pyodide.js');
   var buf = '';
-  return Promise.resolve(self.loadPyodide({
-    indexURL: BASE,
-    stdout: function (s) { buf += s + '\n'; }
-  })).then(function (py) {
+  /* loadPyodide 是最贵的那一步（12 MB wasm 实例化），必须复用。 */
+  return rtInst('pyodide', function () {
+    return self.loadPyodide({
+      indexURL: BASE,
+      /* stdout 要接到**本次**的 buf 上，所以不能直接把 buf 闭包进构造里 ——
+         改成每次跑之前重定向。 */
+      stdout: function (s) { PY_OUT.push(s); }
+    });
+  }).then(function (py) {
+    /* 复用实例带来的副作用：上一次跑留下的变量还在。
+       不处理的话会出现"这次没定义 x 却能 print(x)"——
+       用户会以为是自己的代码对了，实际是上一次的残留，极难察觉。
+       所以每次跑之前清空 __main__ 的名字空间。 */
+    try {
+      py.runPython('import sys as _s\n'
+        + '_m = _s.modules.get("__main__")\n'
+        + 'if _m is not None:\n'
+        + '    for _k in list(vars(_m).keys()):\n'
+        + '        if not _k.startswith("__"): delattr(_m, _k)');
+    } catch (e) { /* 清不掉也继续跑，不影响主流程 */ }
+    PY_OUT = [];
+    /* setStdout 不是所有 pyodide 版本都有 —— 没有就靠构造时那个 stdout 回调，
+       它在调用时读的是 PY_OUT 这个变量（不是捕获当时的值），所以一样有效。 */
+    try { if (py.setStdout) py.setStdout({ batched: function (s) { PY_OUT.push(s); } }); }
+    catch (e) { }
     try {
       var r = py.runPython(code);
+      /* 输出顺序：先 stdout，再表达式的值（与真 python 交互环境一致） */
+      buf = PY_OUT.join('\n') + (PY_OUT.length ? '\n' : '');
       if (r !== undefined && r !== null) buf += String(r);
     } catch (e) {
-      buf += '\n' + String(e && e.message || e);
+      buf = PY_OUT.join('\n') + '\n' + String(e && e.message || e);
     }
     return buf;
   });
@@ -500,6 +558,10 @@ function runLua(code) {
   // fengari-web.js 是 webpack 打包好的，fengari 核心已 bundle 在内
   load('fengari-web.js');
   return Promise.resolve().then(function () {
+    /* lua_State 每次新建：Lua 的名字空间就是全局表，
+       复用会把上次的变量带进来（同 pyodide 那个问题）。
+       但 lua_open + openlibs 本身很便宜（远小于 12 MB wasm 实例化），
+       所以这里**不复用**，保持每次干净 —— 正确性优先。 */
     var out = [];
     var fengari = self.fengari;
     if (!fengari) throw new Error('fengari 未加载');
@@ -779,6 +841,12 @@ self.addEventListener('message', function (e) {
     return;
   }
   if (d.cmd === 'drop') {
+    /* ⚠ 清缓存必须连带丢掉已初始化的运行时实例（S-023 带出来的新要求）。
+       复用之后，实例手里握着 wasm 实例；缓存清掉后那个 wasm 就不在了。
+       不丢的话下次跑会直接炸，而报错看不出是"清缓存"造成的 ——
+       用户会以为是运行时的 bug。 */
+    Object.keys(RT_INST).forEach(function (k) { delete RT_INST[k]; });
+    Object.keys(LOADED).forEach(function (k) { delete LOADED[k]; });
     caches.open(CACHE).then(function (c) { return c.keys(); }).then(function (ks) {
       return Promise.all(ks.map(function (k) {
         return caches.open(CACHE).then(function (c) { return c.delete(k); });

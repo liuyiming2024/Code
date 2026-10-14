@@ -45,13 +45,48 @@
  *
  * 新增运行时前，先跑那个 workflow 把文件搬进 rt/，
  * 否则这里会 404 —— 404 是明确的，比 NetworkError 好查得多。 */
-var BASE = 'https://raw.githubusercontent.com/liuyiming2024/assets/main/rt/';
+/* 下载源：多个，按序回退。
+ *
+ * 为什么不是一个：本轮逐个实测，两个源都**不稳定**（同一文件、同一分钟内）：
+ *
+ *   raw.githubusercontent.com
+ *      小文件 0.52s ✅ / 大文件 13.45s ✅ / 也出现过连续 3 次 40s 超时 ❌
+ *      偶发 403（快，0.1s）
+ *   cdn.jsdelivr.net/gh/
+ *      3/3 成功，2.0~3.1s ✅ —— 但此前也出现过 502 ❌
+ *   github.com/.../releases/download/
+ *      **一律不可用**：无 Access-Control-Allow-Origin 头（实测 403 且 ACAO 空）
+ *
+ * 所以正确做法不是"挑一个最好的"，而是**都配上、失败自动换下一个**。
+ * 单一源必然在某些时刻不可用，而用户只会看到一句 NetworkError。
+ *
+ * 另外：jsDelivr 免费版对单文件有体积上限（约 20 MB），
+ * clang.wasm 40.6 MB 在它上面会失败 —— 有了回退，这种情况会自动落到 raw。
+ *
+ * 缓存 key 用**规范 URL**（canonical），与实际下载用的源无关：
+ * 否则从 jsDelivr 下的和从 raw 下的会各存一份，白白占双倍空间。
+ */
+/* 规范 key = 主源 URL。
+   ⚠ 必须等于 api/runtimes.json 里的 file.url ——
+      js/runtime.js 的 hasCached() 是用 manifest 里的 url 去查缓存的。
+      两者一旦不一致，缓存永远查不到，界面就会一直显示"未下载"，
+      哪怕文件其实已经下好了（本轮差点踩进去）。 */
+var CANONICAL = 'https://cdn.jsdelivr.net/gh/liuyiming2024/assets@main/rt/';
+var SOURCES = [
+  'https://cdn.jsdelivr.net/gh/liuyiming2024/assets@main/rt/',
+  'https://raw.githubusercontent.com/liuyiming2024/assets/main/rt/'
+];
+var BASE = SOURCES[0];
 var CACHE = 'code-runtimes-v1';
 
 /* 文件名里有 + 的（ruby+stdlib.wasm）必须编码成 %2B —— Release 直链就是这么给的。
    不统一的话下载用一个 key、清理用另一个 key，缓存会对不上。 */
 function urlOf(name) {
   return BASE + name.replace(/\+/g, '%2B');
+}
+/* 缓存用的规范 key：与实际下载源无关 */
+function canonOf(name) {
+  return CANONICAL + name.replace(/\+/g, '%2B');
 }
 
 /* 每个语言需要哪些文件。预下载时按这里逐个拉，带进度。 */
@@ -92,17 +127,24 @@ var origFetch = self.fetch ? self.fetch.bind(self) : null;
    所以除了前缀匹配，再按"文件名是否在已知资产里"兜一层。 */
 var KNOWN_NAMES = {};
 Object.keys(NEED).forEach(function (k) {
-  (NEED[k] || []).forEach(function (n) { KNOWN_NAMES[n] = urlOf(n); });
+  (NEED[k] || []).forEach(function (n) { KNOWN_NAMES[n] = canonOf(n); });
 });
 
 function cacheUrlFor(url) {
-  if (url.indexOf(BASE) === 0) return url;
+  /* 我们自己的下载源：直接映射成规范 key（与用哪个源无关） */
+  for (var i = 0; i < SOURCES.length; i++) {
+    if (url.indexOf(SOURCES[i]) === 0) {
+      return canonOf(url.slice(SOURCES[i].length));
+    }
+  }
   var q = url.indexOf('?');
   var base = q < 0 ? url : url.slice(0, q);
   var name = base.slice(base.lastIndexOf('/') + 1);
   try { name = decodeURIComponent(name); } catch (e) { }
-  /* 只认 GitHub 自己的域名，避免把别处的同名文件也劫走 */
-  if (KNOWN_NAMES[name] && /^https?:\/\/[^/]*github/.test(url)) return KNOWN_NAMES[name];
+  /* 运行时内部自己拼出来的二次请求（重定向后域名会变）：
+     按文件名认，只要它落在我们已知的源域上就映射回规范 key。 */
+  if (KNOWN_NAMES[name] &&
+      /^https?:\/\/[^/]*(github|jsdelivr)/.test(url)) return KNOWN_NAMES[name];
   return null;
 }
 
@@ -172,109 +214,123 @@ function dropPartial(url) {
     .catch(function () { });
 }
 
-/* 下载单个文件，带进度与续传。已缓存则直接跳过（不产生流量）。 */
+/* 下载单个文件：多源回退 + 断点续传 + 校验。
+   已缓存则直接跳过（不产生流量）。 */
 function grab(name, doneBytes, totalBytes) {
-  var url = urlOf(name);
-  return fromCache(url).then(function (hit) {
+  /* 缓存与续传一律用规范 key，与实际用哪个源无关 ——
+     否则从不同源下的同一个文件会各存一份，白白占双倍空间。 */
+  var ckey = canonOf(name);
+  return fromCache(ckey).then(function (hit) {
     if (hit) return { buf: null, cached: true };
-    return readPartial(url).then(function (partial) {
-      var offset = (partial && partial.byteLength) || 0;
-      var opts = {};
-      if (offset > 0) opts.headers = { Range: 'bytes=' + offset + '-' };
+    return grabFromSources(name, ckey, doneBytes, totalBytes, 0, null);
+  });
+}
 
-      return origFetch(url, opts).then(function (r) {
-        /* 206 = 服务端接受续传；200 = 它不支持 Range 或忽略了 Range，从头下 */
-        var resumed = (r.status === 206);
-        if (!resumed) offset = 0;
-        if (!r.ok && !resumed) throw new Error(name + ' 下载失败：HTTP ' + r.status);
+/* 逐个源尝试，全失败才抛错。
+   lastErr 保留最后一个源的原因 —— 全挂时要给用户一个具体说法，
+   而不是含糊的"下载失败"。 */
+function grabFromSources(name, ckey, doneBytes, totalBytes, idx, lastErr) {
+  if (idx >= SOURCES.length) {
+    return Promise.reject(new Error(name + ' 下载失败（已试 ' + SOURCES.length +
+      ' 个源）' + (lastErr ? '：' + lastErr : '')));
+  }
+  var url = SOURCES[idx] + name.replace(/\+/g, '%2B');
+  return grabOne(name, url, ckey, doneBytes, totalBytes).catch(function (e) {
+    /* 换源前丢弃上一个源的半成品 —— 不同源的字节不能混着拼 */
+    return dropPartial(ckey).then(function () {
+      return grabFromSources(name, ckey, doneBytes, totalBytes, idx + 1,
+        String((e && e.message) || e).slice(0, 120));
+    });
+  });
+}
 
-        /* 不支持流式读取或没有长度：一次性读完（小文件常见） */
-        var len = parseInt(r.headers.get('content-length') || '0', 10);
-        if (!r.body || !len) {
-          return r.arrayBuffer().then(function (b) {
-            if (offset > 0 && partial) {
-              var m = new Uint8Array(offset + b.byteLength);
-              m.set(new Uint8Array(partial), 0);
-              m.set(new Uint8Array(b), offset);
-              return { buf: m.buffer, size: m.byteLength };
-            }
-            return { buf: b, size: b.byteLength };
-          });
+function grabOne(name, url, ckey, doneBytes, totalBytes) {
+  return readPartial(ckey).then(function (partial) {
+  var offset = (partial && partial.byteLength) || 0;
+  var opts = {};
+  if (offset > 0) opts.headers = { Range: 'bytes=' + offset + '-' };
+
+  return origFetch(url, opts).then(function (r) {
+    /* 206 = 接受续传；200 = 不支持 Range 或忽略 Range，从头下 */
+    var resumed = (r.status === 206);
+    if (!resumed) offset = 0;
+    if (!r.ok && !resumed) throw new Error(name + ' 下载失败：HTTP ' + r.status);
+
+    var len = parseInt(r.headers.get('content-length') || '0', 10);
+    if (!r.body || !len) {
+      return r.arrayBuffer().then(function (b) {
+        if (offset > 0 && partial) {
+          var m = new Uint8Array(offset + b.byteLength);
+          m.set(new Uint8Array(partial), 0);
+          m.set(new Uint8Array(b), offset);
+          return { buf: m.buffer, size: m.byteLength };
         }
-
-        var reader = r.body.getReader();
-        var chunks = offset > 0 ? [new Uint8Array(partial)] : [];
-        var got = offset;
-        var sinceFlush = 0;
-
-        function snapshot() {
-          var all = new Uint8Array(got), at = 0;
-          for (var i = 0; i < chunks.length; i++) { all.set(chunks[i], at); at += chunks[i].length; }
-          return all.buffer;
-        }
-        function pump() {
-          return reader.read().then(function (x) {
-            if (x.done) return { buf: snapshot(), size: got };
-            chunks.push(x.value); got += x.value.length; sinceFlush += x.value.length;
-            /* 边下边存：真断线时这部分才留得下来 */
-            if (sinceFlush >= PARTIAL_FLUSH) {
-              sinceFlush = 0;
-              writePartial(url, snapshot());
-            }
-            say('progress', { file: name, loaded: doneBytes + got,
-                              total: totalBytes || (len + offset),
-                              pct: totalBytes ? Math.floor((doneBytes + got) / totalBytes * 100)
-                                              : Math.floor(got / (len + offset) * 100),
-                              resumed: offset > 0 });
-            return pump();
-          });
-        }
-        return pump().catch(function (e) {
-          /* 断线了：把已下的存下来，下次接着下。
-             存失败无所谓 —— 最坏情况就是退化成从头下（当前行为）。 */
-          if (got > 0) writePartial(url, snapshot());
-          throw e;
-        });
+        return { buf: b, size: b.byteLength };
       });
-    }).then(function (res) {
-      if (res.buf) {
-        /* ⚠ 校验必须在入缓存之前。进了缓存就很难被发现是坏的 ——
-           之后每次都命中它，表现是"能加载但一跑就炸"。 */
-        return verifyOrThrow(name, res.buf).catch(function (e) {
-          if (e && e.__badFile) {
-            /* 连带把续传的半成品也删掉：它是坏数据的一部分 */
-            dropPartial(url);
-            caches.open(CACHE).then(function (c) { return c.delete(url); }).catch(function () { });
-          }
-          throw e;
-        }).then(function () {
-          return caches.open(CACHE).then(function (c) {
-            /* ⚠ 必须等 c.put 真正完成（本轮实测发现的 bug）。
-               此前这里是：
-                   c.put(url, ...);        ← 调用，但没 return、没等
-                   return dropPartial(...)
-               put 是异步的，于是 prepare() 常常在它提交之前就返回、
-               触发 ready 事件。界面收到 ready 后立刻去查缓存，
-               此时文件还没进去 → hasCached 返回 false → 显示"未下载"。
-               表现正是用户报的：**进度条走完 100%，状态仍是"未下载"，
-               再点一次才正常** —— 第二次时 put 早已完成。
+    }
 
-               这类 bug 特别容易误判成"下载失败了"，
-               于是用户会去重试、去查网络，而实际上文件是好的。 */
-            var putP;
-            try {
-              putP = c.put(url, new Response(res.buf, {
-                headers: { 'content-type': 'application/octet-stream' }
-              }));
-            } catch (e) { putP = null; }   /* 配额满就算了，下次重新下 */
-            /* 等 put 落地，再清部分数据、再返回 */
-            return Promise.resolve(putP).catch(function () { }).then(function () {
-              return dropPartial(url);
-            }).then(function () { return { buf: res.buf, size: res.size }; });
-          });
-        });
+    var reader = r.body.getReader();
+    var chunks = offset > 0 ? [new Uint8Array(partial)] : [];
+    var got = offset;
+    var sinceFlush = 0;
+
+    function snapshot() {
+      var all = new Uint8Array(got), at = 0;
+      for (var i = 0; i < chunks.length; i++) { all.set(chunks[i], at); at += chunks[i].length; }
+      return all.buffer;
+    }
+    function pump() {
+      return reader.read().then(function (x) {
+        if (x.done) return { buf: snapshot(), size: got };
+        chunks.push(x.value); got += x.value.length; sinceFlush += x.value.length;
+        /* 边下边存：真断线时这部分才留得下来 */
+        if (sinceFlush >= PARTIAL_FLUSH) {
+          sinceFlush = 0;
+          writePartial(ckey, snapshot());
+        }
+        say('progress', { file: name, loaded: doneBytes + got,
+                          total: totalBytes || (len + offset),
+                          pct: totalBytes ? Math.floor((doneBytes + got) / totalBytes * 100)
+                                          : Math.floor(got / (len + offset) * 100),
+                          resumed: offset > 0 });
+        return pump();
+      });
+    }
+    return pump().catch(function (e) {
+      /* 断线了：把已下的存下来，下次接着下 */
+      if (got > 0) writePartial(ckey, snapshot());
+      throw e;
+    });
+  });
+  }).then(function (res) {
+    if (!res.buf) return res;
+    /* ⚠ 校验必须在入缓存之前。进了缓存就很难被发现是坏的 ——
+       之后每次都命中它，表现是"能加载但一跑就炸"。 */
+    return verifyOrThrow(name, res.buf).catch(function (e) {
+      if (e && e.__badFile) {
+        /* 坏文件连同半成品一起删，下次重新下 */
+        dropPartial(ckey);
+        caches.open(CACHE).then(function (c) { return c.delete(ckey); }).catch(function () { });
       }
-      return res;
+      throw e;
+    }).then(function () {
+      return caches.open(CACHE).then(function (c) {
+        /* ⚠ 必须等 c.put 真正完成（本轮实测发现的 bug）。
+           此前调用 c.put() 后没等它落地就返回，于是 prepare() 常在文件
+           真正进缓存之前就触发 ready，界面立刻查缓存自然是空的 ——
+           表现为"进度条走完 100%，状态仍显示未下载，再点一次才对"。
+           用户很容易把它误判成下载失败而去重试、去查网络，
+           实际上文件是好的。 */
+        var putP;
+        try {
+          putP = c.put(ckey, new Response(res.buf, {
+            headers: { 'content-type': 'application/octet-stream' }
+          }));
+        } catch (e) { putP = null; }   /* 配额满就算了，下次重新下 */
+        return Promise.resolve(putP).catch(function () { }).then(function () {
+          return dropPartial(ckey);
+        }).then(function () { return { buf: res.buf, size: res.size }; });
+      });
     });
   });
 }
@@ -360,7 +416,7 @@ function prepare(lang) {
     });
     return files.reduce(function (p, f) {
       return p.then(function () {
-        return fromCache(urlOf(f)).then(function (hit) { return hit ? 0 : null; });
+        return fromCache(canonOf(f)).then(function (hit) { return hit ? 0 : null; });
       }).then(function (skip) {
         if (skip === 0) return 0;
         return grab(f, done, total).then(function (r) {

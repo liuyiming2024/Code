@@ -19,4 +19,4 @@
 /* 与 js/rt-worker.js 的 BASE 保持一致 —— 两处必须同源，
    否则清单里的 url 和实际下载的地址不一致，缓存永远命中不了。
    为什么换成 raw 域：见 rt-worker.js 顶部的实测说明（Release 直链无 ACAO 头）。 */
-var BASE = 'https://raw.githubusercontent.com/liuyiming2024/assets/main/rt/';
+var BASE = 'https://cdn.jsdelivr.net/gh/liuyiming2024/assets@main/rt/';

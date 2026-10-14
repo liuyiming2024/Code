@@ -71,8 +71,31 @@
       js/runtime.js 的 hasCached() 是用 manifest 里的 url 去查缓存的。
       两者一旦不一致，缓存永远查不到，界面就会一直显示"未下载"，
       哪怕文件其实已经下好了（本轮差点踩进去）。 */
-var CANONICAL = 'https://cdn.jsdelivr.net/gh/liuyiming2024/assets@main/rt/';
+/* ★ 首选源：assets 仓库的 GitHub Pages。
+ *
+ *   为什么它比两个 CDN 都好 —— 关键是 **同源**：
+ *     Code   跑在 https://liuyiming2024.github.io/Code/
+ *     assets 跑在 https://liuyiming2024.github.io/assets/
+ *   两者 scheme + host 完全相同，只是路径不同 →
+ *   浏览器的同源判定只看 scheme://host:port，**路径不算**。
+ *   所以从 Code 去 fetch assets 是**同源请求**，压根不走 CORS 检查，
+ *   有没有 ACAO 头都无所谓。
+ *
+ *   相比之下：
+ *     · raw.githubusercontent.com      不同 host → 跨域，要有 ACAO（实测有）
+ *     · cdn.jsdelivr.net               不同 host → 跨域（实测有，但大文件 502）
+ *     · github.com/.../releases/...    无 ACAO → 一律失败
+ *   同源是唯一不依赖第三方响应头的方案，也就不受 CDN 限流/体积上限影响。
+ *
+ *   ⚠ 沙箱访问 github.io 一律 403（网络策略挡的），所以这条路我**没能实测**。
+ *     它是靠同源规则推出来的，不是测出来的 —— 请你在真机上确认。
+ *     万一 Pages 不可用，会自动回退到 jsDelivr / raw。
+ */
+var PAGES = 'https://liuyiming2024.github.io/assets/';
+
+var CANONICAL = PAGES + 'rt/';
 var SOURCES = [
+  PAGES + 'rt/',
   'https://cdn.jsdelivr.net/gh/liuyiming2024/assets@main/rt/',
   'https://raw.githubusercontent.com/liuyiming2024/assets/main/rt/'
 ];

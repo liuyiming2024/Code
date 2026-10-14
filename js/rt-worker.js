@@ -249,13 +249,28 @@ function grab(name, doneBytes, totalBytes) {
           throw e;
         }).then(function () {
           return caches.open(CACHE).then(function (c) {
+            /* ⚠ 必须等 c.put 真正完成（本轮实测发现的 bug）。
+               此前这里是：
+                   c.put(url, ...);        ← 调用，但没 return、没等
+                   return dropPartial(...)
+               put 是异步的，于是 prepare() 常常在它提交之前就返回、
+               触发 ready 事件。界面收到 ready 后立刻去查缓存，
+               此时文件还没进去 → hasCached 返回 false → 显示"未下载"。
+               表现正是用户报的：**进度条走完 100%，状态仍是"未下载"，
+               再点一次才正常** —— 第二次时 put 早已完成。
+
+               这类 bug 特别容易误判成"下载失败了"，
+               于是用户会去重试、去查网络，而实际上文件是好的。 */
+            var putP;
             try {
-              c.put(url, new Response(res.buf, {
+              putP = c.put(url, new Response(res.buf, {
                 headers: { 'content-type': 'application/octet-stream' }
               }));
-            } catch (e) { /* 配额满就算了，下次重新下 */ }
-            /* 完整文件已入缓存，部分数据就没用了 */
-            return dropPartial(url).then(function () { return { buf: res.buf, size: res.size }; });
+            } catch (e) { putP = null; }   /* 配额满就算了，下次重新下 */
+            /* 等 put 落地，再清部分数据、再返回 */
+            return Promise.resolve(putP).catch(function () { }).then(function () {
+              return dropPartial(url);
+            }).then(function () { return { buf: res.buf, size: res.size }; });
           });
         });
       }

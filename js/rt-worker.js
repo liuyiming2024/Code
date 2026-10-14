@@ -24,7 +24,28 @@
 */
 'use strict';
 
-var BASE = 'https://github.com/liuyiming2024/assets/releases/latest/download/';
+/* ⚠ 下载地址改过，原因有实测依据，别改回去：
+ *
+ *   旧值：https://github.com/liuyiming2024/assets/releases/latest/download/
+ *   问题：浏览器地址栏能瞬间下载，Worker 里的 fetch 却报
+ *         "NetworkError when attempting to fetch resource."
+ *   两者规则的差别：
+ *     · 地址栏 = 顶层导航，不做 CORS 检查
+ *     · fetch  = CORS 模式，且直链会 302 跳到 objects.githubusercontent.com
+ *   实测响应头：
+ *     github.com/.../releases/download/  → Access-Control-Allow-Origin: （无）
+ *     raw.githubusercontent.com/...      → Access-Control-Allow-Origin: *
+ *   重定向链上任何一环缺 ACAO，浏览器就只给一句 NetworkError，
+ *   不会告诉你是 CORS 的问题 —— 这个坑排查成本很高。
+ *
+ * 解法不是"绕过 CORS"（我们改不了 GitHub 的响应头），
+ * 而是让资产存在于 **git 目录**：由 assets 仓库的
+ * 「资产搬进 git 目录」workflow 从 Release 搬到 rt/ 下。
+ * raw 域不重定向、且带 ACAO:*，问题从根上消失。
+ *
+ * 新增运行时前，先跑那个 workflow 把文件搬进 rt/，
+ * 否则这里会 404 —— 404 是明确的，比 NetworkError 好查得多。 */
+var BASE = 'https://raw.githubusercontent.com/liuyiming2024/assets/main/rt/';
 var CACHE = 'code-runtimes-v1';
 
 /* 文件名里有 + 的（ruby+stdlib.wasm）必须编码成 %2B —— Release 直链就是这么给的。

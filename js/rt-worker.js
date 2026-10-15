@@ -130,10 +130,16 @@ var NEED = {
  * 而不是检查"文件下好了没有" —— 后者恒为真，说明不了任何问题
  * （这正是六个运行时至今一次都没跑通过、却一直显示"可下载"的原因）。
  *
- * ⚠ 探针与期望值的可信度不一样，逐条标注：
- *   sql      —— **已在 Node 里真跑过**，输出确认是 "r\n2"
- *   pyodide  —— 未跑过。且已确认 **缺 pyodide.asm.js**（见下）
- *   其余     —— 未跑过，期望值只是按语言语义推断
+ * ⚠ 探针与期望值的可信度**逐条不同**，必须分开标注 ——
+ *   把它们一律写成"已验证"就是撒谎，而撒谎的清单比没有清单更坏。
+ *
+ *   ✅ sql  —— 在 Node 里真跑过，输出确认 "a\tb\n1\tx\n2\ty"
+ *   ✅ lua  —— 在模拟 Worker 的 vm 沙箱里真跑过，输出确认 "2"
+ *              顺带查出它在 Worker 里根本加载不了（见 loadWithWindowShim）
+ *   ❌ python —— 已确认起不来：缺 pyodide.asm.js（见 KNOWN_BROKEN）
+ *   ❓ php / ruby / cpp —— 未跑过，期望值只是按语言语义推断。
+ *              其中 php 已查出一处必然失败的错（导出名是 PHP 不是 PhpWeb），
+ *              已修，但**修完还没真跑过** —— 不能因此就标成通过。
  */
 /* 清单里的运行时 id 与 PROBES 的语言 key 不同名：
    清单用 pyodide/sqlite，PROBES 用 python/sql —— 抄表必然漂移，这里显式映射。 */
@@ -543,6 +549,37 @@ function rtInst(key, make) {
   });
 }
 
+/* ⚠ fengari-web.js 在 Worker 里**根本加载不了** —— 实测确认：
+ *
+ *   它的 UMD 包装写死了 `}(window, function(){ ... })`，
+ *   而 **Worker 作用域里没有 window**，于是 importScripts 一执行就抛
+ *     ReferenceError: window is not defined
+ *
+ *   这不是"可能出问题"，是必然抛 —— Lua 从来就没能跑起来过。
+ *   而且任何"检查文件下好了没有"的判据都发现不了它：
+ *   文件确实在，只是**一求值就崩**。这正是必须真跑探针的原因。
+ *
+ * 修法：求值期间临时把 window 指向 self，用完立刻还原。
+ *   · 必须还原 —— pyodide.js 靠 `typeof window` 判断自己跑在什么环境里，
+ *     长期留着会把它带偏（它会以为自己在主线程）。
+ *   · 原来是 window 的环境不动它（虽然 Worker 里不会有）。
+ */
+function loadWithWindowShim(name) {
+  if (LOADED[name]) return;
+  var had = ('window' in self);
+  var old = self.window;
+  try {
+    self.window = self;
+    importScripts(urlOf(name));
+  } finally {
+    try {
+      if (had) self.window = old;
+      else delete self.window;
+    } catch (e) { }
+  }
+  LOADED[name] = true;
+}
+
 function rtDrop(key) {
   delete RT_INST[key];
   delete LOADED[key];
@@ -636,7 +673,8 @@ function runPython(code) {
 
 function runLua(code) {
   // fengari-web.js 是 webpack 打包好的，fengari 核心已 bundle 在内
-  load('fengari-web.js');
+  // ⚠ 必须走 window 垫片版 —— 它的 UMD 包装直接引用 window，Worker 里没有
+  loadWithWindowShim('fengari-web.js');
   return Promise.resolve().then(function () {
     /* lua_State 每次新建：Lua 的名字空间就是全局表，
        复用会把上次的变量带进来（同 pyodide 那个问题）。
@@ -673,8 +711,20 @@ function runPHP(code) {
   return new Promise(function (resolve) {
     var out = [];
     try {
-      var PhpWeb = self.PhpWeb || (self.phpwasm && self.phpwasm.PhpWeb);
-      if (!PhpWeb) throw new Error('php-web.js 未导出 PhpWeb（UMD 挂载名不符）');
+      /* ⚠ 导出名实测是 **PHP**，不是 PhpWeb。
+           此前这里只认 self.PhpWeb —— 而 php-web.js 的收尾是
+             var PHP = ...;  if (module) module.exports = PHP
+           Worker 里没有 module，于是靠"顶层 var 成为全局属性"挂到 self 上，
+           名字就是 PHP。认错名字 = 永远抛"未导出"，PHP 一次都没跑起来过。
+           现在两个名字都认，并在都不在时把实际全局列出来（不静默失败）。 */
+      var PhpWeb = self.PhpWeb || self.PHP ||
+                   (self.phpwasm && (self.phpwasm.PhpWeb || self.phpwasm.PHP));
+      if (!PhpWeb) {
+        var gl = [];
+        for (var k in self) { if (/^php/i.test(k)) gl.push(k); }
+        throw new Error('php-web.js 未导出可识别的运行时（找过 PhpWeb / PHP）。' +
+          '全局里 PHP 相关的键：' + (gl.length ? gl.join(', ') : '(无)'));
+      }
       var php = new PhpWeb({ locateFile: function (f) { return urlOf(f); } });
       php.addEventListener('output', function (e) { out.push(e.detail); });
       php.addEventListener('error', function (e) { out.push('[stderr] ' + e.detail); });

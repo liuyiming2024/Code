@@ -661,6 +661,14 @@
         var d = U.el('div', { class: 'ext-desc', text: (lang.wasm && lang.wasm.desc) || lang.desc || '' });
         row.appendChild(d);
 
+        /* 已知起不来的，必须在**下载前**就说清楚。
+           12 MB 下完才发现不能用是最坏的体验 —— 用户会以为是自己的问题。 */
+        var rtBroken = (rt && rt.broken) || (lang.wasm && lang.wasm.broken);
+        if (rtBroken) {
+          var w = U.el('div', { class: 'ext-state bad', text: '⚠ 已知无法启动：' + rtBroken });
+          row.appendChild(w);
+        }
+
         /* E-018：「下完也跑不了」必须在下载前就写明。
            90 MB 下载要好几分钟，让用户等完了才发现不能用是最坏的体验。
            所以未就绪的运行时置灰下载按钮，并把原因写在旁边。 */
@@ -686,6 +694,26 @@
           btn.onclick = function () {
             R.clearCache(id).then(function () { render(); });
           };
+          /* 已下载的才给自检按钮 —— 没装的时候按了只会报错。
+             自检=真跑一行探针，不是检查文件在不在。 */
+          var tbtn = U.el('button', { class: 'ext-btn', text: '自检' });
+          tbtn.style.marginLeft = '6px';
+          tbtn.onclick = function () {
+            if (!R.selfTest) return;
+            tbtn.disabled = true;
+            var tip = U.el('div', { class: 'ext-desc', text: '正在真跑一行探针代码…' });
+            row.appendChild(tip);
+            R.selfTest(id, {
+              selftested: function (d) {
+                tbtn.disabled = false;
+                tip.textContent = (d && d.ok ? '✅ ' : '❌ ') +
+                  ((d && d.detail) || '无结果') +
+                  (d && d.known ? '（已知缺陷，不是你的问题）' : '');
+                tip.className = (d && d.ok) ? 'ext-desc' : 'ext-state bad';
+              }
+            });
+          };
+          bar.appendChild(tbtn);
         } else if (st && st.error) {
           state.textContent = '下载失败：' + st.error;
           state.className = 'ext-state bad';

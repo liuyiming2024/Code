@@ -137,6 +137,12 @@
     call({ cmd: 'diag' }, hooks || {}, 45000);
   }
 
+  /* 扩展包自检：真跑一行探针代码。
+     与"缓存里有没有文件"不是一回事 —— 后者恒为真。 */
+  function selfTest(lang, hooks) {
+    call({ cmd: 'selftest', lang: lang }, hooks || {}, 5 * 60 * 1000);
+  }
+
   function clearCache(onDone) {
     call({ cmd: 'drop' }, {
       cleared: function () { onDone && onDone(); },
@@ -148,6 +154,7 @@
     run: run,
     prepare: prepare,
     diagnose: diagnose,
+    selfTest: selfTest,
     clearCache: clearCache,
     has: function (lang) { return !!({ sql: 1, python: 1, lua: 1, php: 1, ruby: 1, cpp: 1 })[lang]; },
     label: function (lang) { return LABEL[lang] || lang; },

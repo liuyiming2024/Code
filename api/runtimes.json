@@ -103,7 +103,8 @@
           "url": "https://liuyiming2024.github.io/assets/rt/python_stdlib.zip"
         }
       ],
-      "ready": true
+      "ready": true,
+      "broken": "缺 pyodide.asm.js：pyodide.js 只是加载器，启动时要再取 pyodide.asm.js，而 Release 里没有这个文件。装完也起不来。"
     },
     {
       "id": "quickjs",

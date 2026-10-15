@@ -37,7 +37,17 @@
       /* 补实测发现的三条（S-057/058/059 已修，但边界要写明） */
       caveat: '不是 CPython，不支持 import 第三方库 / async / 生成器 / 装饰器；整数超过 2^53 走 BigInt（精确），元组不可变',
       /* upgrade=true：自研已够用，下载真 CPython 后自动切换 */
-      wasm: { id: 'pyodide', upgrade: true, desc: '完整 CPython 编译到 WASM，含标准库，可用 micropip 装纯 Python 包' }
+      /* ⚠ broken 不是推测，是读了 pyodide.js 源码确认的：
+           if (typeof _createPyodideModule != "function") {
+               let f = `${indexURL}pyodide.asm.js`; await I(f)
+           }
+         pyodide.js 只是加载器，运行时必须再去取 pyodide.asm.js，
+         而 assets 的 Release 里没有这个文件（23 个资产逐个核对过）。
+         所以下载它装完也起不来 —— 必须在下载前就说清楚，
+         不能让用户下完 12 MB 才发现。 */
+      wasm: { id: 'pyodide', upgrade: true,
+              broken: '缺 pyodide.asm.js：pyodide.js 只是加载器，启动时要再取 pyodide.asm.js，而 Release 里没有这个文件。装完也起不来。',
+              desc: '完整 CPython 编译到 WASM，含标准库，可用 micropip 装纯 Python 包' }
     },
     {
       id: 'cpp', name: 'C / C++', exts: ['c', 'h', 'cpp', 'hpp', 'cc', 'cxx'],

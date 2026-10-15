@@ -124,6 +124,59 @@ var NEED = {
 };
 
 /* 体积提示，用于在下载前告诉用户要等多久。单位 MB。 */
+/* ================= 扩展包自检探针 =================
+ *
+ * 每个运行时各一行"最小可跑代码"。自检用它真跑一遍，
+ * 而不是检查"文件下好了没有" —— 后者恒为真，说明不了任何问题
+ * （这正是六个运行时至今一次都没跑通过、却一直显示"可下载"的原因）。
+ *
+ * ⚠ 探针与期望值的可信度不一样，逐条标注：
+ *   sql      —— **已在 Node 里真跑过**，输出确认是 "r\n2"
+ *   pyodide  —— 未跑过。且已确认 **缺 pyodide.asm.js**（见下）
+ *   其余     —— 未跑过，期望值只是按语言语义推断
+ */
+/* 清单里的运行时 id 与 PROBES 的语言 key 不同名：
+   清单用 pyodide/sqlite，PROBES 用 python/sql —— 抄表必然漂移，这里显式映射。 */
+var RT_LANG_OF = {
+  pyodide: 'python', sqlite: 'sql', lua: 'lua',
+  ruby: 'ruby', php: 'php', cpp: 'cpp', quickjs: 'javascript'
+};
+
+var PROBES = {
+  /* sql 这一条是**唯一在 Node 里真跑过**的（sql.js 可在 Node 运行）。
+     两步探针：先建表插两行再查，能同时验证
+     DDL / DML / 多列 / 多行 / ORDER BY —— 单查 1+1 太弱，
+     "能连上"和"能正确返回结构化结果"是两回事。
+     实跑输出： "a\tb\n1\tx\n2\ty" */
+  sql: {
+    code: 'CREATE TABLE t(a INT, b TEXT);\n'
+        + "INSERT INTO t VALUES (1,'x'),(2,'y');\n"
+        + 'SELECT a,b FROM t ORDER BY a;',
+    expect: 'a\tb\n1\tx\n2\ty'
+  },
+  python:  { code: 'print(1 + 1)',     expect: '2' },
+  lua:     { code: 'print(1 + 1)',     expect: '2' },
+  php:     { code: '<?php echo 1 + 1;', expect: '2' },
+  ruby:    { code: 'puts 1 + 1',       expect: '2' },
+  cpp:     { code: '#include <cstdio>\nint main(){ printf("%d", 1+1); return 0; }',
+             expect: '2' }
+};
+
+/* 已知缺失：pyodide 一定起不来。
+   依据不是猜的 —— 读了 pyodide.js 源码，里面有这段：
+       if (typeof _createPyodideModule != "function") {
+           let f = `${r.indexURL}pyodide.asm.js`;  await I(f)
+       }
+   也就是说 pyodide.js 只是个加载器，**必须再去取 pyodide.asm.js**。
+   而 assets 的 Release 里根本没有这个文件（23 个资产逐个核对过）。
+   所以现在下载 pyodide 装完也必然失败 ——
+   这一点必须在界面上说清楚，不能让用户下 12 MB 才发现。 */
+/* 已知起不来的运行时。
+   内容**不在这里写死** —— 从 api/runtimes.json 读（LOAD_META 里带过来），
+   单一来源在 js/langs.js 的 wasm.broken。
+   抄一份到 Worker 里必然漂移（S-041 那类问题）。 */
+var KNOWN_BROKEN = {};
+
 var SIZE_HINT = {
   sql: 0.7, python: 12, lua: 0.5, cpp: 90, php: 16.5, ruby: 34
 };
@@ -382,7 +435,11 @@ function loadMeta() {
     return r.json();
   }).then(function (j) {
     var m = {};
+    /* 已知起不来的运行时：单一来源在 js/langs.js 的 wasm.broken，
+       经 api/runtimes.json 传到这里。不在这里另抄一份。 */
+    KNOWN_BROKEN = {};
     (j.runtimes || []).forEach(function (rt) {
+      if (rt && rt.broken) KNOWN_BROKEN[RT_LANG_OF[rt.id] || rt.id] = rt.broken;
       (rt.files || []).forEach(function (f) {
         if (f && f.name) m[f.name] = { size: f.size || 0, sha256: f.sha256 || '' };
       });
@@ -732,6 +789,34 @@ function runCpp(code, msg) {
   });
 }
 
+/* 自检：真跑探针，比对输出。
+   与"检查缓存里有没有文件"完全不是一回事。 */
+function selfTest(lang) {
+  var probe = PROBES[lang];
+  var fn = RUNNERS[lang];
+  if (!fn) return Promise.resolve({ lang: lang, ok: false, detail: '没有这个运行时' });
+  if (!probe) return Promise.resolve({ lang: lang, ok: false, detail: '没有写探针' });
+  if (KNOWN_BROKEN[lang]) {
+    return Promise.resolve({ lang: lang, ok: false, detail: KNOWN_BROKEN[lang], known: true });
+  }
+  var t0 = Date.now();
+  return Promise.resolve()
+    .then(function () { return fn(probe.code, { fileName: 'selftest.cpp' }); })
+    .then(function (text) {
+      var got = String(text == null ? '' : text).trim();
+      var ms = Date.now() - t0;
+      var ok = (got === probe.expect);
+      return {
+        lang: lang, ok: ok, ms: ms,
+        detail: ok ? ('输出「' + got + '」，' + ms + ' ms')
+                   : ('输出「' + got + '」，期望「' + probe.expect + '」')
+      };
+    }, function (e) {
+      return { lang: lang, ok: false, ms: Date.now() - t0,
+               detail: '执行抛错：' + String((e && e.message) || e) };
+    });
+}
+
 var RUNNERS = {
   sql: runSQL, python: runPython, lua: runLua,
   php: runPHP, ruby: runRuby, cpp: runCpp
@@ -841,6 +926,14 @@ self.addEventListener('message', function (e) {
   if (d.cmd === 'diag') {
     diagnose().then(function (r) { say('diag', r); },
                     function (err) { say('diag', { verdict: 'error', text: String(err && err.message || err) }); });
+    return;
+  }
+  if (d.cmd === 'selftest') {
+    selfTest(d.lang).then(function (r) { say('selftested', r); },
+                          function (err) {
+                            say('selftested', { lang: d.lang, ok: false,
+                              detail: String(err && err.message || err) });
+                          });
     return;
   }
   if (d.cmd === 'prepare') {

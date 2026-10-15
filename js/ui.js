@@ -567,8 +567,73 @@
       }
     }
 
+    /* 基础包自检块。
+       放在最上面，是因为它是"能不能跑"的地基 ——
+       扩展包只影响某一种语言，基础包坏了则什么都跑不了。
+       用户先看到它，才知道后面的下载值不值得做。 */
+    function renderBasePack() {
+      var box = U.el('div', { class: 'ext-base' });
+      var head = U.el('div', { class: 'ext-head' });
+      head.appendChild(U.el('div', { class: 'ext-name', text: '基础包（已内置）' }));
+      head.appendChild(U.el('span', { class: 'ext-tag', text: '零下载' }));
+      head.appendChild(U.el('span', { class: 'ext-size', text: '永久可用' }));
+      box.appendChild(head);
+      box.appendChild(U.el('div', {
+        class: 'ext-desc',
+        text: '打开就能跑，不需要下载任何东西：JS / HTML 由浏览器执行，' +
+              'Python 与 C++ 由本项目自研解释器执行。' +
+              '下面这些扩展包是**可选增强**，不装也能正常用。'
+      }));
+
+      var ul = U.el('div', { class: 'ext-selftest' });
+      var btn = U.el('button', { class: 'ext-btn', text: '自检' });
+      btn.style.marginTop = '6px';
+      var out = U.el('div', { class: 'ext-desc' });
+      out.textContent = '点「自检」会真的跑一行代码逐项验证 —— ' +
+        '只检查"文件在不在"说明不了问题（六个官方运行时就是这样：' +
+        '看着都有，实际一次都没跑通过）。';
+      btn.onclick = function () {
+        out.textContent = '正在自检…';
+        var res;
+        try {
+          res = (Code.runner && Code.runner.selfTestBase)
+              ? Code.runner.selfTestBase() : [];
+        } catch (e) {
+          out.textContent = '自检本身出错：' + String((e && e.message) || e);
+          return;
+        }
+        out.innerHTML = '';
+        var bad = 0;
+        res.forEach(function (r) {
+          if (!r.ok) bad++;
+          var line = U.el('div', {
+            class: 'ext-desc',
+            text: (r.ok ? '✅ ' : '❌ ') + r.name + '：' + r.detail
+          });
+          if (!r.ok) line.className = 'ext-state bad';
+          out.appendChild(line);
+        });
+        if (bad === 0) {
+          out.appendChild(U.el('div', {
+            class: 'ext-desc', text: '全部通过 —— 不装任何扩展包也能正常写代码和运行。'
+          }));
+        } else {
+          out.appendChild(U.el('div', {
+            class: 'ext-desc',
+            text: bad + ' 项未通过。基础包坏了意味着连 Hello world 都跑不了，' +
+                  '请先把它修好再考虑扩展包。'
+          }));
+        }
+      };
+      ul.appendChild(btn);
+      ul.appendChild(out);
+      box.appendChild(ul);
+      return box;
+    }
+
     function render() {
       list.innerHTML = '';
+      try { list.appendChild(renderBasePack()); } catch (e) { }
       L.downloadable().forEach(function (lang) {
         var id = lang.wasm.id;
         var rt = R.findRt ? R.findRt(id) : null;

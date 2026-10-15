@@ -117,6 +117,62 @@
     return !!(st && st.ready);
   }
 
+  /* ================= 基础包 / 扩展包 =================
+   *
+   * 借用游戏的分包思路：
+   *
+   *   基础包（base） —— 装上就能跑，**零下载、零联网**。
+   *     JS/HTML 由浏览器直接执行；Python 与 C++ 由本项目自研的解释器
+   *     （pylite / cpplite）执行。它们随页面一起加载，永远可用。
+   *
+   *   扩展包（ext） —— 各语言的官方运行时，按需下载。
+   *     pyodide（真 CPython）、clang（真 C/C++）、ruby、php、sqlite、lua …
+   *
+   * 为什么必须分清这层：
+   *   基础包坏了 = 什么都跑不了（连"Hello world"都不行）；
+   *   扩展包坏了 = 只是那一种语言退回自研解释器，其余照常。
+   *   两者的严重程度差一个量级，界面上也就该分开呈现。
+   *
+   * 另一件必须说清的事：**扩展包一个都没跑通过**。
+   * 所以真正托底的是基础包 —— 它的可用性不能靠"文件加载了"来推断，
+   * 必须真跑一行代码验证（见 Code.runner.selfTestBase()）。
+   */
+  var PACK = { BASE: 'base', EXT: 'ext', NONE: 'none' };
+
+  function packOf(lang) {
+    if (!lang) return PACK.NONE;
+    if (lang.tier === TIER.NONE) return PACK.NONE;
+    /* 内置档属于基础包；但它上面的 wasm 升级档属于扩展包 ——
+       同一个语言可以同时在两层里（Python / C++ 正是如此）。 */
+    return lang.tier === TIER.BUILTIN ? PACK.BASE : PACK.EXT;
+  }
+
+  /** 基础包包含哪些语言（永远可运行，不需要任何下载） */
+  function baseLangs() {
+    return LANGS.filter(function (l) { return packOf(l) === PACK.BASE; });
+  }
+
+  /** 扩展包里有哪些运行时（都要下载） */
+  function extRuntimes() {
+    var seen = {}, out = [];
+    LANGS.forEach(function (l) {
+      var w = l.wasm;
+      if (!w || !w.id) return;
+      if (seen[w.id]) return;
+      seen[w.id] = true;
+      out.push({
+        id: w.id,
+        lang: l.id,
+        langName: l.name,
+        desc: w.desc || '',
+        upgrade: !!w.upgrade,       /* 是"升级"还是"唯一途径" */
+        size: rtSize(w.id),
+        ready: rtReady(l)
+      });
+    });
+    return out;
+  }
+
   function canRun(lang) {
     if (!lang) return false;
     if (lang.tier === TIER.BUILTIN) return true;
@@ -171,7 +227,8 @@
   }
 
   Code.langs = {
-    TIER: TIER, all: LANGS,
+    TIER: TIER, PACK: PACK, all: LANGS,
+    packOf: packOf, baseLangs: baseLangs, extRuntimes: extRuntimes,
     byPath: byPath, byId: byId, extOf: extOf,
     canRun: canRun, runHint: runHint, displayName: displayName,
     fmtSize: fmtSize, rtReady: rtReady, useWasm: useWasm,

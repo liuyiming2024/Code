@@ -400,8 +400,104 @@
     if (box) { box.classList.add('hidden'); var f = U.$('#preview-frame'); if (f) f.srcdoc = ''; }
   }
 
+  /* ================= 基础包自检 =================
+   *
+   * 为什么要真的跑一遍，而不是检查"文件加载了没有"：
+   *   本项目反复踩过一类坑 —— 代码在、函数也在、界面看着正常，
+   *   但**从没真正执行过一次**。检查"存在"永远返回 true，
+   *   于是问题一直藏着，直到用户真去跑才暴露（还常被误判成用户代码的问题）。
+   *
+   *   六个官方运行时就是这么回事：清单上有、按钮也在，
+   *   但至今一次都没跑通过。所以基础包不能再靠"看着有"来判定。
+   *
+   * 基础包坏了 = 什么都跑不了（连 Hello world 都不行），
+   * 与"某个扩展包坏了"严重程度差一个量级 —— 值得单独立一个自检。
+   *
+   * 每项返回 { ok, detail }；ok 为 false 时 detail 说明到底哪一步失败。
+   */
+  var BASE_SELFTEST = [
+    {
+      id: 'javascript', name: 'JavaScript',
+      probe: '1 + 1',
+      expect: '2',
+      run: function (code) {
+        /* 用独立作用域跑，不污染页面。自检代码是我们自己的，不是用户输入。 */
+        var fn = new Function('"use strict"; return (' + code + ');');
+        return String(fn());
+      }
+    },
+    {
+      id: 'html', name: 'HTML（预览）',
+      probe: '<b>ok</b>',
+      expect: 'ok',
+      /* 预览走 iframe，没法直接取回输出 ——
+         退而验证"能否创建一个 iframe 并写入文档"，
+         这正是预览功能真正依赖的能力。 */
+      run: function (code) {
+        var f = document.createElement('iframe');
+        f.setAttribute('sandbox', 'allow-scripts');
+        f.style.cssText = 'position:absolute;left:-9999px;width:1px;height:1px';
+        document.body.appendChild(f);
+        try {
+          var d = f.contentDocument;
+          if (!d) return '';
+          d.open(); d.write(code); d.close();
+          var t = (d.body && d.body.textContent) || '';
+          return t;
+        } finally {
+          try { f.remove(); } catch (e) { }
+        }
+      }
+    },
+    {
+      id: 'python', name: 'Python（自研解释器）',
+      probe: 'print(1 + 1)',
+      expect: '2',
+      run: function (code) {
+        if (!Code.pylite) throw new Error('pylite 未加载');
+        var out = [];
+        var I = Code.pylite.create(function (s) { out.push(s); },
+                                   function () { return ''; });
+        I.run(code, { timeout: 5000 });
+        return out.join('\n').trim();
+      }
+    },
+    {
+      id: 'cpp', name: 'C / C++（自研解释器）',
+      probe: 'int main(){ cout << 1+1; }',
+      expect: '2',
+      run: function (code) {
+        if (!Code.cpplite) throw new Error('cpplite 未加载');
+        var out = [];
+        var C = Code.cpplite.create(function (s) { out.push(s); },
+                                    function () { return ''; });
+        C.run(code, { timeout: 5000 });
+        return out.join('\n').trim();
+      }
+    }
+  ];
+
+  function selfTestBase() {
+    return BASE_SELFTEST.map(function (t) {
+      var got = '';
+      try {
+        got = String(t.run(t.probe) || '');
+      } catch (e) {
+        return { id: t.id, name: t.name, ok: false,
+                 detail: '执行抛错：' + String((e && e.message) || e) };
+      }
+      if (got !== t.expect) {
+        return { id: t.id, name: t.name, ok: false,
+                 detail: '输出不符：实得「' + got + '」，期望「' + t.expect + '」' };
+      }
+      return { id: t.id, name: t.name, ok: true, detail: '输出 ' + got };
+    });
+  }
+
   Code.runner = {
     RT_KEY: RT_KEY,
+    selfTestBase: selfTestBase,
+    BASE_SELFTEST: BASE_SELFTEST,
     init: init, run: run, preview: preview, hidePreview: hidePreview,
     clear: clear, stop: stop, evalExpr: evalExpr, print: print, printSys: printSys,
     hasRuntime: function (path) {

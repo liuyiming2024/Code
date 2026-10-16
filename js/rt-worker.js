@@ -104,8 +104,30 @@ var CACHE = 'code-runtimes-v1';
 
 /* 文件名里有 + 的（ruby+stdlib.wasm）必须编码成 %2B —— Release 直链就是这么给的。
    不统一的话下载用一个 key、清理用另一个 key，缓存会对不上。 */
+/* ⚠ 个别胶水文件必须固定在**特定域名**上加载，不能跟着 BASE 走。
+   ruby-wasi.js 是 **jsDelivr 的打包产物**（文件头就写着 "Bundled by jsDelivr"）。
+   打包时把依赖名重写成了**绝对路径**：
+       import{WASI as G}from"/npm/@bjorn3/browser_wasi_shim@0.2.17/+esm"
+   这个路径只在 cdn.jsdelivr.net 域名下成立：
+       从 Pages 加载 → https://liuyiming2024.github.io/npm/... → 404
+   于是整个 ESM 加载失败，浏览器只给一句
+   "error loading dynamically imported module" —— 看不出是内部 import 挂了。
+
+   **这与源通不通完全无关**：Pages 一切正常也照样失败。
+   用户实测报的就是这个错，所以单独给这个文件指定 jsDelivr 域名，
+   让它内部的 /npm/ 解析到 jsDelivr 自己身上。
+
+   已逐个查过其余 10 个胶水文件（sql-wasm / fengari-web / lua / php-web /
+   quickjs / pyodide / cpp-index / clang / lld / wasi-shim），
+   **只有 ruby-wasi.js 有绝对路径依赖**；wasi-shim.js 虽然也是 jsDelivr 打包，
+   但依赖已内联（绝对路径数为 0），跟着 BASE 走没问题。 */
+var FILE_HOST = {
+  'ruby-wasi.js': 'https://cdn.jsdelivr.net/gh/liuyiming2024/assets@main/rt/'
+};
+
 function urlOf(name) {
-  return BASE + name.replace(/\+/g, '%2B');
+  /* 缓存用的 key 仍是 canonOf（与源无关），所以这里换域名不会让缓存对不上 */
+  return (FILE_HOST[name] || BASE) + name.replace(/\+/g, '%2B');
 }
 /* 缓存用的规范 key：与实际下载源无关 */
 function canonOf(name) {
@@ -163,6 +185,7 @@ var RT_LANG_OF = {
   ruby: 'ruby', php: 'php', cpp: 'cpp', quickjs: 'javascript'
 };
 
+/* 与 RUNNERS 同理：id 要同时认 'sql' 和 'sqlite'（langs.js 用的是后者）。 */
 var PROBES = {
   /* sql 这一条是**唯一在 Node 里真跑过**的（sql.js 可在 Node 运行）。
      两步探针：先建表插两行再查，能同时验证
@@ -170,6 +193,13 @@ var PROBES = {
      "能连上"和"能正确返回结构化结果"是两回事。
      实跑输出： "a\tb\n1\tx\n2\ty" */
   sql: {
+    code: 'CREATE TABLE t(a INT, b TEXT);\n'
+        + "INSERT INTO t VALUES (1,'x'),(2,'y');\n"
+        + 'SELECT a,b FROM t ORDER BY a;',
+    expect: 'a\tb\n1\tx\n2\ty'
+  },
+  /* 'sqlite' 是 langs.js 里 SQL 的真实 wasm.id，与上面的 'sql' 指向同一探针 */
+  sqlite: {
     code: 'CREATE TABLE t(a INT, b TEXT);\n'
         + "INSERT INTO t VALUES (1,'x'),(2,'y');\n"
         + 'SELECT a,b FROM t ORDER BY a;',
@@ -763,29 +793,54 @@ function runPHP(code) {
         throw new Error('php-web.js 未导出可识别的运行时（找过 PhpWeb / PHP）。' +
           '全局里 PHP 相关的键：' + (gl.length ? gl.join(', ') : '(无)'));
       }
-      var php = new PhpWeb({
+      /* ⚠ 关键：PHP **不是类，是函数**，而且不返回 Module。
+         源码（实测读到）长这样：
+             var PHP = (() => { return function(moduleArg = {}) {
+                 ...; return moduleArg.ready
+             } })();
+         也就是：
+           ① PHP(opts) 返回的是 **moduleArg.ready**（Promise），不是实例
+           ② 你传进去的那个对象**就是 Module**，会被原地填充 ccall / _pib_run 等
+         所以正确用法是「先建一个空对象传进去，再用**这个对象**调 ccall」，
+         而不是 new 出来再取 .ready —— 那样 php.ready 恒为 undefined，
+         Promise.resolve(undefined) 立刻 resolve，于是 ph 上什么都没有，
+         表现就是「已下载、已加载，但没有可用的执行入口」。 */
+      var ph = {
         locateFile: function (f) { return urlOf(f); },
         print: function (t) { out.push(t); },        // stdout
         printErr: function (t) { err.push(t); }      // stderr
-      });
+      };
+      var readyP;
+      try { readyP = PhpWeb(ph); }
+      catch (e2) { throw new Error('PHP 初始化调用失败：' + String((e2 && e2.message) || e2)); }
 
-      Promise.resolve(php.ready).then(function () {
+      Promise.resolve(readyP || ph.ready).then(function () {
         /* 执行入口按版本可能不同，依次尝试已知的几种。
            全都对不上时把实际导出列出来 —— 不静默返回空。 */
+        /* 执行入口：优先 ccall，其次直接调下划线导出的函数。
+           逐个尝试并把**失败原因**留下来 ——
+           全都对不上时报"没有可用的执行入口"却不说是为什么，
+           用户只能干瞪眼。 */
         var names = ['pib_run', 'pib_exec', 'zend_eval_string'];
-        var hit = null;
-        for (var i = 0; i < names.length; i++) {
-          if (php.ccall) {
-            try { php.ccall(names[i], 'number', ['string'], [code]); hit = names[i]; break; }
-            catch (e) { /* 换下一个 */ }
+        var hit = null, lastErr = '';
+        for (var i = 0; i < names.length && !hit; i++) {
+          if (ph.ccall) {
+            try { ph.ccall(names[i], 'number', ['string'], [code]); hit = 'ccall:' + names[i]; break; }
+            catch (e) { lastErr = names[i] + ' → ' + String((e && e.message) || e); }
+          }
+          var raw = ph['_' + names[i]];
+          if (!hit && typeof raw === 'function') {
+            try { raw(code); hit = 'raw:_' + names[i]; break; }
+            catch (e2) { lastErr = '_' + names[i] + ' → ' + String((e2 && e2.message) || e2); }
           }
         }
         if (!hit) {
           var has = [];
-          for (var k2 in php) { if (/^_?(pib|zend)/.test(k2)) has.push(k2); }
+          for (var k2 in ph) { if (/^_?(pib|zend|ccall|ready)/.test(k2)) has.push(k2); }
           resolve((out.join('') || '(无输出)') +
             '\nPHP 未能执行：没有可用的执行入口。实际导出：' +
-            (has.length ? has.join(', ') : '(无)'));
+            (has.length ? has.join(', ') : '(无)') +
+            (lastErr ? '\n最后一次尝试：' + lastErr : ''));
           return;
         }
         var text = out.join('');
@@ -943,9 +998,21 @@ function selfTest(lang) {
     });
 }
 
+/* ⚠ 键必须覆盖 **langs.js 里 wasm.id 的实际取值**（是 'sqlite' 不是 'sql'）。
+   用户实测：SQL 已下载，点自检却报「❌ 没有这个运行时」——
+   因为 langs.js 里写的是 wasm:{id:'sqlite'}，而这里只注册了 'sql'，
+   RUNNERS['sqlite'] 不存在 → 走进「没有这个运行时」分支。
+   而缓存清单 runtimes.json 用的 id 恰恰是 'sqlite'，
+   所以 **不能**去改 langs.js 的 id（那样又会找不到文件），
+   只能在这里两个名字都注册。已加断言锁住两边必须一致。 */
 var RUNNERS = {
-  sql: runSQL, python: runPython, lua: runLua,
-  php: runPHP, ruby: runRuby, cpp: runCpp
+  sql: runSQL, sqlite: runSQL,
+  python: runPython, pyodide: runPython,
+  lua: runLua,
+  php: runPHP,
+  ruby: runRuby,
+  cpp: runCpp,
+  quickjs: runQuickJS
 };
 
 /* 把 fetch 的裸错误翻译成人能判断的话。

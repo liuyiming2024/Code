@@ -46,10 +46,13 @@
     set: function (m) { if (m === 'real' || m === 'safe') UB.mode = m; },
     isReal: function () { return UB.mode === 'real'; },
     /* 统一入口：安全档抛明确错误，真实档返回 true 表示"继续模拟" */
-    check: function (kind, msg) {
+    /* line 可选。运行期错误（越界、溢出）不带行号的话，
+       用户只知道"下标 10 越界"却不知道是**哪一行**的 a[10]
+       —— 而一个程序里可能有几十处下标访问。 */
+    check: function (kind, msg, line) {
       if (UB.isReal()) return true;
       throw cerr('暂不支持（安全模式）：' + msg + '。' +
-        '切换到「真实 UB」模式可模拟真实 C++ 的行为（' + kind + '）');
+        '切换到「真实 UB」模式可模拟真实 C++ 的行为（' + kind + '）', line);
     }
   };
 
@@ -116,7 +119,7 @@
     'int': 32, 'unsigned': 32, 'unsigned int': 32,
     'long long': 64, 'unsigned long long': 64, 'long': 64
   };
-  function fitInt(v, ctype) {
+  function fitInt(v, ctype, line) {
     if (typeof v !== 'number' || !Number.isInteger(v) || !isFinite(v)) return v;
     /* 'short int' → 'short'、'unsigned int' → 'unsigned'；
        但单独的 'int' 不能去掉 —— 否则报错里会写成「超出  的范围」，
@@ -136,7 +139,7 @@
     UB.check('整数溢出',
       '结果 ' + v + ' 超出 ' + t + ' 的范围（' + lo + ' ~ ' + hi + '）。\n' +
       '真实 C++ 会回绕成一个看起来随机的负数（UB），这里先拦住你。\n' +
-      (bits === 32 ? '如果数值本来就该这么大，请改用 long long。' : '请检查取值范围。'));
+      (bits === 32 ? '如果数值本来就该这么大，请改用 long long。' : '请检查取值范围。'), line);
     return v;
   }
 
@@ -1271,42 +1274,42 @@
     },
     bitOr: function () {
       var l = this.bitXor();
-      while (this.atOp('|')) { this.p++; l = { type: 'BinOp', op: '|', l: l, r: this.bitXor() }; }
+      while (this.atOp('|')) { var ln = this.peek().line; this.p++; l = { type: 'BinOp', op: '|', l: l, r: this.bitXor(), line: ln }; }
       return l;
     },
     bitXor: function () {
       var l = this.bitAnd();
-      while (this.atOp('^')) { this.p++; l = { type: 'BinOp', op: '^', l: l, r: this.bitAnd() }; }
+      while (this.atOp('^')) { var ln = this.peek().line; this.p++; l = { type: 'BinOp', op: '^', l: l, r: this.bitAnd(), line: ln }; }
       return l;
     },
     bitAnd: function () {
       var l = this.equality();
-      while (this.atOp('&')) { this.p++; l = { type: 'BinOp', op: '&', l: l, r: this.equality() }; }
+      while (this.atOp('&')) { var ln = this.peek().line; this.p++; l = { type: 'BinOp', op: '&', l: l, r: this.equality(), line: ln }; }
       return l;
     },
     equality: function () {
       var l = this.relational();
-      while (this.atOp('==') || this.atOp('!=')) { var op = this.next().v; l = { type: 'BinOp', op: op, l: l, r: this.relational() }; }
+      while (this.atOp('==') || this.atOp('!=')) { var ot = this.next(); l = { type: 'BinOp', op: ot.v, l: l, r: this.relational(), line: ot.line }; }
       return l;
     },
     relational: function () {
       var l = this.shift();
-      while (this.atOp('<') || this.atOp('>') || this.atOp('<=') || this.atOp('>=')) { var op = this.next().v; l = { type: 'BinOp', op: op, l: l, r: this.shift() }; }
+      while (this.atOp('<') || this.atOp('>') || this.atOp('<=') || this.atOp('>=')) { var ot = this.next(); l = { type: 'BinOp', op: ot.v, l: l, r: this.shift(), line: ot.line }; }
       return l;
     },
     shift: function () {
       var l = this.additive();
-      while (this.atOp('<<') || this.atOp('>>')) { var op = this.next().v; l = { type: 'BinOp', op: op, l: l, r: this.additive() }; }
+      while (this.atOp('<<') || this.atOp('>>')) { var ot = this.next(); l = { type: 'BinOp', op: ot.v, l: l, r: this.additive(), line: ot.line }; }
       return l;
     },
     additive: function () {
       var l = this.multiplicative();
-      while (this.atOp('+') || this.atOp('-')) { var op = this.next().v; l = { type: 'BinOp', op: op, l: l, r: this.multiplicative() }; }
+      while (this.atOp('+') || this.atOp('-')) { var ot = this.next(); l = { type: 'BinOp', op: ot.v, l: l, r: this.multiplicative(), line: ot.line }; }
       return l;
     },
     multiplicative: function () {
       var l = this.unary();
-      while (this.atOp('*') || this.atOp('/') || this.atOp('%')) { var op = this.next().v; l = { type: 'BinOp', op: op, l: l, r: this.unary() }; }
+      while (this.atOp('*') || this.atOp('/') || this.atOp('%')) { var ot = this.next(); l = { type: 'BinOp', op: ot.v, l: l, r: this.unary(), line: ot.line }; }
       return l;
     },
     unary: function () {
@@ -1335,18 +1338,20 @@
       var e = this.primary();
       while (true) {
         if (this.atOp('(')) {
+          var lnC = this.peek().line;      /* '(' 所在行 = 调用发生的行 */
           this.p++;
           var args = [];
           while (!this.atOp(')')) { args.push(this.assign()); if (!this.eat('OP', ',')) break; }
           this.expect('OP', ')');
-          e = { type: 'Call', callee: e, args: args };
+          e = { type: 'Call', callee: e, args: args, line: lnC };
           continue;
         }
         if (this.atOp('[')) {
+          var ln2 = this.peek().line;
           this.p++;
           var idx = this.expr();
           this.expect('OP', ']');
-          e = { type: 'Index', obj: e, index: idx };
+          e = { type: 'Index', obj: e, index: idx, line: ln2 };
           continue;
         }
         if (this.atOp('.')) { this.p++; e = { type: 'Member', obj: e, name: this.next().v }; continue; }
@@ -2525,7 +2530,7 @@
           /* 越界读（S-077 / S-063）。安全档明确报错；
              真实档返回 undefined（模拟"读到不确定的值"，真实 C++ 是 UB） */
           if (ix < 0 || ix >= arr.length) {
-            UB.check('数组越界', '下标 ' + ix + ' 越界（数组长度 ' + arr.length + '）');
+            UB.check('数组越界', '下标 ' + ix + ' 越界（数组长度 ' + arr.length + '）', node.line);
             return undefined;
           }
           return arr[ix];
@@ -2650,7 +2655,7 @@
         /* 安全档也要管：此前 `if (!UB.isReal()) return v;` 直接把
            2147483648 这种越界值原样返回 —— 既不报错又给错答案。
            现在统一交给 fitInt：真实档回绕，安全档报错。 */
-        return fitInt(v, ct);
+        return fitInt(v, ct, node.line);
       }
       /* && 与 || 短路 */
       if (op === '&&') return this.truthy(this.eval(node.l, scope)) && this.truthy(this.eval(node.r, scope));
@@ -2770,7 +2775,7 @@
               return (a > 0) ? Infinity : -Infinity;
             }
             /* 整数除零：真机 SIGFPE */
-            throw cerr('除零错误（整数除零在真实 C++ 里会导致程序崩溃）');
+            throw cerr('除零错误（整数除零在真实 C++ 里会导致程序崩溃）', node.line);
           }
           /* 两个整数相除按 C 语义取整 */
           if (Number.isInteger(a) && Number.isInteger(b)) {
@@ -2837,7 +2842,13 @@
         /* ⚠ 写回变量时要按变量的 C 类型收敛（本轮实测发现）。
            `short t = 32767; t = t + 1;` 此前得到 32768，真 g++ 是 -32768 ——
            因为赋值这一步从来没截断过，只有 BinOp 回绕（且提升成了 int）。 */
-        scope.set(target.name, fitInt(val, scope.typeOf(target.name)));
+        /* ⚠ 用 target.line，不是 node.line —— assignTo 的签名是
+           (target, val, scope)，**没有 node 参数**。
+           第一版我写 node.line，于是一到赋值就抛
+           "node is not defined" —— 连原本能跑的 `x = x + 1` 都崩了。
+           这类错误最阴险：它把**正常代码**变成崩溃，
+           而不只是报错信息变差。 */
+        scope.set(target.name, fitInt(val, scope.typeOf(target.name), target.line));
         return;
       }
       if (target.type === 'Index') {
@@ -2854,7 +2865,10 @@
            安全档明确报错 —— 静默写成功是最坏的选择，
            因为它看起来"能用"，到 OJ 上才炸。 */
         if (wx < 0 || wx >= arr.length) {
-          UB.check('数组越界', '给下标 ' + wx + ' 赋值越界（数组长度 ' + arr.length + '）');
+          /* ⚠ 用 target（Index 节点）自己的 line，不要用 target.index 的。
+             第一版我写的 target.index.line，而下标表达式 `a[10]` 的 index
+             是个 Num 节点、未必带 line —— 结果行号恒为 undefined，等于没加。 */
+          UB.check('数组越界', '给下标 ' + wx + ' 赋值越界（数组长度 ' + arr.length + '）', target.line);
         }
         arr[wx] = val;
         return;
@@ -2965,7 +2979,7 @@
         if (vv && typeof vv === 'object' && vv.__fn) return this.callFunc(this.funcs[vv.__fn].node, args, this.global);
         if (vv && typeof vv === 'object' && vv.__builtinFn) return vv.__builtinFn.apply(null, args);
       }
-      throw cerr('暂不支持的函数：' + (name || '(表达式)'));
+      throw cerr('暂不支持的函数：' + (name || '(表达式)'), node.line);
     },
 
     /* argExprs：调用处的实参**表达式**（不是值）。

@@ -100,6 +100,10 @@
       <circle cx="12" cy="12" r="8.4" fill="none" stroke="currentColor" stroke-width="1.7"/>
       <path d="M12 10.6v6.2M12 7.7v.5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
     </symbol>
+    <symbol id="i-user" viewBox="0 0 24 24">
+      <circle cx="12" cy="8" r="3.6" fill="none" stroke="currentColor" stroke-width="1.7"/>
+      <path d="M4.8 20c0-3.6 3.2-5.8 7.2-5.8s7.2 2.2 7.2 5.8" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/>
+    </symbol>
   </defs>
 </svg>
 
@@ -118,6 +122,13 @@
       <button id="btn-install" title="安装到桌面或手机主屏"><svg><use href="#i-download"/></svg><span>安装</span></button>
   </nav>
   <div class="spacer"></div>
+  <!-- 页眉账号入口：未登录显示「登录」，登录后显示昵称。
+       点它会切到左侧「账号与云盘」视图，登录/退出都在那里做。
+       为什么放页眉：云盘在左侧栏里，不点进去就完全不知道有没有登录 ——
+       而"有没有登录"决定了文件到底存没存到云端，属于必须随时可见的状态。 -->
+  <button class="btn ghost acct-btn" id="btn-acct" title="账号与云盘">
+    <svg><use href="#i-user"/></svg><span id="acct-label">登录</span>
+  </button>
   <button class="btn primary" id="btn-run" title="运行（Ctrl+Enter）"><svg><use href="#i-run"/></svg><span>运行</span></button>
   <button class="icon-btn" id="btn-theme" title="切换深浅色" aria-label="切换深浅色"><svg><use href="#i-sun"/></svg></button>
 </header>

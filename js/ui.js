@@ -136,15 +136,22 @@
     if (name === 'cloud' && Code.cloud) {
       try { setTimeout(function () { UI.refreshCloud(); }, 0); } catch (e) { }
     }
-    ['files', 'search', 'run', 'settings'].forEach(function (v) {
+    /* ⚠ 这个名单必须**包含 activitybar 上每一个 data-view**。
+       之前漏了 'cloud'，后果是：点左侧云盘图标按钮会亮起（active 生效），
+       但 #view-cloud 从来没被去掉 hidden —— 于是**整个侧栏空白**，
+       而右上角标题也是空的，看起来就像"云盘坏了/白屏"。
+       按钮亮着 + 内容空白，用户只会以为云盘功能没做完，
+       不会想到是这里少写了一个单词。
+       所以下面不从硬编码名单出发，而是**直接读 DOM 上实际有哪些视图**，
+       以后再加视图也不会重蹈覆辙。 */
+    U.$$('#activitybar [data-view]').forEach(function (b) {
+      var v = b.getAttribute('data-view');
       var e = U.$('#view-' + v);
       if (e) e.classList.toggle('hidden', v !== name);
-    });
-    U.$$('#activitybar [data-view]').forEach(function (b) {
-      b.classList.toggle('active', b.getAttribute('data-view') === name);
+      b.classList.toggle('active', v === name);
     });
     var t = U.$('#side-title');
-    var names = { files: '文件', search: '搜索', run: '运行', settings: '设置' };
+    var names = { files: '文件', search: '搜索', run: '运行', settings: '设置', cloud: '账号与云盘' };
     t.textContent = names[name] || '';
     U.$('#side-actions').classList.toggle('hidden', name !== 'files');
     if (name === 'search') setTimeout(function () { var s = U.$('#search-input'); s && s.focus(); }, 0);
@@ -833,12 +840,41 @@
   /* ================= 云盘状态 =================
      未登录是常态，不是错误 —— 不能每次打开都弹"连接失败"。
      查不到就显示成"未登录"，用户想用自然会去登录。 */
+  /* 页眉账号按钮的状态。
+     它和侧栏云盘面板是**同一个状态的两处显示**，必须一起更新 ——
+     只更新一处会出现"页眉显示已登录、点进去却是未登录"的分裂状态，
+     用户不知道该信哪个。所以抽成一个函数，两边共用。 */
+  UI.refreshAcct = function (m) {
+    var btn = U.$('#btn-acct');
+    var lab = U.$('#acct-label');
+    if (!btn || !lab) return;
+    if (m && m.nick) {
+      lab.textContent = m.nick;
+      btn.classList.add('on');
+      btn.title = '已登录：' + m.nick + '（点击管理云盘）';
+    } else {
+      lab.textContent = '登录';
+      btn.classList.remove('on');
+      btn.title = '未登录 —— 点击登录并管理云盘';
+    }
+  };
+
   UI.refreshCloud = function () {
     var st = U.$('#cloud-state');
     var setSt = U.$('#set-cloud-state');
     var loginBox = U.$('#cloud-login-box');
     var opsBox = U.$('#cloud-ops-box');
-    if (!st || !Code.cloud) return;
+    /* cloud.js 没加载（后端未配置）时，页眉按钮不能就这么杵着 ——
+       它显示"登录"，点进去却什么都没有，等于一个坏按钮。
+       所以明确标成不可用，比给一个点了没反应的按钮诚实。 */
+    if (!Code.cloud) {
+      var b0 = U.$('#btn-acct');
+      var l0 = U.$('#acct-label');
+      if (l0) l0.textContent = '云盘未启用';
+      if (b0) { b0.disabled = true; b0.title = '云盘未配置（后端地址缺失）'; }
+      if (!st) return;
+    }
+    if (!st) return;
 
     function show(text, logged) {
       st.innerHTML = text;
@@ -850,6 +886,7 @@
     /* 没有会话就不必发请求：省一次往返，也不会出现"请先登录"的红字 */
     if (!Code.cloud.token()) {
       show('<b>未登录</b><br>文件只存在这台设备上。登录后可存到云端，换设备能取回。', false);
+      UI.refreshAcct(null);
       return;
     }
 
@@ -861,12 +898,14 @@
       show('<b>已登录：' + (m.nick || '?') + '</b>' +
         '<br>云端 ' + (m.files || 0) + ' 个文件，' + mb(m.used || 0) + ' / ' + mb(m.quota || 0) +
         shared, true);
+      UI.refreshAcct(m);
     }).catch(function (e) {
       var msg = String((e && e.message) || e);
       /* 会话失效就清掉，避免一直显示"已登录"却什么都用不了 */
       if (/失效|未登录|请先登录/.test(msg)) Code.cloud.dropSession();
       show('<b>未登录</b>' + (/失效/.test(msg) ? '（登录已失效）' : '') +
         '<br>文件只存在这台设备上。', false);
+      UI.refreshAcct(null);
     });
   };
 

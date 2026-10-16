@@ -1272,6 +1272,18 @@
     var bpc = U.$('#btn-preview-close');
     if (bpc) bpc.onclick = function () { command('close-preview'); };
     var bt = U.$('#btn-theme'); if (bt) bt.onclick = toggleTheme;
+    /* 页眉账号：点了就切到「账号与云盘」视图。
+       ⚠ 必须先确保侧栏是展开的 —— 侧栏折叠时切视图没有任何视觉变化，
+       用户点了没反应，只会以为按钮坏了。 */
+    var ba = U.$('#btn-acct');
+    if (ba) ba.onclick = function () {
+      if (!Code.cloud) { U.toast('云盘未配置：后端地址缺失', 'err'); return; }
+      var side = U.$('#sidebar');
+      if (side && side.classList.contains('collapsed')) UI.toggleSide();
+      UI.setView('cloud');
+      /* 窄屏下抽屉会盖住编辑器，让用户能一键收起 */
+      if (UI.isNarrow && UI.isNarrow()) document.body.classList.add('side-open');
+    };
     /* 顶栏菜单：以前这个按钮绑的是 toggleSide，而 #top-menu 没有任何代码
        给它加 open 类 —— 那 7 个菜单项（新建、导出、导入、扩展中心、关于…）
        从来没有出现在界面上，是死 UI。

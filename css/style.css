@@ -138,6 +138,19 @@ svg { width: 18px; height: 18px; display: block; }
 .btn.primary { background: var(--accent); color: var(--accent-fg); border-color: transparent; font-weight: 600; }
 .btn.primary:hover { filter: brightness(1.08); }
 
+/* 页眉账号按钮：登录后昵称可能较长，限宽省略，别把顶栏挤歪 */
+.acct-btn { max-width: 168px; }
+.acct-btn #acct-label {
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+/* 已登录时给个淡色底，让"登没登录"一眼可分 —— 这是它的全部意义 */
+.acct-btn.on { color: var(--accent); border-color: var(--accent); }
+@media (max-width: 720px) {
+  /* 窄屏优先保住「运行」，账号按钮只留图标 */
+  .acct-btn #acct-label { display: none; }
+  .acct-btn { max-width: none; padding: 0 8px; }
+}
+
 /* ---------- 主体三栏 ---------- */
 #body { flex: 1 1 auto; display: flex; min-height: 0; }
 

@@ -7,7 +7,7 @@
   var KEY = 'code.prefs.v1';
 
   var DEFAULTS = {
-    theme: 'dark',            // dark | light
+    theme: 'light',           // dark | light（默认浅色；用户手动切过之后以保存的为准）
     fontSize: 14,
     wordWrap: false,
     tabSize: 4,

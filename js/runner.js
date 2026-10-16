@@ -445,23 +445,55 @@
       id: 'html', name: 'HTML（预览）',
       probe: '<b>ok</b>',
       expect: 'ok',
-      /* 预览走 iframe，没法直接取回输出 ——
-         退而验证"能否创建一个 iframe 并写入文档"，
-         这正是预览功能真正依赖的能力。 */
+      /* ⚠ 这个探针必须异步：srcdoc 是异步加载的，同步读到的永远是空。
+         上一版同步实现有两个错，叠在一起让它**必然**失败且只会说"实得「」"：
+         ① 用 document.write 而不是 srcdoc —— 测的根本不是生产那条路
+            （preview() 用的是 frame.srcdoc）。就算通过，也不能说明预览能用。
+         ② 生产 iframe 的 sandbox 是 "allow-scripts" 而**不含**
+            allow-same-origin，所以 iframe 的来源不透明，
+            父页面读 contentDocument 一律拿到 null → 静默返回 ''。
+         所以这里改走与生产一致的 srcdoc，并用 postMessage 回传
+         （postMessage 受 sandbox 允许，生产的 console 桥就是这么做的）。 */
+      async: true,
       run: function (code) {
-        var f = document.createElement('iframe');
-        f.setAttribute('sandbox', 'allow-scripts');
-        f.style.cssText = 'position:absolute;left:-9999px;width:1px;height:1px';
-        document.body.appendChild(f);
-        try {
-          var d = f.contentDocument;
-          if (!d) return '';
-          d.open(); d.write(code); d.close();
-          var t = (d.body && d.body.textContent) || '';
-          return t;
-        } finally {
-          try { f.remove(); } catch (e) { }
-        }
+        var FLAG = '__codeHtmlSelfTest';
+        return new Promise(function (resolve, reject) {
+          var f = document.createElement('iframe');
+          /* 与生产 #preview-frame 完全一致的 sandbox —— 不复制就测不到真问题 */
+          f.setAttribute('sandbox', 'allow-scripts');
+          f.style.cssText = 'position:absolute;left:-9999px;width:1px;height:1px';
+          var timer = null, done = false;
+          function cleanup() {
+            done = true;
+            if (timer) clearTimeout(timer);
+            window.removeEventListener('message', onMsg);
+            try { f.remove(); } catch (e) { }
+          }
+          function onMsg(e) {
+            var d = e && e.data;
+            if (!d || d[FLAG] !== 1) return;
+            cleanup();
+            resolve(String(d.text || ''));
+          }
+          window.addEventListener('message', onMsg);
+          document.body.appendChild(f);
+          /* ⚠ 不能用 document.body.textContent：回传脚本自身的源码
+             也是 body 的子节点，会被算进去（"ok" 后面粘一大串 JS）。
+             所以逐个拼子节点、跳过 script / style。 */
+          var report = '<scr' + 'ipt>(function(){var t="",ns=document.body.childNodes;' +
+            'for(var i=0;i<ns.length;i++){var n=ns[i];' +
+            'if(n.nodeType===1&&(n.tagName==="SCRIPT"||n.tagName==="STYLE"))continue;' +
+            't+=(n.textContent||"");}' +
+            'parent.postMessage({' + FLAG + ':1,text:t},"*");})();</scr' + 'ipt>';
+          f.srcdoc = code + report;
+          /* 超时必须明确报错，不能返回空串让上层说"输出不符" ——
+             那样看不出是"渲染了但内容不对"还是"压根没渲染"。 */
+          timer = setTimeout(function () {
+            if (done) return;
+            cleanup();
+            reject(new Error('等待预览回传超时（3 秒）—— 预览可能根本没渲染出来'));
+          }, 3000);
+        });
       }
     },
     {
@@ -492,21 +524,31 @@
     }
   ];
 
+  /* 返回 Promise —— HTML 预览那条探针是异步的（srcdoc 要等回传）。
+     逐项串行跑，任意一项抛错都单独记录，不中断其余项：
+     一次自检要看的是"哪几项坏"，第一项坏了就不跑后面等于白跑。 */
   function selfTestBase() {
-    return BASE_SELFTEST.map(function (t) {
-      var got = '';
-      try {
-        got = String(t.run(t.probe) || '');
-      } catch (e) {
-        return { id: t.id, name: t.name, ok: false,
-                 detail: '执行抛错：' + String((e && e.message) || e) };
-      }
-      if (got !== t.expect) {
-        return { id: t.id, name: t.name, ok: false,
-                 detail: '输出不符：实得「' + got + '」，期望「' + t.expect + '」' };
-      }
-      return { id: t.id, name: t.name, ok: true, detail: '输出 ' + got };
-    });
+    var i = 0, res = [];
+    function step() {
+      if (i >= BASE_SELFTEST.length) return Promise.resolve(res);
+      var t = BASE_SELFTEST[i++];
+      var p;
+      try { p = t.run(t.probe); }
+      catch (e) { p = Promise.reject(e); }
+      return Promise.resolve(p).then(function (got) {
+        got = String(got == null ? '' : got);
+        if (got !== t.expect) {
+          res.push({ id: t.id, name: t.name, ok: false,
+                     detail: '输出不符：实得「' + got + '」，期望「' + t.expect + '」' });
+        } else {
+          res.push({ id: t.id, name: t.name, ok: true, detail: '输出 ' + got });
+        }
+      }, function (e) {
+        res.push({ id: t.id, name: t.name, ok: false,
+                   detail: '执行抛错：' + String((e && e.message) || e) });
+      }).then(step);
+    }
+    return step();
   }
 
   Code.runner = {

@@ -593,15 +593,24 @@
         '只检查"文件在不在"说明不了问题（六个官方运行时就是这样：' +
         '看着都有，实际一次都没跑通过）。';
       btn.onclick = function () {
-        out.textContent = '正在自检…';
-        var res;
+        /* selfTestBase 返回 Promise（HTML 预览那条要等 srcdoc 回传）。
+           不接 Promise 的话 res 会是个 Promise 对象，
+           res.forEach 直接抛错 —— 表现为"自检本身出错"，
+           而真正的自检结果一条都看不到。 */
+        out.textContent = '正在自检（HTML 预览要等回传，最多 3 秒）…';
+        var pr;
         try {
-          res = (Code.runner && Code.runner.selfTestBase)
-              ? Code.runner.selfTestBase() : [];
+          pr = (Code.runner && Code.runner.selfTestBase)
+              ? Code.runner.selfTestBase() : Promise.resolve([]);
         } catch (e) {
           out.textContent = '自检本身出错：' + String((e && e.message) || e);
           return;
         }
+        Promise.resolve(pr).then(function (res) { renderRes(res); }, function (e) {
+          out.textContent = '自检本身出错：' + String((e && e.message) || e);
+        });
+      };
+      function renderRes(res) {
         out.innerHTML = '';
         var bad = 0;
         res.forEach(function (r) {
@@ -624,7 +633,7 @@
                   '请先把它修好再考虑扩展包。'
           }));
         }
-      };
+      }
       ul.appendChild(btn);
       ul.appendChild(out);
       box.appendChild(ul);

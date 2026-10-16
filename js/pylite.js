@@ -31,8 +31,13 @@
     var indentStack = [0];
     var atLineStart = true, pendingIndent = -1;
     var parenDepth = 0;
+    /* 行号追踪。为什么需要：之前语法错误只说"读到意外的 NEWLINE"，
+       不给行号 —— 写代码的人最需要恰恰是"哪一行"。
+       用 st 对象而不是裸变量，是为了让 readString 能共享并推进它
+       （三引号字符串会跨多行，不推进的话后面所有行号都会偏）。 */
+    var st = { line: 1 };
 
-    function push(t) { toks.push(t); }
+    function push(t) { t.line = st.line; toks.push(t); }
 
     while (i < n) {
       var c = src[i];
@@ -49,6 +54,7 @@
         /* 空行或纯注释行：不产生任何 token，直接进入下一行 */
         if (src[j] === '\n' || src[j] === '#' || (src[j] === '\r' && src[j + 1] === '\n')) {
           while (j < n && src[j] !== '\n') j++;
+          if (j < n) st.line++;
           i = j + 1;
           continue;
         }
@@ -61,7 +67,7 @@
               indentStack.pop();
               push({ t: 'DEDENT' });
             }
-            if (col !== indentStack[indentStack.length - 1]) throw pyErr('缩进不一致');
+            if (col !== indentStack[indentStack.length - 1]) throw pyErr('缩进不一致', st.line);
           }
         }
         atLineStart = false;
@@ -72,11 +78,14 @@
       /* 换行 */
       if (c === '\n') {
         if (parenDepth === 0) { push({ t: 'NEWLINE' }); atLineStart = true; }
+        /* ⚠ 括号内的换行也要计数 —— 只在 parenDepth===0 时 ++ 的话，
+           多行函数调用之后的所有行号都会偏。 */
+        st.line++;
         i++;
         continue;
       }
       /* 反斜杠续行 */
-      if (c === '\\' && src[i + 1] === '\n') { i += 2; continue; }
+      if (c === '\\' && src[i + 1] === '\n') { st.line++; i += 2; continue; }
       if (c === '\r') { i++; continue; }
 
       /* 注释 */
@@ -91,7 +100,7 @@
 
       /* 字符串 */
       if (c === '"' || c === "'") {
-        var res = readString(src, i, toks);
+        var res = readString(src, i, toks, st);
         i = res.i;
         continue;
       }
@@ -99,7 +108,7 @@
       /* 数字 */
       if (/[0-9]/.test(c) || (c === '.' && /[0-9]/.test(src[i + 1] || ''))) {
         var m = /^(0[xX][0-9a-fA-F]+|0[bB][01]+|0[oO][0-7]+|(\d+\.?\d*|\.\d+)([eE][+-]?\d+)?)/.exec(src.slice(i));
-        if (!m) throw pyErr('无法识别的数字');
+        if (!m) throw pyErr('无法识别的数字', st.line);
         push({ t: 'NUM', v: parseFloat(m[0]), raw: m[0] });
         i += m[0].length;
         continue;
@@ -113,7 +122,7 @@
            这是带前缀的字符串字面量，不是标识符。必须让 readString 处理，
            否则 f"..." 会被拆成 NAME(f) + STR(...)，花括号里的表达式不解析。 */
         if (/^[frbuFRBU]+$/.test(w) && (src[i + w.length] === '"' || src[i + w.length] === "'")) {
-          var rs = readString(src, i, toks);
+          var rs = readString(src, i, toks, st);
           i = rs.i;
           continue;
         }
@@ -127,7 +136,7 @@
       for (var k = 0; k < OP3.length; k++) if (src.substr(i, 3) === OP3[k]) { matched = OP3[k]; break; }
       if (!matched) for (var k2 = 0; k2 < OP2.length; k2++) if (src.substr(i, 2) === OP2[k2]) { matched = OP2[k2]; break; }
       if (!matched) for (var k3 = 0; k3 < OP1.length; k3++) if (src[i] === OP1[k3]) { matched = OP1[k3]; break; }
-      if (!matched) throw pyErr('无法识别的字符：' + c);
+      if (!matched) throw pyErr('无法识别的字符：' + c, st.line);
       push({ t: 'OP', v: matched });
       i += matched.length;
     }
@@ -139,8 +148,10 @@
   }
 
   /* 字符串与 f-string：返回 {i}；可能 push 多个 token（f-string 会被拆成片段） */
-  function readString(src, i, toks) {
+  /* st 用于共享行号：三引号字符串跨多行时必须推进它 */
+  function readString(src, i, toks, st) {
     var n = src.length;
+    if (!st) st = { line: 1 };
     var prefix = '', start = i;
     /* 收集前缀字母：引号不是字母，遇到自然停止。
        原写法多加了"下一个字符不是引号"的判断，导致 f"..." 的 f 收不进来。 */
@@ -181,15 +192,16 @@
         i = j + 1;
         continue;
       }
+      if (src[i] === '\n') st.line++;
       buf += src[i]; i++;
     }
     if (isF) {
       if (buf) { (parts || (parts = [])).push({ lit: buf }); }
-      toks.push({ t: 'FSTR', v: parts });
+      toks.push({ t: 'FSTR', line: st.line, v: parts });
     } else if (isBytes) {
-      toks.push({ t: 'BYTES', v: buf });
+      toks.push({ t: 'BYTES', line: st.line, v: buf });
     } else {
-      toks.push({ t: 'STR', v: buf });
+      toks.push({ t: 'STR', line: st.line, v: buf });
     }
     return { i: i };
   }
@@ -215,10 +227,15 @@
       return t && t.t === type && (val === undefined || t.v === val);
     },
     eat: function (type, val) { if (this.at(type, val)) { this.p++; return true; } return false; },
+    /* 报错一律带行号 —— 只说"期望 X"不说是哪一行，
+       对写代码的人几乎没用（他只能从头逐行找）。 */
+    lineOf: function () { var t = this.peek(); return (t && t.line) || 0; },
     expect: function (type, val) {
       if (!this.eat(type, val)) {
         var t = this.peek();
-        throw pyErr('语法错误：期望 ' + (val || type) + '，实际读到 ' + (t ? (t.v !== undefined ? t.v : t.t) : '文件结束'));
+        throw pyErr('语法错误：期望 ' + (val || type) + '，实际读到 ' +
+          (t ? (t.v !== undefined ? String(t.v) : t.t) : '文件结束') +
+          '（第 ' + (t && t.line ? t.line : '?') + ' 行）', t && t.line);
       }
     },
     skipNewlines: function () { while (this.eat('NEWLINE')) { } },
@@ -273,7 +290,7 @@
       if (t.t === 'KW' && (t.v === 'async' || t.v === 'yield' || t.v === 'nonlocal' || t.v === 'lambda')) {
         throw pyErr('暂不支持：' + t.v);
       }
-      if (t.t === 'OP' && t.v === '@') throw pyErr('暂不支持：装饰器（@）');
+      if (t.t === 'OP' && t.v === '@') throw pyErr('暂不支持：装饰器（@）', this.lineOf());
       return this.simpleStatement();
     },
 
@@ -411,10 +428,37 @@
       var names = [], defaults = [];
       var kwonly = [], kwdef = [];
       var star = null, kwstar = null, inKw = false;
+      /* ⚠ 下面三处原来是裸的 this.next().v —— 参数列表在语法错误处提前结束时
+         （比如 def f(: 或 def f(,），next() 会返回 undefined 或 NEWLINE，
+         读 .v 直接崩，抛出
+           "Cannot read properties of undefined (reading 'v')"
+         真正的语法错误被这堆 JS 内部报错盖住了 ——
+         用户看到的不是"你第几行写错了"，而是完全看不懂的东西。
+         这类"报错本身崩溃"比没有报错更糟。 */
+      function tkDesc(tk) {
+        return !tk ? '文件结束' : (tk.v !== undefined ? String(tk.v) : tk.t);
+      }
+      function tkLine(tk) { return (tk && tk.line) || 0; }
+      var self = this;
+      function needName(what) {
+        var tk = self.next();
+        if (!tk || tk.t !== 'NAME') {
+          throw pyErr('语法错误：' + what + '处读到意外的 ' + tkDesc(tk) +
+            '（第 ' + (tkLine(tk) || '?') + ' 行）', tkLine(tk));
+        }
+        return tk.v;
+      }
       while (!this.at('OP', ')')) {
-        if (this.eat('OP', '*')) { star = this.next().v; continue; }
-        if (this.eat('OP', '**')) { kwstar = this.next().v; continue; }
-        var nm = this.next().v;
+        /* ⚠ 逗号必须在这里消耗 —— 原来只在循环**末尾**处理，
+           而 `*args` / `**kwargs` 分支是 continue 出去的，压根走不到末尾，
+           于是 `def g(*a, **k)` 里那个逗号留在流里，
+           下一轮被当成参数名读走 → 静默生成一个名字叫 "," 的参数。
+           不报错，但函数签名是错的 —— 这类"错得不声不响"最难查。
+           放在循环开头，所有 continue 路径都能覆盖到。 */
+        if (this.eat('OP', ',')) { if (star && !inKw) inKw = true; continue; }
+        if (this.eat('OP', '*')) { star = needName('* 参数名'); continue; }
+        if (this.eat('OP', '**')) { kwstar = needName('** 参数名'); continue; }
+        var nm = needName('参数名');
         if (this.eat('OP', '=')) {
           var d = this.expr();
           if (inKw) { kwonly.push(nm); kwdef.push(d); }
@@ -423,7 +467,7 @@
           if (inKw) { kwonly.push(nm); kwdef.push(undefined); }
           else names.push(nm);
         }
-        if (this.at('OP', ',')) { this.p++; if (star && !inKw) inKw = true; }
+        /* 逗号已移到循环开头统一消耗，这里不再处理 */
       }
       this.expect('OP', ')');
       return { names: names, defaults: defaults, kwonly: kwonly, kwdef: kwdef, star: star, kwstar: kwstar };
@@ -500,7 +544,7 @@
       } while (this.eat('OP', ','));
       return { type: 'ImportFrom', module: parts.join('.'), path: parts, names: names };
     },
-    withStmt: function () { throw pyErr('暂不支持：with 语句'); },
+    withStmt: function () { throw pyErr('暂不支持：with 语句', this.lineOf()); },
     tryStmt: function () {
       this.expect('KW', 'try'); this.expect('OP', ':');
       var body = this.block();
@@ -673,7 +717,17 @@
         this.expect('OP', ')');
         return this.postfix(e);
       }
-      throw pyErr('语法错误：读到意外的 ' + (t.v !== undefined ? t.v : t.t));
+      /* 这条是最常撞到的语法错误（括号没闭合等），
+         原来只说"读到意外的 NEWLINE" —— 不带行号等于让人从头逐行找。 */
+      /* ⚠ 原来这里直接读 t.v，而 t 可能是 undefined（文件在语法错误处结束）
+         —— 于是**报错本身崩溃**，抛出
+           "Cannot read properties of undefined (reading 'v')"
+         用户看到的是一堆 JS 内部错误，真正的语法错误反而被盖住了。
+         比没有行号更糟：它把"你第几行写错了"换成了看不懂的报错。 */
+      var desc = !t ? '文件结束'
+               : (t.v !== undefined ? String(t.v) : t.t);
+      throw pyErr('语法错误：读到意外的 ' + desc +
+        '（第 ' + (t && t.line ? t.line : '?') + ' 行）', t && t.line);
     },
 
     postfix: function (node) {
@@ -971,11 +1025,11 @@
       };
       B.abs = function (v) { return Math.abs(v); };
       defB('min', ['iterable', 'key', 'default'], function () {
-        var a = flattenArgs(arguments); if (!a.length) throw pyErr('min() 至少需要一个参数');
+        var a = flattenArgs(arguments); if (!a.length) throw pyErr('min() 至少需要一个参数', this.lineOf());
         return a.reduce(function (x, y) { return self.compare(x, y) < 0 ? x : y; });
       });
       defB('max', ['iterable', 'key', 'default'], function () {
-        var a = flattenArgs(arguments); if (!a.length) throw pyErr('max() 至少需要一个参数');
+        var a = flattenArgs(arguments); if (!a.length) throw pyErr('max() 至少需要一个参数', this.lineOf());
         return a.reduce(function (x, y) { return self.compare(x, y) > 0 ? x : y; });
       });
       B.sum = function (v, start) {
@@ -1079,7 +1133,7 @@
       B.id = function (v) { return 0; };
       B.dir = function (v) { return Object.keys(v || {}); };
       B.help = function () { self.out('本环境为 Python 子集，暂不支持 help()。'); return null; };
-      B.exit = B.quit = function () { throw pyErr('程序退出'); };
+      B.exit = B.quit = function () { throw pyErr('程序退出', this.lineOf()); };
 
       function dedup(arr) {
         var out = [], seen = {};
@@ -1129,7 +1183,135 @@
         },
         seed: function (s) { seed = (s | 0) || 1; }
       });
-      this.stdlib = { math: math, string: strM };
+      /* ---------- 虚拟文件系统 ----------
+       *
+       * 为什么要有它：竞赛题常有文件输入输出，而之前 open() 完全不存在，
+       * 写 `open("a.txt")` 只会得到"变量未定义：open"。
+       *
+       * ⚠ 必须说清的两点，否则用户会误以为自己在操作硬盘：
+       *   ① 这是**内存里的**文件系统，不是本地硬盘
+       *   ② 刷新页面即消失，不会留存
+       * 这两句会写进 open() 的说明里，并在初次使用时提示一次。
+       *
+       * 每个 Interp 实例独享一份 —— 不放在原型上共享，
+       * 否则两个标签页（或重跑一次）会读到上一次的残留文件，
+       * 表现为"我没建过这个文件啊"。 */
+      this.vfs = {};
+      var self = this;
+      this.vfsUsed = false;
+      function vfsNote() {
+        if (self.vfsUsed || !self.stdout) return;
+        self.vfsUsed = true;
+        self.stdout('[提示] open() 读写的是内存里的虚拟文件系统，不是本地硬盘；刷新页面即消失。');
+      }
+      function PyFile(path, mode) {
+        this.path = path; this.mode = mode || 'r';
+        this.closed = false;
+        /* 标记：让 getAttribute 认得这是宿主对象，从而**绑定 this**。
+           没有这个标记的话，getAttribute 走最后的兜底分支返回裸函数，
+           调用时 this 是 undefined —— 表现为
+             "Cannot read properties of null (reading '_buf')"
+           用户完全看不出是自己写错了还是环境坏了。 */
+        this.__pyobj = true;
+        /* ⚠ 'a'（追加）必须**先读出原内容**再往后写。
+           第一版我把 w 和 a 一并初始化成空串，于是追加模式变成覆盖：
+             f=open("b.txt","a"); f.write("two")  →  文件里只剩 "two"
+           不报错，只是原内容静默没了 —— 这正是最难查的一类。 */
+        var isWrite = this.mode.indexOf('w') >= 0;
+        var isAppend = this.mode.indexOf('a') >= 0;
+        this._buf = isWrite ? ''
+                  : isAppend ? ((self.vfs[path] !== undefined) ? self.vfs[path] : '')
+                  : ((self.vfs[path] !== undefined) ? self.vfs[path] : '');
+        if (this.mode.indexOf('r') >= 0 && self.vfs[path] === undefined) {
+          var e = new Error('FileNotFoundError: 没有这个文件（虚拟文件系统）：' + path);
+          e.pyKind = 'FileNotFoundError'; throw e;
+        }
+      }
+      PyFile.prototype.read = function () { var b = this._buf; this._buf = ''; return b; };
+      PyFile.prototype.write = function (t) { this._buf += String(t); return String(t).length; };
+      PyFile.prototype.close = function () {
+        if (!this.closed) {
+          if (this.mode.indexOf('w') >= 0 || this.mode.indexOf('a') >= 0) self.vfs[this.path] = this._buf;
+          this.closed = true;
+        }
+      };
+      /* 支持 with：进入返回自身，退出自动 close（不 close 就写不进去） */
+      PyFile.prototype.__enter__ = function () { return this; };
+      PyFile.prototype.__exit__ = function () { this.close(); return false; };
+      g.open = function (path, mode) {
+        vfsNote();
+        return new PyFile(String(path), mode ? String(mode) : 'r');
+      };
+
+      /* ---------- json 模块 ----------
+       * 数据题刚需。实现要点：
+       *   · loads 用 JSON.parse（语法与 JSON 完全一致，天然对）
+       *   · dumps 要**自己写** —— 不能直接用 JSON.stringify，
+       *     因为 Python 的元组要输出成 []、None 要输出成 null、
+       *     True/False 要输出成 true/false，且默认不带空格。 */
+      /* ⚠ dict 在本环境**不是**普通对象，而是 { __dict: { hash: {k, v} } }。
+         第一版我按普通对象写，于是 dumps 出来是
+           {"__dict":{"s a":{"k":"a","v":1}}}
+         这种内部结构的泄露 —— 不报错，只是结果完全不对。
+         而且 loads 返回普通对象后，解释器又不认（它期望 __dict 形式），
+         于是 json.loads('{"x":5}')["x"] 直接报"对象不支持下标"。
+         两个方向都要转换，缺一个就是坏的。 */
+      function pyToJson(v) {
+        if (v === null || v === undefined) return null;
+        if (v && v.__dict) {
+          var o = {};
+          for (var h in v.__dict) o[String(v.__dict[h].k)] = pyToJson(v.__dict[h].v);
+          return o;
+        }
+        if (v instanceof PyInstance) return pyToJson(v.attrs);
+        if (Array.isArray(v)) return v.map(pyToJson);
+        if (typeof v === 'object') {
+          var o2 = {};
+          for (var k2 in v) o2[k2] = pyToJson(v[k2]);
+          return o2;
+        }
+        return v;
+      }
+      function pyFromJson(v) {
+        if (v === null || v === undefined) return null;
+        if (Array.isArray(v)) return v.map(pyFromJson);
+        if (typeof v === 'object') {
+          var d = {};
+          for (var k in v) d[self.hash(String(k))] = { k: String(k), v: pyFromJson(v[k]) };
+          return { __dict: d };
+        }
+        return v;
+      }
+      /* ⚠ 宿主函数要接关键字实参，必须声明 __pyargs ——
+         解释器靠它把 kwargs 补到正确位置（见 __call）。
+         不声明的话 `json.dumps(x, indent=2)` 里的 indent 会被**静默丢弃**：
+         不报错，只是格式化没生效，用户只会以为这个参数不支持。 */
+      function jsonLoads(txt) {
+        var v;
+        try { v = JSON.parse(String(txt)); }
+        catch (e) { throw pyErr('json.loads 失败：不是合法 JSON —— ' + String(e.message || e)); }
+        return pyFromJson(v);
+      }
+      jsonLoads.__pyargs = ['txt'];
+      function jsonDumps(v, indent) {
+        var sp = (typeof indent === 'number' && indent > 0) ? indent : 0;
+        return JSON.stringify(pyToJson(v), null, sp);
+      }
+      jsonDumps.__pyargs = ['v', 'indent'];
+      g.json = new PyModule('json', {
+        loads: jsonLoads,
+        dumps: jsonDumps,
+        load: function (f) {
+          return pyFromJson(JSON.parse(String(f && typeof f.read === 'function' ? f.read() : f)));
+        },
+        dump: function (v, f) {
+          if (f && typeof f.write === 'function') f.write(JSON.stringify(pyToJson(v)));
+        }
+      });
+      this._pyToJson = pyToJson;
+      this._pyFromJson = pyFromJson;
+
+      this.stdlib = { math: math, string: strM, json: g.json.dict };
     },
 
     /* ---------- 值语义 ---------- */
@@ -1286,13 +1468,13 @@
     execAssign: function (node, scope) {
       var val = this.eval(node.value, scope);
       if (node.targets.length > 1) {
-        if (!Array.isArray(val)) throw pyErr('无法解包：右侧不是序列');
+        if (!Array.isArray(val)) throw pyErr('无法解包：右侧不是序列', this.lineOf());
         if (val.length !== node.targets.length) throw pyErr('解包数量不匹配：' + node.targets.length + ' 对 ' + val.length);
         for (var i = 0; i < node.targets.length; i++) this.assignTo(node.targets[i], val[i], scope);
         return null;
       }
       var t = node.targets[0];
-      if (t.type === 'Name' && (val === undefined)) throw pyErr('赋值右侧无值');
+      if (t.type === 'Name' && (val === undefined)) throw pyErr('赋值右侧无值', this.lineOf());
       this.assignTo(t, val, scope);
       return null;
     },
@@ -1308,7 +1490,7 @@
       if (target.type === 'Tuple') {
         if (!Array.isArray(val)) {
           if (val && val.__pyiter) val = val.__pyiter();
-          else throw pyErr('无法解包：右侧不是序列');
+          else throw pyErr('无法解包：右侧不是序列', this.lineOf());
         }
         if (val.length !== target.elts.length) throw pyErr('解包数量不匹配：' + target.elts.length + ' 对 ' + val.length);
         for (var i = 0; i < target.elts.length; i++) this.assignTo(target.elts[i], val[i], scope);
@@ -1362,7 +1544,7 @@
         else if (obj && obj.__dict) delete obj.__dict[this.hash(idx)];
         return null;
       }
-      throw pyErr('暂不支持的 del 目标');
+      throw pyErr('暂不支持的 del 目标', this.lineOf());
     },
 
     execWhile: function (node, scope) {
@@ -1445,7 +1627,7 @@
         var mod = this.global.vars[m.path[0]];
         if (mod === undefined) {
           throw pyErr('暂不支持导入外部模块：' + m.name +
-            '。本环境可用的内置模块：math、random、string。');
+            '。本环境可用的内置模块：math、random、string、json。');
         }
         for (var j = 1; j < m.path.length; j++) {
           mod = mod && mod.dict ? mod.dict[m.path[j]] : undefined;
@@ -1459,7 +1641,7 @@
       var mod = this.global.vars[node.path[0]];
       if (mod === undefined) {
         throw pyErr('暂不支持导入外部模块：' + node.module +
-          '。本环境可用的内置模块：math、random、string。');
+          '。本环境可用的内置模块：math、random、string、json。');
       }
       var src = mod.dict || mod;
       for (var i = 0; i < node.names.length; i++) {
@@ -1619,7 +1801,7 @@
         case '-':
           if (typeof a === 'boolean') a = a ? 1 : 0;
           if (typeof b === 'boolean') b = b ? 1 : 0;
-          if (typeof a !== 'number' || typeof b !== 'number') throw pyErr('- 需要数字');
+          if (typeof a !== 'number' || typeof b !== 'number') throw pyErr('- 需要数字', this.lineOf());
           return a - b;
         case '*':
           /* bool 参与算术按 1/0（S-059），与 + 保持同一套规则 */
@@ -1650,22 +1832,22 @@
             for (var i = 0; i < nb; i++) r = r.concat(a);
             return r;
           }
-          if (typeof a !== 'number' || typeof b !== 'number') throw pyErr('* 不支持的类型');
+          if (typeof a !== 'number' || typeof b !== 'number') throw pyErr('* 不支持的类型', this.lineOf());
           return a * b;
         case '/':
-          if (typeof a !== 'number' || typeof b !== 'number') throw pyErr('/ 需要数字');
-          if (b === 0) throw pyErr('除零错误');
+          if (typeof a !== 'number' || typeof b !== 'number') throw pyErr('/ 需要数字', this.lineOf());
+          if (b === 0) throw pyErr('除零错误', this.lineOf());
           return a / b;
         case '//':
-          if (typeof a !== 'number' || typeof b !== 'number') throw pyErr('// 需要数字');
-          if (b === 0) throw pyErr('除零错误');
+          if (typeof a !== 'number' || typeof b !== 'number') throw pyErr('// 需要数字', this.lineOf());
+          if (b === 0) throw pyErr('除零错误', this.lineOf());
           return Math.floor(a / b);
         case '%':
           if (typeof a === 'string') {
-            try { return formatPercent(a, b); } catch (e) { throw pyErr('% 格式化失败'); }
+            try { return formatPercent(a, b); } catch (e) { throw pyErr('% 格式化失败', this.lineOf()); }
           }
-          if (typeof a !== 'number' || typeof b !== 'number') throw pyErr('% 需要数字');
-          if (b === 0) throw pyErr('取模错误：除数为零');
+          if (typeof a !== 'number' || typeof b !== 'number') throw pyErr('% 需要数字', this.lineOf());
+          if (b === 0) throw pyErr('取模错误：除数为零', this.lineOf());
           return a - b * Math.floor(a / b);
         case '**':
           /* 大整数幂：2**64 必须精确。pow 的结果若超安全范围就走 BigInt */
@@ -1675,7 +1857,7 @@
             var pb = BigInt(a) ** BigInt(b);
             return (pb <= BigInt(Number.MAX_SAFE_INTEGER) && pb >= -BigInt(Number.MAX_SAFE_INTEGER)) ? Number(pb) : pb;
           }
-          if (typeof a !== 'number' || typeof b !== 'number') throw pyErr('** 需要数字');
+          if (typeof a !== 'number' || typeof b !== 'number') throw pyErr('** 需要数字', this.lineOf());
           return Math.pow(a, b);
       }
       throw pyErr('暂不支持的运算符：' + op);
@@ -1837,6 +2019,17 @@
       if (typeof obj === 'string') return strMethods(n, obj, this);
       if (Array.isArray(obj)) return listMethods(n, obj, this);
       if (obj && obj.__dict) return dictMethods(n, obj, this);
+      /* 宿主对象（如 open() 返回的文件）：必须把方法**绑定**到实例上。
+         直接返回 obj[n] 的话调用时 this 丢失 —— 这是个通用的坑，
+         任何挂到实例上的原生方法都会中招。 */
+      if (obj && obj.__pyobj) {
+        var h = obj[n];
+        if (typeof h === 'function') {
+          return function () { return h.apply(obj, arguments); };
+        }
+        if (h !== undefined) return h;
+        throw pyErr('文件对象没有属性：' + n);
+      }
       if (obj && typeof obj === 'object' && n in obj) return obj[n];
       throw pyErr('对象没有属性：' + n + '（类型 ' + this.typeName(obj) + '）');
     },
@@ -1986,7 +2179,7 @@
       replace: function (a, b, c) { return c === undefined ? s.split(a).join(b) : s.split(a).slice(0, c + 1).join(b) + (s.split(a).length > c + 1 ? a + s.split(a).slice(c + 1).join(a) : ''); },
       find: function (sub) { return s.indexOf(sub); },
       rfind: function (sub) { return s.lastIndexOf(sub); },
-      index: function (sub) { var i = s.indexOf(sub); if (i < 0) throw pyErr('子串不存在'); return i; },
+      index: function (sub) { var i = s.indexOf(sub); if (i < 0) throw pyErr('子串不存在', this.lineOf()); return i; },
       count: function (sub) { return s.split(sub).length - 1; },
       startswith: function (p) { return s.indexOf(p) === 0; },
       endswith: function (p) { return s.length >= p.length && s.lastIndexOf(p) === s.length - p.length; },
@@ -2038,18 +2231,18 @@
       insert: function (i, v) { arr.splice(i < 0 ? arr.length + i : i, 0, v); return null; },
       remove: function (v) {
         for (var i = 0; i < arr.length; i++) if (I.eq(arr[i], v)) { arr.splice(i, 1); return null; }
-        throw pyErr('remove：值不在列表中');
+        throw pyErr('remove：值不在列表中', this.lineOf());
       },
       pop: function (i) {
         if (i === undefined) return arr.length ? arr.pop() : null;
         var k = i < 0 ? arr.length + i : i;
-        if (k < 0 || k >= arr.length) throw pyErr('pop：下标越界');
+        if (k < 0 || k >= arr.length) throw pyErr('pop：下标越界', this.lineOf());
         return arr.splice(k, 1)[0];
       },
       clear: function () { arr.length = 0; return null; },
       index: function (v) {
         for (var i = 0; i < arr.length; i++) if (I.eq(arr[i], v)) return i;
-        throw pyErr('index：值不在列表中');
+        throw pyErr('index：值不在列表中', this.lineOf());
       },
       count: function (v) { var c = 0; for (var i = 0; i < arr.length; i++) if (I.eq(arr[i], v)) c++; return c; },
       sort: function (keyFn, reverse) {
@@ -2064,7 +2257,7 @@
       copy: function () { return arr.slice(); },
       join: null
     };
-    if (n === 'join' && typeof arr[0] !== 'string') throw pyErr('列表没有方法：join');
+    if (n === 'join' && typeof arr[0] !== 'string') throw pyErr('列表没有方法：join', this.lineOf());
     if (!(n in f)) throw pyErr('列表没有方法：' + n);
     return f[n];
   }

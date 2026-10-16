@@ -621,6 +621,14 @@
      这些名字不在 TYPES 里，走普通声明解析会当成表达式，
      报"读到意外的 int"——用户看不出这是"不支持 vector"。
      所以单独识别，并明确告诉用户支持到什么程度。 */
+  /* 文件流类型名。与 Python 侧的虚拟 FS **分开实现**（用户拍板）：
+     C++ 的 ifstream/ofstream 与 Python 的 open() 各用各的存储，
+     不共享文件。分开的代价是"同一份数据不能跨语言读到"，
+     好处是任何一边的改动不会波及另一边。这里明确记下这个决定。 */
+  function isStreamTypeName(v) {
+    return v === 'ifstream' || v === 'ofstream' || v === 'fstream';
+  }
+
   function isContainerName(v) {
     return v === 'vector' || v === 'map' || v === 'set' || v === 'unordered_map' ||
            v === 'unordered_set' || v === 'deque' || v === 'stack' || v === 'queue' ||
@@ -660,7 +668,16 @@
     return { kind: kind, elem: elem.join('') };
   }
 
-  function Parser(t) { this.t = t; this.p = 0; }
+  function Parser(t) {
+    this.t = t; this.p = 0;
+    /* 已声明的文件流变量名 → 类型。
+       ⚠ 必须有它：`<<`/`>>` 既是流运算符也是位移，靠左操作数区分，
+       而原判定只认 cin/cout 这几个**固定名字**。
+       文件流叫 f / fin / fout，不在名单里，
+       于是 `fout << "hi"` 被当成**位移**运算 ——
+       不报错，输出静默为空。这类"错得没声音"最难查。 */
+    this.streamVars = {};
+  }
   Parser.prototype = {
     peek: function (k) { return this.t[this.p + (k || 0)]; },
     lineOf: function () { var t = this.peek(); return (t && t.line) || 0; },
@@ -893,6 +910,29 @@
         if (!nt2) break;
         type = nt2;
       }
+      /* 文件流声明：ifstream fin("a.txt"); / ofstream fout("b.txt");
+         ⚠ 不单独识别的话会掉进下面的"变量声明"分支：
+           ifstream 是 NAME 不是 TYPE，于是 type='auto'、name='ifstream'，
+           紧接着 expect(';') 撞到 fin → 报"语法错误：期望 ;"
+         用户看到这个完全猜不到是自己用了文件流 ——
+         还以为是分号写错了。竞赛里文件读写很常见，必须支持。 */
+      if (this.at('NAME') && isStreamTypeName(this.peek().v)) {
+        var sk = this.next().v;
+        if (!this.at('NAME')) throw cerr(sk + ' 后面需要变量名', this.lineOf());
+        var sname = this.next().v;
+        var sargs = [];
+        if (this.atOp('(')) {
+          this.p++;
+          while (!this.atOp(')')) {
+            sargs.push(this.assign());
+            if (!this.eat('OP', ',')) break;
+          }
+          this.expect('OP', ')');
+        }
+        this.expect('OP', ';');
+        this.streamVars[sname] = sk;
+        return { type: 'StreamDecl', kind: sk, name: sname, args: sargs, line: sk ? this.peek().line : 0 };
+      }
       var nameTok = this.peek();
       if (!this.at('NAME')) throw cerr('期望标识符，实际读到 ' + (nameTok && nameTok.v), this.lineOf());
       var name = this.next().v;
@@ -1007,6 +1047,29 @@
       }
       /* using namespace std; */
       if (this.at('KW', 'using')) { while (!this.atOp(';') && !this.at('EOF')) this.p++; this.eat('OP', ';'); return null; }
+      /* 局部文件流声明：ifstream fin("a.txt"); / ofstream fout("b.txt");
+         ⚠ 必须放在容器声明**之前**：`ifstream fin("x")` 走 funcOrDecl 的话
+         type='auto'、name='ifstream'，紧接着 expect(';') 撞到 fin
+         → 报"语法错误：期望 ;，实际读到 fin"
+         用户看到这个只会以为自己分号写错了，猜不到是文件流不支持。
+         函数体内的声明走的是这里，不是 funcOrDecl，所以两边都要加。 */
+      if (this.at('NAME') && isStreamTypeName(this.peek().v)) {
+        var sk2 = this.next().v;
+        if (!this.at('NAME')) throw cerr(sk2 + ' 后面需要变量名', this.lineOf());
+        var sname2 = this.next().v;
+        var sargs2 = [];
+        if (this.atOp('(')) {
+          this.p++;
+          while (!this.atOp(')')) {
+            sargs2.push(this.assign());
+            if (!this.eat('OP', ',')) break;
+          }
+          this.expect('OP', ')');
+        }
+        this.expect('OP', ';');
+        this.streamVars[sname2] = sk2;
+        return { type: 'StreamDecl', kind: sk2, name: sname2, args: sargs2, line: t.line };
+      }
       /* 局部声明：容器（vector / map / set …） */
       var cdecl2 = parseContainerDecl(this);
       if (cdecl2) return this.containerVarDecl(cdecl2);
@@ -1305,6 +1368,7 @@
            而这个写法在竞赛里和 cin >> x 一样常见。 */
         var isStreamObj = (e && e.type === 'Name' && (e.name === 'cin' || e.name === 'cout' ||
                           e.name === 'cerr' || e.name === 'endl')) ||
+                          (e && e.type === 'Name' && !!(this.streamVars && this.streamVars[e.name])) ||
                           (e && (e.type === 'Cout' || e.type === 'Cin'));
         if (!this.noStream && isStreamObj && this.atOp('<<')) {
           this.p++;
@@ -1551,6 +1615,15 @@
 
     this.inBuf = [];   /* cin 的输入词缓冲，跨多次 >> 共享 */
 
+    /* ⚠ C++ 的虚拟文件系统 —— 与 Python 侧(pylite) **各存一份**，不共享。
+       这是有意的决定：两边互不牵连。
+       ⚠ 每个 Interp 实例独享 —— 放原型上共享的话，重跑一次会读到
+       上次的残留文件，表现为"我没建过这个文件啊"。 */
+    this.vfs = {};
+    this.vfsNoteDone = false;
+    /* freopen 重定向：cin 从哪个文件读（null = 标准输入） */
+    this.cinFile = null;
+
     this.structs = {};   /* struct 名 → 字段列表 */
     this.install();
   }
@@ -1582,6 +1655,119 @@
       var g = this.global;
       g.set('cout', { __cout: true });
       g.set('cin', { __cin: true });
+      g.set('stdin', { __stdin: true });
+      g.set('stdout', { __stdout: true });
+
+      /* ---------- C++ 虚拟文件系统（独立于 Python 侧） ----------
+       * 第一次用到文件时就提示一次：这是**内存里**的，不是本地硬盘。
+       * 不提示的话用户会以为自己在读写真实文件，
+       * 于是刷新后发现文件没了 —— 比没有这个功能更让人困惑。 */
+      function vfsNote() {
+        if (self.vfsNoteDone || !self.out) return;
+        self.vfsNoteDone = true;
+        self.out('[提示] C++ 文件读写用的是内存里的虚拟文件系统，不是本地硬盘；刷新页面即消失。');
+      }
+
+      function CppFile(path, mode) {
+        vfsNote();
+        this.__cppfile = true;
+        this.path = String(path);
+        this.mode = String(mode || (this.__isOut ? 'w' : 'r'));
+        this.closed = false;
+        var isOut = /[wa]/.test(this.mode) && !/\+/.test(this.mode);
+        var isIn = /r/.test(this.mode);
+        this.__isIn = isIn || (!isOut);
+        this.__isOut = isOut;
+        var exists = Object.prototype.hasOwnProperty.call(self.vfs, this.path);
+        if (this.__isIn && !exists) {
+          this.ok = false;                 /* 打开失败：if(!fin) 应为真 */
+          this._readBuf = '';
+        } else {
+          this.ok = true;
+          this._readBuf = this.__isIn ? self.vfs[this.path] : '';
+        }
+        this._writeBuf = this.__isOut ? '' : '';
+      }
+      CppFile.prototype._flush = function () {
+        if (this.__isOut && !this.closed) self.vfs[this.path] = this._writeBuf;
+      };
+      /* 从文件缓冲取一个词 —— 与 cin 的 nextToken 同规则（按空白切分） */
+      CppFile.prototype._nextToken = function () {
+        this._readBuf = this._readBuf.replace(/^\s+/, '');
+        if (this._readBuf === '') return '';
+        var m = /^\S+/.exec(this._readBuf);
+        var w = m[0];
+        this._readBuf = this._readBuf.slice(w.length);
+        return w;
+      };
+      CppFile.prototype._getline = function () {
+        var nl = this._readBuf.indexOf('\n');
+        var line;
+        if (nl < 0) { line = this._readBuf; this._readBuf = ''; }
+        else { line = this._readBuf.slice(0, nl); this._readBuf = this._readBuf.slice(nl + 1); }
+        return line;
+      };
+      /* if (!fin) —— C++ 的 ifstream 有 operator bool，打不开时为假。
+         不做这个的话 `if (!fin)` 恒为假（对象总是真值），
+         于是"文件打不开"的处理分支永远进不去，用户以为自己读了空文件。 */
+      CppFile.prototype.__bool = function () { return this.ok && !this.closed; };
+      self.CppFile = CppFile;
+
+      /* freopen：竞赛里极常见的重定向（freopen("in.txt","r",stdin)）。
+         不做的话整段重定向会被静默忽略，程序继续从键盘读 ——
+         用户会以为文件没生效，而实际上根本没实现。 */
+      g.set('freopen', function (path, mode) {
+        vfsNote();
+        var p = String(path);
+        if (!Object.prototype.hasOwnProperty.call(self.vfs, p)) {
+          /* 读不到就返回 NULL 语义：让后续读入为空，而不是假装成功 */
+          self.cinFile = null;
+          return null;
+        }
+        self.cinFile = p;
+        self.inBuf = [];
+        return { __stdin: true };
+      });
+      /* getline：两种形态都要支持
+           getline(cin, s)      从标准输入读一行
+           getline(fin, s)      从文件读一行
+         ⚠ 只支持第一种的话，从文件读行会静默读到空串 ——
+           用户以为文件是空的，实际是没实现。 */
+      g.set('getline', function (stream, target) {
+        var line;
+        if (stream && stream.__cppfile) line = stream._getline();
+        else if (self.cinFile) {
+          var txt = self.vfs[self.cinFile] || '';
+          var nl = txt.indexOf('\n');
+          if (nl < 0) { line = txt; self.vfs[self.cinFile] = ''; }
+          else { line = txt.slice(0, nl); self.vfs[self.cinFile] = txt.slice(nl + 1); }
+          self.inBuf = [];
+        } else {
+          line = self.input();
+        }
+        /* 第二个参数在 C++ 里是**引用**，传进来只是当前值（0），
+           拿不到名字。所以从 __argNames 取实参名，按名字写回调用处作用域。
+           只按值判断的话 getline 会静默什么都不做 —— s 保持初值 0，
+           用户会以为文件是空的。 */
+        var nm = null;
+        if (self.__argNames && self.__argNames.length > 1) nm = self.__argNames[1];
+        if (nm) {
+          var sc = self.curScope || self.global;
+          sc.set(nm, String(line));
+          return sc;
+        }
+        if (typeof target === 'string') {
+          var sc2 = self.curScope || self.global;
+          sc2.set(target, String(line));
+          return sc2;
+        }
+        return String(line);
+      });
+
+      g.set('fopen', function (path, mode) {
+        vfsNote();
+        return new CppFile(path, mode);
+      });
       g.set('endl', '\n');
       g.set('true', true); g.set('false', false);
 
@@ -2059,6 +2245,10 @@
           throw cerr('引用目前只支持绑定到变量：int &r = x;');
         }
 
+        /* 文件流声明要在这里接 —— 只加到 eval 的 switch 不够，
+           语句执行走的是 exec。漏了这里会报
+           "暂不支持的语句：StreamDecl"（从报错看不出漏在哪）。 */
+        case 'StreamDecl': return this.doStreamDecl(node, scope);
         case 'VarDecl':
           node.decls.forEach(function (d) {
             var val;
@@ -2207,6 +2397,11 @@
     },
 
     truthy: function (v) {
+      /* ⚠ 文件对象要按 C++ 的 operator bool 判定：
+         ifstream 打不开时 `if (!fin)` 为真。
+         不做的话对象恒为真值，"文件打不开"的分支永远进不去 ——
+         用户会以为自己读到了空文件，而不是文件不存在。 */
+      if (v && v.__cppfile) return !!v.__bool();
       if (typeof v === 'boolean') return v;
       if (typeof v === 'number') return v !== 0;
       if (typeof v === 'string') return v.length > 0;
@@ -2336,6 +2531,7 @@
           return arr[ix];
         }
         case 'Call': return this.doCall(node, scope);
+        case 'StreamDecl': return this.doStreamDecl(node, scope);
         case 'Cout': return this.doCout(node, scope);
         case 'Cin': return this.doCin(node, scope);
         /* vector 的方法。竞赛里 vector 用得极多，
@@ -2343,6 +2539,31 @@
            不支持成员访问，等于 vector 整体不可用。 */
         case 'Member': {
           var obj = this.eval(node.obj, scope);
+          /* 文件对象的方法：fin.close() / fin.eof() / fin.is_open() / fin.good()
+             ⚠ 原来只会走到"变量没有这个成员"的报错分支，
+             于是 `fin.close()` 报"该容器不支持的成员：close" ——
+             用户看不出这是文件流还没支持。 */
+          if (obj && obj.__cppfile) {
+            /* ⚠ 必须按 doCall 的约定返回 {__bound, __self}。
+               第一版我直接返回裸函数，于是 doCall 拿不到 __bound，
+               抛"不是可调用的成员" —— 从报错看不出是文件流的问题。 */
+            var nm2 = node.name;
+            var self3 = this;
+            var fn = null;
+            if (nm2 === 'close') fn = function () { obj._flush(); obj.closed = true; };
+            else if (nm2 === 'is_open') fn = function () { return !!obj.ok && !obj.closed; };
+            else if (nm2 === 'good') fn = function () { return !!obj.ok && !obj.closed; };
+            else if (nm2 === 'fail') fn = function () { return !obj.ok; };
+            else if (nm2 === 'eof') fn = function () { return obj._readBuf === ''; };
+            else if (nm2 === 'open') fn = function (pa, mo) {
+              var f2 = new self3.CppFile(pa, mo || 'r');
+              obj.path = f2.path; obj.mode = f2.mode; obj.ok = f2.ok;
+              obj._readBuf = f2._readBuf; obj._writeBuf = ''; obj.closed = false;
+            };
+            if (!fn) throw cerr('文件对象不支持的成员：' + nm2 +
+              '（支持 close / is_open / good / fail / eof / open）');
+            return { __bound: fn, __self: obj };
+          }
           if (node.arrow) throw cerr('暂不支持：-> 运算符（本环境无指针）');
           /* set / stack / queue / priority_queue / pair：
              它们的方法挂在对象自身上，直接取就行 */
@@ -2710,6 +2931,33 @@
         if (f.builtin) return f.builtin.apply(null, args);
         return this.callFunc(f.node, args, scope, node.args);
       }
+      /* install() 里用 g.set 注册的宿主函数（freopen / getline / fopen）
+         是**裸函数**，而下面的查值只认带 __fn / __builtinFn 标记的**对象**，
+         于是它们会被当成"暂不支持的函数"。补上：取到函数就直接调。 */
+      if (name) {
+        var gv = null;
+        try { gv = scope.get(name); } catch (e3) { gv = null; }
+        if (typeof gv === 'function') {
+          /* ⚠ 必须设置 curScope 与 __argNames。
+             getline(fin, s) 要把读到的行**按名字写回调用处的作用域** ——
+             写进 global 的话，main 里的局部变量 s 根本收不到，
+             表现为 getline 静默什么都不做（s 保持初值 0）。 */
+          var savedC = INTERP ? INTERP.curScope : null;
+          if (INTERP) { INTERP.curScope = scope; INTERP.__argNames = argNames; }
+          var rv = gv.apply(null, args);
+          if (INTERP) { INTERP.curScope = savedC; INTERP.__argNames = null; }
+          return rv;
+        }
+      }
+      /* install() 里用 g.set 注册的宿主函数（freopen / getline / fopen）
+         是**裸函数**，而下面的查值只认带 __fn / __builtinFn 标记的**对象**，
+         于是它们会被当成"暂不支持的函数"。
+         补上：作用域里取到函数就直接调。 */
+      if (name) {
+        var gv = null;
+        try { gv = scope.get(name); } catch (e3) { gv = null; }
+        if (typeof gv === 'function') return gv.apply(null, args);
+      }
       /* 函数作为值调用：cmp(...) 或 sort 收到 __fn 后回调 */
       if (name) {
         var vv = null;
@@ -2779,19 +3027,54 @@
       return 0;
     },
 
+    doStreamDecl: function (node, scope) {
+      /* ifstream fin("a.txt"); / ofstream fout("b.txt");
+         第二个参数 ios::app 之类只在真 C++ 里有意义，这里按模式字符串处理。 */
+      var path = node.args.length ? this.eval(node.args[0], scope) : '';
+      var mode = node.kind === 'ifstream' ? 'r'
+               : node.kind === 'ofstream' ? 'w' : 'r+';
+      if (node.args.length > 1) {
+        var m2 = this.eval(node.args[1], scope);
+        if (typeof m2 === 'string' && /app/.test(m2)) mode = 'a';
+      }
+      var f = new this.CppFile(path, mode);
+      scope.set(node.name, f);
+      return null;
+    },
+
     doCout: function (node, scope) {
       /* cout << a << b 左结合成 Cout(Cout(cout,a), b)。
-         只求 right 会把 a 整个丢掉 —— 必须先递归跑完左侧链条。 */
-      if (node.left && node.left.type === 'Cout') this.eval(node.left, scope);
+         只求 right 会把 a 整个丢掉 —— 必须先递归跑完左侧链条。
+         ⚠ 用左侧的**返回值**判断输出到哪里：
+           是 cout 就写 stdout，是文件流对象就写该文件的缓冲。 */
+      var tgt = node.left ? this.eval(node.left, scope) : null;
       var v = this.eval(node.right, scope);
-      if (v !== undefined && !(v && (v.__cout || v.__cin))) this.out(this.str(v));
-      return { __cout: true };
+      if (v === undefined) return tgt || { __cout: true };
+      if (v && (v.__cout || v.__cin)) return tgt || { __cout: true };
+      var txt = this.str(v);
+      if (tgt && tgt.__cppfile && tgt.__isOut) { tgt._writeBuf += txt; return tgt; }
+      this.out(txt);
+      return tgt || { __cout: true };
     },
 
     /* 从输入缓冲取一个词。缓冲空了才去调 input()。
        以前每次都调 input() 且只取第一个词，剩下的全丢 ——
        `cin >> a >> b` 里 b 永远读不到本行第二个词。 */
+    /* freopen 之后 cin 从虚拟文件读 */
+    nextFileToken: function () {
+      var txt = this.vfs[this.cinFile] || '';
+      if (this.inBuf === null) this.inBuf = [];
+      if (!this.inBuf.length) {
+        this.inBuf = String(txt).trim().split(/\s+/).filter(function (x) { return x !== ''; });
+        this.inBuf.push('');   /* 读完后给空串，避免反复重读 */
+        this.__fileDone = true;
+      }
+      var w = this.inBuf.shift();
+      return w === undefined ? '' : w;
+    },
+
     nextToken: function () {
+      if (this.cinFile && this.__fileDone !== true) return this.nextFileToken();
       if (!this.inBuf || !this.inBuf.length) {
         var line = this.input();
         if (line === undefined || line === null) return '';
@@ -2806,7 +3089,12 @@
          只有最右边的 b 拿到值。表现为 `cin>>a>>b` 时 a 恒为 0，
          而 A+B 这种最基础的题都跑不对。 */
       var leftVal = node.left ? this.eval(node.left, scope) : null;
-      var val = this.nextToken();
+      /* 左侧是文件流 → 从文件读；是 cin → 从 stdin 读
+         （stdin 可能被 freopen 重定向到虚拟文件） */
+      var val;
+      if (leftVal && leftVal.__cppfile) val = leftVal._nextToken();
+      else if (this.cinFile) val = this.nextFileToken();
+      else val = this.nextToken();
       var num = Number(val);
       this.assignTo(node.right, val !== '' && isFinite(num) ? num : val, scope);
       return leftVal;

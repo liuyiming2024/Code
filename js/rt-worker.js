@@ -836,37 +836,55 @@ function runPHP(code) {
       catch (e2) { throw new Error('PHP 初始化调用失败：' + String((e2 && e2.message) || e2)); }
 
       Promise.resolve(readyP || ph.ready).then(function () {
-        /* 执行入口按版本可能不同，依次尝试已知的几种。
-           全都对不上时把实际导出列出来 —— 不静默返回空。 */
-        /* 执行入口：优先 ccall，其次直接调下划线导出的函数。
-           逐个尝试并把**失败原因**留下来 ——
-           全都对不上时报"没有可用的执行入口"却不说是为什么，
-           用户只能干瞪眼。 */
-        var names = ['pib_run', 'pib_exec', 'zend_eval_string'];
-        var hit = null, lastErr = '';
-        for (var i = 0; i < names.length && !hit; i++) {
-          if (ph.ccall) {
-            try { ph.ccall(names[i], 'number', ['string'], [code]); hit = 'ccall:' + names[i]; break; }
-            catch (e) { lastErr = names[i] + ' → ' + String((e && e.message) || e); }
-          }
-          var raw = ph['_' + names[i]];
-          if (!hit && typeof raw === 'function') {
-            try { raw(code); hit = 'raw:_' + names[i]; break; }
-            catch (e2) { lastErr = '_' + names[i] + ' → ' + String((e2 && e2.message) || e2); }
-          }
-        }
-        if (!hit) {
-          var has = [];
-          for (var k2 in ph) { if (/^_?(pib|zend|ccall|ready)/.test(k2)) has.push(k2); }
-          resolve((out.join('') || '(无输出)') +
-            '\nPHP 未能执行：没有可用的执行入口。实际导出：' +
-            (has.length ? has.join(', ') : '(无)') +
-            (lastErr ? '\n最后一次尝试：' + lastErr : ''));
+        /* ============================================================
+         * 这一段是**在 Node 里拿真 wasm 真跑**试出来的，不是推断。
+         * （取真文件的方法：git blobs API + 完整 sha，再传 wasmBinary 免网络）
+         *
+         * 三个必须，缺一个就跑不出东西：
+         *
+         * ① 必须先 ccall('pib_init')。
+         *    不调直接跑 pib_run / zend_eval_string →
+         *    "null function or function signature mismatch"
+         *    （浏览器里表现为 "indirect call to null" —— 就是用户实测看到的那句）。
+         *    这是因为 PHP 的 Zend 引擎没初始化，函数指针表是空的。
+         *
+         * ② 代码**不能带 <?php**。
+         *    pib_run 走的是 zend_eval_string 语义（已经在 PHP 模式里），
+         *    带 <?php 会得到
+         *      Parse error: syntax error, unexpected token "<", expecting end of file
+         *
+         * ③ 输出要靠 ob_flush(); flush(); 才出来。
+         *    PHP 的 echo 走 SAPI 输出缓冲，不主动刷就什么都拿不到
+         *    （而错误/解析错误是**直接**输出的，所以之前只看到报错）。
+         *    实测：单独 flush() 不行、单独 ob_flush() 不行、@抑制了也不行、
+         *    ob_start() 再刷也不行 —— **只有 ob_flush(); flush(); 这一种顺序能出**。
+         *    代价是它会带一条 Notice，所以要把它从输出里去掉（见下）。
+         */
+        var initR = null;
+        try { initR = ph.ccall('pib_init', 'number', [], []); }
+        catch (e3) {
+          resolve('PHP 初始化失败（pib_init）：' + String((e3 && e3.message) || e3));
           return;
         }
-        var text = out.join('');
+        /* 剥掉开头的 <?php —— pib_run 已经在 PHP 模式里 */
+        var src = String(code).replace(/^\s*<\?(php)?/i, '');
+        /* 追加刷缓冲。用分号开头以接住末尾缺分号的代码 */
+        src += ' ; ob_flush(); flush();';
+        var r = null;
+        try { r = ph.ccall('pib_run', 'number', ['string'], [src]); }
+        catch (e4) {
+          resolve('PHP 执行失败：' + String((e4 && e4.message) || e4));
+          return;
+        }
+        var text = out.join('')
+          /* ob_flush() 在没有用户缓冲区时必然报这条 Notice，
+             而它正是把输出刷出来的原因 —— 关不掉，只能过滤掉。
+             关掉（display_errors=0 / @ / error_reporting(0)）会连输出一起没了。 */
+          .replace(/Notice: PHP Request Startup: Failed to flush buffer\. No buffer to flush in php-wasm run script on line \d+/g, '')
+          .trim();
         if (err.length) text += (text ? '\n' : '') + '[stderr] ' + err.join('');
-        resolve(text);
+        /* 返回值非 0 通常意味着解析/致命错误，但内容已经通过 print 输出了 */
+        resolve(text || (r ? '' : '（无输出）'));
       }, function (e) {
         resolve('PHP 启动失败：' + String((e && e.message) || e));
       });
@@ -917,7 +935,27 @@ function runRuby(code) {
           throw new Error('RubyVM 实例没有可识别的执行方法。实际键：' +
             (built ? Object.keys(built).join(', ') : '(空)'));
         }
-        return Promise.resolve(run.call(vm || built, code)).then(function (r) {
+        /* ⚠ 必须把 stdout 接住，否则永远拿到空串。
+           `puts 1+1` 的返回值是 **nil**（puts 本来就返回 nil），
+           而 stdout 走 WASI fd 1，默认打到 console —— 我们收不到。
+           用户实测就是「输出「」，期望「2」」。
+
+           改法：在 Ruby 侧把 $stdout 换成 StringIO，跑完再把内容取回来。
+           用 begin/ensure 保证即使代码抛异常也能还原 $stdout：
+           不还原的话下一次运行会继续往旧的 StringIO 里写，
+           表现为「第一次有输出、之后全空」—— 更难查。 */
+        var wrapped =
+          'require "stringio"\n' +
+          '__so = StringIO.new\n' +
+          '__orig = $stdout\n' +
+          'begin\n' +
+          '  $stdout = __so\n' +
+          code + '\n' +
+          'ensure\n' +
+          '  $stdout = __orig\n' +
+          'end\n' +
+          '__so.string';
+        return Promise.resolve(run.call(vm || built, wrapped)).then(function (r) {
           if (r == null) return '';
           if (typeof r === 'string') return r;
           if (typeof r === 'object') {

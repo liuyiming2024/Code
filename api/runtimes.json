@@ -82,7 +82,7 @@
       "license": "MPL-2.0",
       "workerType": "classic",
       "entry": "pyodide.js",
-      "desc": "完整 CPython 编译到 WASM，含标准库，可用 micropip 装纯 Python 包",
+      "desc": "完整 CPython 3.12 编译到 WASM（已真跑验证）",
       "files": [
         {
           "name": "pyodide.js",
@@ -101,10 +101,21 @@
           "size": 2341761,
           "sha256": "0dd443755a0244ae3052f2e0834413d68c43f362c651edd47b785ea9d26e4853",
           "url": "https://liuyiming2024.github.io/assets/rt/python_stdlib.zip"
+        },
+        {
+          "name": "pyodide.asm.js",
+          "size": 1229628,
+          "sha256": "704e56d209d8b867c8dd42e754a246db0175e448d59a46530803bdddfdfc78e0",
+          "url": "https://liuyiming2024.github.io/assets/rt/pyodide.asm.js"
+        },
+        {
+          "name": "pyodide-lock.json",
+          "size": 105980,
+          "sha256": "0cb7ca8faf9c35af92b4d261996ddd51dd9a6c1074ee59279f1570d67af29644",
+          "url": "https://liuyiming2024.github.io/assets/rt/pyodide-lock.json"
         }
       ],
-      "ready": true,
-      "broken": "缺 pyodide.asm.js：pyodide.js 只是加载器，启动时要再取 pyodide.asm.js，而 Release 里没有这个文件。装完也起不来。"
+      "ready": true
     },
     {
       "id": "quickjs",

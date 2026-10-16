@@ -196,14 +196,24 @@
       var mb = bytes / 1048576;
       var size = mb >= 1 ? mb.toFixed(1) + ' MB' : Math.round(bytes / 1024) + ' KB';
       var st = Code.runtime.status ? Code.runtime.status('pyodide') : null;
-      if (st && st.ready) return '完整 CPython 已下载，可在「Python（完整）」下运行。';
-      return '要完整 CPython 可在扩展中心下载（约 ' + size + '，首次需联网）。';
+      if (st && st.ready) return '完整 CPython 已就绪：可用 json / sys 等标准库，也可用 open() 读写虚拟文件系统。';
+      /* 说清"升级能带来什么" —— 只说"可以下载"用户不知道值不值得。
+         这里的差异是**真跑对照**出来的，不是照抄文档：
+           pylite（基础包）不支持 json / sys / open
+           pyodide 0.26.2 实测：json.dumps ✓、sys.version 3.12.1 ✓、open() ✓ */
+      return '装完整 CPython（约 ' + size + '）后可多出：json / sys 等标准库、'
+           + 'open() 虚拟文件系统。首次需联网。';
     } catch (e) {
       return '要完整 CPython 见扩展中心。';
     }
   }
 
   var CAVEAT = {
+    /* 完整 CPython 已真跑验证（0.26.2 / Python 3.12.1），
+       但有一件事必须说清，否则用户会误以为自己在碰本地硬盘。 */
+    pyodide: '完整 CPython 3.12（已验证）。注意：open() 读写的是 WASM 里的'
+             + '**虚拟文件系统**，不是你电脑上的硬盘 —— 文件不会保存到本地，'
+             + '刷新页面即消失。要留存请用编辑器本身的保存功能。',
     pylite: 'Python 子集（自研解释器）：不是 CPython，不支持 import 第三方库、async、生成器、装饰器。\n' +
             '够用场景：语法练习、算法题、日常小脚本。' + pyUpgradeHint(),
     cpplite: 'C/C++ 子集（自研教学级）：不支持指针与地址运算、struct / class、模板、STL、头文件与多文件。\n' +
@@ -354,6 +364,11 @@
     if (L) {
       /* 有真运行时且已就绪 → 优先用真的（Python / C++ 属这类） */
       if (Code.langs.useWasm(L)) {
+        /* 用真运行时时，把它的注意事项一并显示。
+           定义了 CAVEAT 却不用 = 等于没写 —— 这类"写了没接上"的失效
+           本项目已经踩过好几次（S-044 那类）。 */
+        var ck = CAVEAT[L.wasm && L.wasm.id];
+        if (ck) printSys(ck);
         runDownloaded(L, code, path, true);
       } else if (L.tier === Code.langs.TIER.BUILTIN) {
         if (L.runner === 'native') { runJS(code); }

@@ -115,7 +115,12 @@ function canonOf(name) {
 /* 每个语言需要哪些文件。预下载时按这里逐个拉，带进度。 */
 var NEED = {
   sql: ['sql-wasm.js', 'sql-wasm.wasm'],
-  python: ['pyodide.js', 'pyodide.asm.wasm', 'python_stdlib.zip'],
+  /* ⚠ 两个文件是**真跑出来**才发现的缺失，静态分析查不到：
+         pyodide.asm.js    —— pyodide.js 只是加载器，启动时要再取它
+         pyodide-lock.json —— asm.js 加载成功后立刻要读（静态分析只查出前者）
+     少了任何一个，pyodide 都起不来。 */
+  python: ['pyodide.js', 'pyodide.asm.js', 'pyodide-lock.json',
+           'pyodide.asm.wasm', 'python_stdlib.zip'],
   lua: ['fengari-web.js'],
   cpp: ['cpp-index.js', 'clang.js', 'lld.js', 'wasi-shim.js',
         'lld.wasm', 'sysroot.tar', 'clang.wasm'],
@@ -136,7 +141,11 @@ var NEED = {
  *   ✅ sql  —— 在 Node 里真跑过，输出确认 "a\tb\n1\tx\n2\ty"
  *   ✅ lua  —— 在模拟 Worker 的 vm 沙箱里真跑过，输出确认 "2"
  *              顺带查出它在 Worker 里根本加载不了（见 loadWithWindowShim）
- *   ❌ python —— 已确认起不来：缺 pyodide.asm.js（见 KNOWN_BROKEN）
+ *   ✅ python —— **已在 Node 里真跑通**：0.26.2 / Python 3.12.1，
+ *               print / json / sys.version / open() 虚拟 FS 全部验证通过。
+ *               并已据此验证"复用实例时清名字空间"确实有效
+ *               （第二次 print(x) 报 NameError，不会残留上次变量）
+ *               —— 原缺 pyodide.asm.js 与 pyodide-lock.json，已补齐
  *   ❓ php / ruby / cpp —— 未跑过，期望值只是按语言语义推断。
  *              其中 php 已查出一处必然失败的错（导出名是 PHP 不是 PhpWeb），
  *              已修，但**修完还没真跑过** —— 不能因此就标成通过。
@@ -181,10 +190,18 @@ var PROBES = {
    内容**不在这里写死** —— 从 api/runtimes.json 读（LOAD_META 里带过来），
    单一来源在 js/langs.js 的 wasm.broken。
    抄一份到 Worker 里必然漂移（S-041 那类问题）。 */
+/* 已清空：pyodide 原本在这里，因为缺 pyodide.asm.js 与 pyodide-lock.json。
+   两个文件都已从官方 npm（同为 0.26.2）补进 assets，并在 Node 里真跑验证通过：
+       版本 0.26.2 / Python 3.12.1
+       print(1+1) → 2
+       json.dumps → {"a": 1}
+       sys.version → 3.12.1
+       open() 虚拟 FS → x=1
+   保留这个结构，是为了将来再出现"已知起不来"时有个统一的地方标注。 */
 var KNOWN_BROKEN = {};
 
 var SIZE_HINT = {
-  sql: 0.7, python: 12, lua: 0.5, cpp: 90, php: 16.5, ruby: 34
+  sql: 0.7, python: 14, lua: 0.5, cpp: 90, php: 16.5, ruby: 34
 };
 
 function say(type, data) {

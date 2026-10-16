@@ -45,9 +45,11 @@
          而 assets 的 Release 里没有这个文件（23 个资产逐个核对过）。
          所以下载它装完也起不来 —— 必须在下载前就说清楚，
          不能让用户下完 12 MB 才发现。 */
+      /* 曾标过 broken（缺 pyodide.asm.js 与 pyodide-lock.json），两个文件已补齐，
+         并在 Node 里真跑通过：Python 3.12.1，json / sys / 虚拟 FS 均可用。
+         ⚠ 自研 pylite 不支持 json / sys / open——所以这个升级是真有价值，不是装饰。 */
       wasm: { id: 'pyodide', upgrade: true,
-              broken: '缺 pyodide.asm.js：pyodide.js 只是加载器，启动时要再取 pyodide.asm.js，而 Release 里没有这个文件。装完也起不来。',
-              desc: '完整 CPython 编译到 WASM，含标准库，可用 micropip 装纯 Python 包' }
+              desc: '完整 CPython 3.12 编译到 WASM：含 json / sys 等标准库，支持虚拟文件系统，可用 micropip 装纯 Python 包' }
     },
     {
       id: 'cpp', name: 'C / C++', exts: ['c', 'h', 'cpp', 'hpp', 'cc', 'cxx'],

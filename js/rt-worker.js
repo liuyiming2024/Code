@@ -780,6 +780,34 @@ function runLua(code) {
   });
 }
 
+/* 取某个运行时文件的 ArrayBuffer：先查缓存，缓存没有再 fetch。
+ *
+ * 为什么要它（用户实测暴露的一条 stderr 噪音）：
+ *   Emscripten 默认走 **streaming compile**（WebAssembly.instantiateStreaming），
+ *   它要求响应的 MIME 必须是 application/wasm。
+ *   而 Pages 给 .wasm 返回的是 application/octet-stream，浏览器直接拒绝：
+ *     wasm streaming compile failed: TypeError: Response has unsupported
+ *     MIME type 'application/octet-stream' expected 'application/wasm'
+ *     falling back to ArrayBuffer instantiation
+ *   于是它退回 ArrayBuffer 实例化 —— **能跑，但**在 stderr 里留了一条警告。
+ *
+ *   这条警告会混进用户看到的输出里，表现为「输出 2」变成
+ *   「2 [stderr] wasm streaming compile failed...」，自检比对也就永远不等。
+ *   用户只会以为 PHP 没跑通，实际它跑通了。
+ *
+ *   直接喂 Module.wasmBinary 就绕开了整条 streaming 路径（不 fetch、不校验 MIME），
+ *   而且这正是我在 Node 里**真跑验证**过的那一条路。
+ */
+function grabBinary(name) {
+  return fromCache(canonOf(name)).then(function (r) {
+    if (r) return r.arrayBuffer();
+    return (origFetch || self.fetch)(urlOf(name)).then(function (r2) {
+      if (!r2.ok) throw new Error(name + ' 读取失败：HTTP ' + r2.status);
+      return r2.arrayBuffer();
+    });
+  });
+}
+
 function runPHP(code) {
   /* ⚠ 这一整块原来都是错的 —— 实测（全文搜索确认）逐条对照：
    *
@@ -803,6 +831,8 @@ function runPHP(code) {
    *   所以下面是按源码推断的正确 API，不是已验证结论。
    */
   load('php-web.js');
+  /* 先把 wasm 取成 ArrayBuffer 再初始化 —— 见 grabBinary 上的说明 */
+  return grabBinary('php-web.js.wasm').then(function (bin) {
   return new Promise(function (resolve) {
     var out = [], err = [];
     try {
@@ -827,6 +857,8 @@ function runPHP(code) {
          Promise.resolve(undefined) 立刻 resolve，于是 ph 上什么都没有，
          表现就是「已下载、已加载，但没有可用的执行入口」。 */
       var ph = {
+        wasmBinary: bin,          /* 直接喂，不走 streaming（见 grabBinary 说明） */
+        noInitialRun: true,       /* 不让 Emscripten 自动跑 main —— 与 Node 真跑验证时一致 */
         locateFile: function (f) { return urlOf(f); },
         print: function (t) { out.push(t); },        // stdout
         printErr: function (t) { err.push(t); }      // stderr
@@ -882,7 +914,19 @@ function runPHP(code) {
              关掉（display_errors=0 / @ / error_reporting(0)）会连输出一起没了。 */
           .replace(/Notice: PHP Request Startup: Failed to flush buffer\. No buffer to flush in php-wasm run script on line \d+/g, '')
           .trim();
-        if (err.length) text += (text ? '\n' : '') + '[stderr] ' + err.join('');
+        /* stderr 里过滤掉**加载阶段的环境噪音**，只留真正属于用户代码的错误。
+           这些是 Emscripten / 运行时的启动噪音，不是用户代码的问题：
+             · "wasm streaming compile failed ... falling back to ArrayBuffer"
+               —— MIME 不对导致退回非流式，能跑，但会污染输出
+             · "munmap() failed: [28] Invalid argument" —— WASI 下的无害告警
+           不过滤的话，用户跑一句 echo 也会看到一坨看不懂的东西，
+           而且会让自检永远比对不上（输出明明是 2，却粘着一串噪音）。
+           ⚠ 只过滤这几条**特定的**，绝不整体吞掉 stderr ——
+             吞掉就会把 PHP 的 Fatal error / Warning 一起藏了。 */
+        var realErr = err.join('').split('\n').filter(function (ln) {
+          return !/wasm streaming compile failed|falling back to ArrayBuffer instantiation|munmap\(\) failed/.test(ln);
+        }).join('\n').trim();
+        if (realErr) text += (text ? '\n' : '') + '[stderr] ' + realErr;
         /* 返回值非 0 通常意味着解析/致命错误，但内容已经通过 print 输出了 */
         resolve(text || (r ? '' : '（无输出）'));
       }, function (e) {
@@ -891,6 +935,10 @@ function runPHP(code) {
     } catch (e) {
       resolve('PHP 初始化失败：' + String((e && e.message) || e));
     }
+  });
+  }).catch(function (e) {
+    /* 走到这里说明 wasm 都没取到 —— 与"PHP 跑不通"是两回事，要说清楚 */
+    return 'PHP 无法加载 wasm：' + String((e && e.message) || e);
   });
 }
 

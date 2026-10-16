@@ -205,7 +205,12 @@ var PROBES = {
         + 'SELECT a,b FROM t ORDER BY a;',
     expect: 'a\tb\n1\tx\n2\ty'
   },
+  /* ⚠ 'pyodide' 必须也在 PROBES 里 —— langs.js 里 Python 的 wasm.id 就是它。
+     RUNNERS 有而 PROBES 没有的话，自检会报「没有写探针」，
+     而文件明明下载好了，用户只会以为下载出了问题。
+     sql/sqlite 已经栽过一次，这里是同一类错的第二处。 */
   python:  { code: 'print(1 + 1)',     expect: '2' },
+  pyodide: { code: 'print(1 + 1)',     expect: '2' },
   lua:     { code: 'print(1 + 1)',     expect: '2' },
   php:     { code: '<?php echo 1 + 1;', expect: '2' },
   ruby:    { code: 'puts 1 + 1',       expect: '2' },
@@ -1004,15 +1009,24 @@ function selfTest(lang) {
    RUNNERS['sqlite'] 不存在 → 走进「没有这个运行时」分支。
    而缓存清单 runtimes.json 用的 id 恰恰是 'sqlite'，
    所以 **不能**去改 langs.js 的 id（那样又会找不到文件），
-   只能在这里两个名字都注册。已加断言锁住两边必须一致。 */
+   只能在这里两个名字都注册。已加断言锁住两边必须一致。
+
+   ⚠⚠ **这里引用了未声明的函数会毁掉整个 Worker**：
+   `var RUNNERS = {...}` 在 Worker 顶层，求值这个对象字面量时
+   就会去读每个标识符。写了一个不存在的名字（我上次写了 runQuickJS），
+   抛 ReferenceError 的时机是**脚本求值阶段** ——
+   整个 Worker 一行都跑不起来，SQL / Python / Lua / PHP / Ruby **全部一起死**，
+   而界面上只会看到一句 "Worker 错误"，看不出是哪一行。
+   quickjs 目前**没有实现执行器**，所以不注册它（不注册 = 报"没有这个运行时"，
+   是明确且可追的；注册成 undefined = 全场陪葬）。
+   每次往这里加键，都要确认 `function xxx` 在本文件里真的存在。 */
 var RUNNERS = {
   sql: runSQL, sqlite: runSQL,
   python: runPython, pyodide: runPython,
   lua: runLua,
   php: runPHP,
   ruby: runRuby,
-  cpp: runCpp,
-  quickjs: runQuickJS
+  cpp: runCpp
 };
 
 /* 把 fetch 的裸错误翻译成人能判断的话。

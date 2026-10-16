@@ -459,6 +459,13 @@
      做不到就是做不到，不在这里给人"点了就能跑"的错觉。 */
   UI.extensions = function () {
     var L = Code.langs, R = Code.runtime;
+    /* ⚠ 自检在 **Code.runtimes**（管 Worker、能真跑探针）里，
+       不在 R（Code.runtime，只回答"有哪些、多大、缓存里有没有"）里。
+       原来写 R.selfTest，而 R 上根本没有这个方法 ——
+       于是 `if (!R.selfTest) return;` 恒成立，
+       按钮点下去**什么都不会发生**，连报错都没有。
+       用户看到的就是"自检点不动"，无从判断是没装还是坏了。 */
+    var W = Code.runtimes;
     if (!L || !R) {
       U.modal({ title: '扩展中心', body: '<p class="about-p">语言模块未加载，无法列出扩展。</p>', actions: [{ label: '知道了', primary: true }] });
       return;
@@ -708,19 +715,40 @@
           var tbtn = U.el('button', { class: 'ext-btn', text: '自检' });
           tbtn.style.marginLeft = '6px';
           tbtn.onclick = function () {
-            if (!R.selfTest) return;
+            if (!W || !W.selfTest) {
+              var t2 = U.el('div', { class: 'ext-state bad',
+                text: '自检不可用：Code.runtimes 未加载（自检要真跑探针，只有它做得到）' });
+              row.appendChild(t2);
+              return;
+            }
             tbtn.disabled = true;
             var tip = U.el('div', { class: 'ext-desc', text: '正在真跑一行探针代码…' });
             row.appendChild(tip);
-            R.selfTest(id, {
+            /* ⚠ 必须挂 fail 与超时钩子。
+               只挂 selftested 的话，Worker 一旦失败或没回应，
+               tip 会永远停在"正在自检…"，按钮也一直灰着 ——
+               和"点不动"看起来一模一样，用户根本分不清。 */
+            var settled = false;
+            function finish(text, bad) {
+              if (settled) return;
+              settled = true;
+              tbtn.disabled = false;
+              tip.textContent = text;
+              tip.className = bad ? 'ext-state bad' : 'ext-desc';
+            }
+            W.selfTest(id, {
               selftested: function (d) {
-                tbtn.disabled = false;
-                tip.textContent = (d && d.ok ? '✅ ' : '❌ ') +
+                finish((d && d.ok ? '✅ ' : '❌ ') +
                   ((d && d.detail) || '无结果') +
-                  (d && d.known ? '（已知缺陷，不是你的问题）' : '');
-                tip.className = (d && d.ok) ? 'ext-desc' : 'ext-state bad';
+                  (d && d.known ? '（已知缺陷，不是你的问题）' : ''), !(d && d.ok));
+              },
+              fail: function (d) {
+                finish('❌ 自检失败：' + ((d && d.error) || '未知原因'), true);
               }
             });
+            setTimeout(function () {
+              finish('❌ 自检超时（2 分钟未回应）—— 可能是 Worker 没起来', true);
+            }, 2 * 60 * 1000);
           };
           bar.appendChild(tbtn);
         } else if (st && st.error) {

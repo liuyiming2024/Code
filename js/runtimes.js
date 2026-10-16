@@ -88,11 +88,13 @@
       }, timeoutMs);
     }
     var wrapped = {};
-    /* 'diag' 必须列在这里。
-       每加一种 Worker 消息类型，都要同步加到这个数组 ——
+    /* ⚠ 每加一种 Worker 消息类型，都要同步加到这个数组。
        漏了的话消息发出去了但主线程收不到，表现为"点了没反应"，
-       而且不报错（on[k] 不存在就静默跳过），最难查。 */
-    ['begin', 'progress', 'ready', 'done', 'fail', 'diag'].forEach(function (k) {
+       而且**不报错**（on[k] 不存在就静默跳过），最难查。
+       'diag' 上次就是这么漏的，补上了；
+       'selftested' 又漏了一次 —— 自检点了永远停在"正在自检…"，
+       因为 Worker 回的消息主线程压根没人接。现在一并补上。 */
+    ['begin', 'progress', 'ready', 'done', 'fail', 'diag', 'selftested'].forEach(function (k) {
       wrapped[k] = function (d) {
         /* 过期请求的回调一律丢弃 —— 否则会打到新请求的回调上 */
         if (!pending || pending.token !== token) return;

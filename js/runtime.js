@@ -164,8 +164,18 @@
 
   /* ---------- 清理 ----------
      删缓存里的文件。执行用的 Worker 由 runtimes.js 管理，这里不管。 */
+  /* ⚠ 原来第一行是 `state = {}` —— 清**一个**运行时却把所有状态都抹了。
+     用户点"清理"清的是 SQLite，结果界面上**所有**运行时都变回"未下载"，
+     看着像"所有都清了"。而文件其实还在缓存里，只是状态没了 ——
+     这种"显示与事实不符"比真删掉更难排查。
+     现在只清被删的那一项，删完立刻重新探测，让显示和实际一致。 */
   function clearCache(id) {
-    state = {};
+    if (!id) {
+      /* 没给 id 才是"清全部"，这时才允许整表清空 */
+      state = {};
+    } else {
+      delete state[id];
+    }
     return cache().then(function (c) {
       if (!c) return false;
       var urls = [];
@@ -174,7 +184,12 @@
         if (id && rt.id !== id) return;
         (rt.files || []).forEach(function (f) { urls.push(f.url); });
       });
-      return Promise.all(urls.map(function (u) { return c.delete(u); })).then(function () { return true; });
+      return Promise.all(urls.map(function (u) { return c.delete(u); })).then(function () {
+        /* 删完重新探一次：不刷新的话，这一行会一直显示"已下载"，
+           而点运行才发现文件没了。 */
+        return refreshStatus().then(function () { return true; },
+                                    function () { return true; });
+      });
     }).catch(function () { return false; });
   }
 

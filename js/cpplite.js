@@ -497,9 +497,15 @@
 
   function tokenize(src) {
     var t = [], i = 0, n = src.length;
+    /* 行号追踪。为什么需要：之前语法错误只说"期望 X，实际读到 Y"，
+       不给行号 —— 对写 C++ 的人几乎没用，他只能从头逐行找括号。
+       push() 统一附带 st.line，所有报错点就都能报出行号。 */
+    var st = { line: 1 };
+    function push(tk) { tk.line = st.line; t.push(tk); }
     while (i < n) {
       var c = src[i];
-      if (c === ' ' || c === '\t' || c === '\r' || c === '\n') { i++; continue; }
+      if (c === '\n') { st.line++; i++; continue; }
+      if (c === ' ' || c === '\t' || c === '\r') { i++; continue; }
       /* 预处理指令整行忽略 */
       /* ⚠ 预处理指令不能只静默跳过。
          `#define N 5` 被无声忽略后，用到 N 的地方才报"变量未定义：N" ——
@@ -512,12 +518,31 @@
         while (j0 < n && src[j0] !== '\n') { ln += src[j0]; j0++; }
         var dm = /^\s*define\s+([A-Za-z_]\w*)/.exec(ln);
         if (dm) MACROS[dm[1]] = true;
+        /* 同样只跳到行尾，不在这里 ++（'\n' 分支会统一处理）。
+           实测中 preprocess 已经把 # 行替成空行，tokenize 很少走到这里；
+           但直接调 tokenize 时会走到，规则必须一致。 */
         i = j0;
         continue;
       }
       /* 注释 */
-      if (c === '/' && src[i + 1] === '/') { while (i < n && src[i] !== '\n') i++; continue; }
-      if (c === '/' && src[i + 1] === '*') { i += 2; while (i < n && !(src[i] === '*' && src[i + 1] === '/')) i++; i += 2; continue; }
+      /* 注释里的换行也要计数 —— 块注释跨多行时不推进，后面行号全偏 */
+      /* ⚠ 只跳到行尾，**不在这里 ++**。
+         第一版我在这里 ++，而下一轮主循环遇到同一个 '\n' 又会 ++ 一次，
+         于是行注释之后的行号全部 +1（实测报第 3 行，实际是第 2 行）。
+         统一规则：所有"跳到行尾"的分支都不计数，交给下面的 '\n' 分支处理，
+         保证每个换行**恰好**计一次。 */
+      if (c === '/' && src[i + 1] === '/') {
+        while (i < n && src[i] !== '\n') i++;
+        continue;
+      }
+      if (c === '/' && src[i + 1] === '*') {
+        i += 2;
+        while (i < n && !(src[i] === '*' && src[i + 1] === '/')) {
+          if (src[i] === '\n') st.line++;
+          i++;
+        }
+        i += 2; continue;
+      }
 
       /* 字符串 */
       if (c === '"' || c === "'") {
@@ -532,7 +557,7 @@
           buf += src[i]; i++;
         }
         i++;
-        t.push({ t: q === '"' ? 'STR' : 'CHAR', v: buf });
+        push({ t: q === '"' ? 'STR' : 'CHAR', v: buf });
         continue;
       }
       /* 数字 */
@@ -548,7 +573,7 @@
         /* ⚠ parseFloat 会把 1.0 变成整数 1，浮点性就此丢失。
            于是 `1.0/0` 被当成整数除零而报错，真 C++ 却是 inf。
            保留原始文本，供后面判断"这个字面量是浮点还是整数"。 */
-        t.push({ t: 'NUM', v: parseFloat(m[0]), raw: m[0] });
+        push({ t: 'NUM', v: parseFloat(m[0]), raw: m[0] });
         i += m[0].length;
         continue;
       }
@@ -556,7 +581,7 @@
       if (/[A-Za-z_]/.test(c)) {
         var m2 = /^[A-Za-z_]\w*/.exec(src.slice(i));
         var w = m2[0];
-        t.push({ t: (TYPES.indexOf(w) >= 0 ? 'TYPE' : KEYWORDS.indexOf(w) >= 0 ? 'KW' : 'NAME'), v: w });
+        push({ t: (TYPES.indexOf(w) >= 0 ? 'TYPE' : KEYWORDS.indexOf(w) >= 0 ? 'KW' : 'NAME'), v: w });
         i += w.length;
         continue;
       }
@@ -567,17 +592,27 @@
       for (var k = 0; k < ops.length; k++) if (src.substr(i, ops[k].length) === ops[k]) { hit = ops[k]; break; }
       if (!hit) hit = c;
       if ('+-*/%<>=!&|^~?:;,.()[]{}'.indexOf(hit) >= 0 || hit.length > 1) {
-        t.push({ t: 'OP', v: hit });
+        push({ t: 'OP', v: hit });
         i += hit.length;
         continue;
       }
-      throw cerr('无法识别的字符：' + c);
+      throw cerr('无法识别的字符：' + c, st.line);
     }
-    t.push({ t: 'EOF' });
+    push({ t: 'EOF' });
     return t;
   }
 
-  function cerr(msg) { return new Error(msg); }
+  /* 报错一律带行号 —— 只说"期望 X，实际读到 Y"不说是哪一行，
+     对写 C++ 的人几乎没用（他只能从头逐行找括号）。
+     行号来自 tokenize 阶段追踪的 st.line；
+     ⚠ 它之所以等于**原始源码的行号**，是因为 preprocess 逐行 push
+     （不成立的分支替成空行而非删除），行数与原文一一对应。
+     若哪天改了 preprocess 让它删行，这里会整体偏 —— 已在测试里锁死。 */
+  function cerr(msg, line) {
+    var e = new Error(msg + (line ? '（第 ' + line + ' 行）' : ''));
+    e.cppLine = line || 0;
+    return e;
+  }
 
   /* ============================================================
    * 二、语法分析
@@ -628,6 +663,7 @@
   function Parser(t) { this.t = t; this.p = 0; }
   Parser.prototype = {
     peek: function (k) { return this.t[this.p + (k || 0)]; },
+    lineOf: function () { var t = this.peek(); return (t && t.line) || 0; },
     next: function () { return this.t[this.p++]; },
     at: function (type, val) { var t = this.peek(); return t && t.t === type && (val === undefined || t.v === val); },
     atOp: function (v) { return this.at('OP', v); },
@@ -635,7 +671,7 @@
     expect: function (type, val) {
       if (!this.eat(type, val)) {
         var t = this.peek();
-        throw cerr('语法错误：期望 ' + (val || type) + '，实际读到 ' + (t ? (t.v !== undefined ? t.v : t.t) : '文件结束'));
+        throw cerr('语法错误：期望 ' + (val || type) + '，实际读到 ' + (t ? (t.v !== undefined ? t.v : t.t) : '文件结束'), this.lineOf());
       }
     },
 
@@ -746,7 +782,7 @@
     structDecl: function () {
       this.next();  /* 吃掉 struct / class */
       var nameTok = this.peek();
-      if (!this.at('NAME')) throw cerr('struct 后面需要名字');
+      if (!this.at('NAME')) throw cerr('struct 后面需要名字', this.lineOf());
       var name = this.next().v;
       /* 前置声明 struct P; —— 只登记名字，成员未知 */
       if (this.eat('OP', ';')) return { type: 'StructDecl', name: name, fields: null };
@@ -805,12 +841,12 @@
         (this.aliases || (this.aliases = {}))[alias] = bt;
         return { type: 'Pass' };
       }
-      if (this.at('KW', 'namespace') || this.at('KW', 'template')) throw cerr('暂不支持：' + this.peek().v);
+      if (this.at('KW', 'namespace') || this.at('KW', 'template')) throw cerr('暂不支持：' + this.peek().v, this.lineOf());
       if (this.at('KW', 'struct') || this.at('KW', 'class')) {
         return this.structDecl();
       }
       if (this.at('KW', 'enum') || this.at('KW', 'union')) {
-        throw cerr('暂不支持：' + this.peek().v + '（本环境只支持基础类型、数组与函数）');
+        throw cerr('暂不支持：' + this.peek().v + '（本环境只支持基础类型、数组与函数）', this.lineOf());
       }
       var cdecl = parseContainerDecl(this);
       if (cdecl) return this.containerVarDecl(cdecl);
@@ -838,7 +874,7 @@
 
     /* 识别函数定义：类型 名字 ( ... ) { */
     funcOrDecl: function () {
-      if (!this.at('TYPE') && !this.at('NAME')) throw cerr('无法识别的声明');
+      if (!this.at('TYPE') && !this.at('NAME')) throw cerr('无法识别的声明', this.lineOf());
       /* const 是限定词，跳过；unsigned / signed 是主类型的一部分，
          ⚠ 不能再无条件跳过 —— `unsigned x = 5;` 跳掉 unsigned 后
          就剩下 `x = 5`，报"期望标识符，实际读到 ="，
@@ -858,7 +894,7 @@
         type = nt2;
       }
       var nameTok = this.peek();
-      if (!this.at('NAME')) throw cerr('期望标识符，实际读到 ' + (nameTok && nameTok.v));
+      if (!this.at('NAME')) throw cerr('期望标识符，实际读到 ' + (nameTok && nameTok.v), this.lineOf());
       var name = this.next().v;
       if (this.atOp('(')) {
         var args = this.paramList();
@@ -965,8 +1001,8 @@
           case 'break': this.p++; this.expect('OP', ';'); return { type: 'Break' };
           case 'continue': this.p++; this.expect('OP', ';'); return { type: 'Continue' };
           case 'switch': return this.switchStmt();
-          case 'try': case 'catch': case 'throw': throw cerr('暂不支持：' + t.v);
-          case 'new': case 'delete': throw cerr('暂不支持：' + t.v + '（本环境无动态内存）');
+          case 'try': case 'catch': case 'throw': throw cerr('暂不支持：' + t.v, this.lineOf());
+          case 'new': case 'delete': throw cerr('暂不支持：' + t.v + '（本环境无动态内存）', this.lineOf());
         }
       }
       /* using namespace std; */
@@ -1009,7 +1045,7 @@
         }
         /* int *p —— 星号在变量名之前，必须先看，否则会当成"期望标识符"报错，
            用户看到的是语法错而不是"不支持指针" */
-        if (this.atOp('*')) throw cerr('暂不支持：指针（本环境无地址与内存操作）');
+        if (this.atOp('*')) throw cerr('暂不支持：指针（本环境无地址与内存操作）', this.lineOf());
         /* 引用变量 `int &r = x;`
            本环境没有真地址，用"绑定名"实现：记录别名 → 真实变量名，
            读写都转发到原变量。`r = 9` 之后 x 也变成 9 ——
@@ -1017,7 +1053,7 @@
            凡是用引用传参的函数都得改写，代码就不是原样了。 */
         var refTarget = null;
         if (this.atOp('&')) { this.p++; var rt = this.peek(); if (rt && rt.t === 'NAME') refTarget = rt.v; }
-        if (!this.at('NAME')) throw cerr('期望标识符，实际读到 ' + (this.peek().v || this.peek().t));
+        if (!this.at('NAME')) throw cerr('期望标识符，实际读到 ' + (this.peek().v || this.peek().t), this.lineOf());
         var nm = this.next().v;
         /* 可能是函数声明 */
         if (this.atOp('(')) { this.paramList(); this.expect('OP', ';'); return null; }
@@ -1227,9 +1263,9 @@
         var inner = this.unary();
         return { type: 'Deref', v: inner };
       }
-      if (this.atOp('&')) throw cerr('暂不支持：取地址');
-      if (this.at('KW', 'sizeof')) throw cerr('暂不支持：sizeof');
-      if (this.at('KW', 'new')) throw cerr('暂不支持：new');
+      if (this.atOp('&')) throw cerr('暂不支持：取地址', this.lineOf());
+      if (this.at('KW', 'sizeof')) throw cerr('暂不支持：sizeof', this.lineOf());
+      if (this.at('KW', 'new')) throw cerr('暂不支持：new', this.lineOf());
       return this.postfix();
     },
     postfix: function () {
@@ -1352,13 +1388,20 @@
           if (this.atOp('::')) {
             this.p++;
             var n2 = this.next().v;
-            return { type: 'Name', name: n2, std: true };
+            return { type: 'Name', name: n2, std: true, line: t.line };
           }
         }
         this.p++;
-        return { type: 'Name', name: nm };
+        /* Name 带行号，这样"变量未定义"能说出是哪一行。
+           C++ 里拼错变量名是最常见的错误之一，
+           没有行号时只能从头逐行找。 */
+        return { type: 'Name', name: nm, line: t.line };
       }
-      throw cerr('语法错误：读到意外的 ' + (t.v !== undefined ? t.v : t.t));
+      /* 最常撞到的语法错误（括号没闭合等），原来只说"读到意外的 X"
+         不给行号 —— 必须带上。同时 t 可能是 undefined（文件在错误处结束），
+         直接读 t.v 会让**报错本身崩溃**，把有用的信息换成看不懂的报错。 */
+      var desc = !t ? '文件结束' : (t.v !== undefined ? String(t.v) : t.t);
+      throw cerr('语法错误：读到意外的 ' + desc, t && t.line);
     }
   };
 
@@ -2213,9 +2256,11 @@
             if (MACROS[node.name]) {
               throw cerr('变量未定义：' + node.name + '。' +
                 '注意：源码里有 #define ' + node.name + '，' +
-                '本环境暂不支持预处理宏，请用常量或 enum 代替');
+                '本环境暂不支持预处理宏，请用常量或 enum 代替', node.line);
             }
-            throw cerr('变量未定义：' + node.name);
+            /* 带上行号。拼错变量名是 C++ 里最常见的错误之一，
+               没有行号时用户只能从头逐行找 —— 而变量可能在几百行外。 */
+            throw cerr('变量未定义：' + node.name, node.line);
           }
         case 'BinOp': return this.binop(node, scope);
         /* Logic 节点（&& / ||）与 BinOp 是两种节点类型。

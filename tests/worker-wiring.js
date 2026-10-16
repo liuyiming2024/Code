@@ -79,16 +79,59 @@ ids.forEach(function (id) {
   t(pk.indexOf(id) >= 0, 'PROBES 认得 langs.js 的 wasm.id "' + id + '"');
 });
 
-console.log('\n=== 4. NEED 里的文件名都要能在 runtimes.json 清单里找到 ===');
+console.log('\n=== 4. NEED 与 runtimes.json 要**双向**一致 ===');
 var man = JSON.parse(fs.readFileSync(path.join(root, 'api/runtimes.json'), 'utf8'));
 var list = man.runtimes || [];
 var allFiles = {};
 list.forEach(function (rt) { (rt.files || []).forEach(function (f) { allFiles[f.name] = true; }); });
-var nb = block('NEED'), fre = /'([^']+\.(?:js|wasm|zip|tar|json))'/g, want = [];
+
+/* NEED 的每个文件都要在清单里 */
+var nb = block('NEED');
+var want = [], fre = /'([^']+\.(?:js|wasm|zip|tar|json))'/g;
 while ((m = fre.exec(nb))) if (want.indexOf(m[1]) < 0) want.push(m[1]);
 var lacking = want.filter(function (f) { return !allFiles[f]; });
-t(lacking.length === 0, 'NEED 引用的文件都在清单里',
+t(lacking.length === 0, 'NEED 引用的文件都在清单里（否则下载时找不到）',
   lacking.length ? '清单里没有：' + lacking.join('、') : '');
+
+/* 反向：清单里列的文件 NEED 都要真的用。
+   实测栽过：Lua 清单列了 3 个文件（1.6 MB），而 runLua 只用 fengari-web.js（219 KB）
+   —— lua.js / lua.wasm 是**零引用的死资产**，却让界面显示 1.6 MB。
+   用户以为要下 1.6 MB，实际只下 219 KB，属于"显示与实际不符"。 */
+var nmap = {}, kre = /(?:^|\s)([A-Za-z_$][\w$]*)\s*:\s*\[([^\]]*)\]/g;
+while ((m = kre.exec(nb))) {
+  var fs2 = [], fe = /'([^']+)'/g, mm;
+  while ((mm = fe.exec(m[2]))) fs2.push(mm[1]);
+  nmap[m[1]] = fs2;
+}
+var ALIAS = { pyodide: 'python', sqlite: 'sql' };
+var dead = [];
+list.forEach(function (rt) {
+  var id = rt.id;
+  if (rt.ready === false) return;           /* 残缺/未接线的不查 */
+  var need = nmap[ALIAS[id] || id] || nmap[id];
+  if (!need) return;
+  (rt.files || []).forEach(function (f) {
+    if (need.indexOf(f.name) < 0) dead.push(id + '/' + f.name);
+  });
+});
+t(dead.length === 0, '清单里没有零引用的死资产（否则体积显示会虚高）',
+  dead.length ? '清单列了但 NEED 不用：' + dead.join('、') +
+    '\n       （会让界面显示的体积远大于实际下载量）' : '');
+
+console.log('\n=== 5. 体积提示（SIZE_HINT）与实际下载量不能差太多 ===');
+var sb = /var SIZE_HINT = \{([\s\S]*?)\};/.exec(w);
+if (sb) {
+  var hint = {}, hre = /([A-Za-z_$][\w$]*)\s*:\s*([\d.]+)/g;
+  while ((m = hre.exec(sb[1]))) hint[m[1]] = parseFloat(m[2]);
+  list.forEach(function (rt) {
+    var id = rt.id, h = hint[ALIAS[id] || id] != null ? hint[ALIAS[id] || id] : hint[id];
+    if (h == null || rt.ready === false) return;
+    var mb = (rt.files || []).reduce(function (a, f) { return a + (f.size || 0); }, 0) / 1048576;
+    /* 进度条按 SIZE_HINT 算百分比，差太多会跳变；允许 1.5 倍误差 */
+    t(Math.abs(h - mb) <= Math.max(1.0, mb * 0.5),
+      id + ' 的体积提示 ' + h + ' MB 与清单 ' + mb.toFixed(1) + ' MB 相符');
+  });
+}
 
 console.log('\n\u901a\u8fc7 ' + P + ' / ' + (P + F));
 process.exit(F ? 1 : 0);

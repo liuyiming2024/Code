@@ -242,7 +242,7 @@ var PROBES = {
 var KNOWN_BROKEN = {};
 
 var SIZE_HINT = {
-  sql: 0.7, python: 14, lua: 0.5, cpp: 90, php: 16.5, ruby: 34
+  sql: 0.7, python: 14, lua: 0.2, cpp: 90, php: 16.5, ruby: 34
 };
 
 function say(type, data) {
@@ -729,6 +729,15 @@ function runPython(code) {
   });
 }
 
+/* ⚠ fengari 是**纯 JS 的 Lua VM**，浏览器里没有文件系统，
+   所以它**没有 io 库**（真跑确认：`print(type(io))` → nil）。
+   用户写 io.write / io.read 会得到
+       "attempt to index a nil value (global 'io')"
+   这句话他会当成"我代码写错了"，而实际是这个 VM 就没有 io ——
+   属于**报错把真因藏起来**。所以在报错里补一句说明。
+   其余标准库（string/table/math/os/utf8/coroutine/debug）实测都在。 */
+var LUA_NO_IO = /\b(io\.(write|read|open|lines|output|input)|io\.stdout|io\.stderr)\b/;
+
 function runLua(code) {
   // fengari-web.js 是 webpack 打包好的，fengari 核心已 bundle 在内
   // ⚠ 必须走 window 垫片版 —— 它的 UMD 包装直接引用 window，Worker 里没有
@@ -758,7 +767,14 @@ function runLua(code) {
     fengari.lua.lua_setglobal(L, 'print');
     var st = fengari.lauxlib.luaL_dostring(L, fengari.to_luastring(code));
     if (st !== fengari.lua.LUA_OK) {
-      out.push('Lua 错误：' + fengari.lua.lua_tojsstring(L, -1));
+      var msg = fengari.lua.lua_tojsstring(L, -1);
+      out.push('Lua 错误：' + msg);
+      /* 用了 io 的话补一句：否则用户只会看到 "attempt to index a nil value (global 'io')"，
+         以为是自己代码写错，实际是这个 VM 没带 io 库。 */
+      if (LUA_NO_IO.test(code) && /nil value \(global 'io'\)/.test(String(msg))) {
+        out.push('\n说明：本项目的 Lua 用 Fengari（纯 JS 虚拟机），浏览器里没有文件系统，' +
+          '所以**不带 io 库**。请改用 print 输出、用字符串变量代替文件读写。');
+      }
     }
     return out.join('\n');
   });

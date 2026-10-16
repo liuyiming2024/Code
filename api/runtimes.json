@@ -60,21 +60,10 @@
           "size": 219632,
           "sha256": "fbea0ee4b2e38840f96b03eb7ee162ae391127df26fccd000a2b8756535c8186",
           "url": "https://liuyiming2024.github.io/assets/rt/fengari-web.js"
-        },
-        {
-          "name": "lua.js",
-          "size": 213536,
-          "sha256": "6b2d4e3a313352109ab8f4795f0c6ad0a1b9267e378512b1382d62025b358d47",
-          "url": "https://liuyiming2024.github.io/assets/rt/lua.js"
-        },
-        {
-          "name": "lua.wasm",
-          "size": 1255815,
-          "sha256": "d97c1a48364c4b4d4d391d4e2a7cbb43f5c1439e36aaeed7b43bcb58f8beb4f4",
-          "url": "https://liuyiming2024.github.io/assets/rt/lua.wasm"
         }
       ],
-      "ready": true
+      "ready": true,
+      "note": "文件清单里原本还列了 lua.js + lua.wasm（Emscripten 编译的 Lua），但**全仓零引用** —— runLua 只用 fengari-web.js。留着它们会让界面显示 1.6 MB，而实际按 NEED 只下载 219 KB，属于\"显示与实际不符\"。已移除该两个死资产条目（文件仍在 assets 仓库里，需要用的时候再加回来）。"
     },
     {
       "id": "pyodide",
@@ -138,7 +127,9 @@
           "url": "https://liuyiming2024.github.io/assets/rt/quickjs.wasm"
         }
       ],
-      "ready": true
+      "ready": false,
+      "broken": "资源残缺：仓库里的 quickjs.js 只是 @jitl/quickjs-ffi-types 的 **variant 定义文件**，不是运行时本体。它 import 的 \"@jitl/quickjs-wasmfile-release-sync/emscripten-module\" 是**裸 npm 包名**，浏览器无法解析（需要 importmap 或打包器），且整个包的其他部分都不在仓库里。所以下完了也起不来，不是接线问题。",
+      "readyNote": "资源残缺（quickjs.js 只是 variant 定义，依赖裸 npm 包名），下载了也无法启动"
     },
     {
       "id": "ruby",

@@ -146,9 +146,15 @@ var NEED = {
  *               并已据此验证"复用实例时清名字空间"确实有效
  *               （第二次 print(x) 报 NameError，不会残留上次变量）
  *               —— 原缺 pyodide.asm.js 与 pyodide-lock.json，已补齐
- *   ❓ php / ruby / cpp —— 未跑过，期望值只是按语言语义推断。
- *              其中 php 已查出一处必然失败的错（导出名是 PHP 不是 PhpWeb），
- *              已修，但**修完还没真跑过** —— 不能因此就标成通过。
+ *   🔧 php —— 查出**整套 API 对不上**（用了不存在的 addEventListener 与 .run），
+ *              已按源码重写为 ready-Promise + print/printErr + pib_run。
+ *              **未真跑**：php-web.js.wasm 16.5 MB 在本环境反复下不到（502/403）
+ *   🔧 ruby —— 查出**导出名不对**（只导出 DefaultRubyVM，代码却找 RubyVM），
+ *              且签名也不同（要 WebAssembly.Module，返回 {vm,...}）。已重写。
+ *              **未真跑**：ruby+stdlib.wasm 33.6 MB 同样下不到
+ *   ❓ cpp  —— 未跑过。但已静态核对：compile 确实导出、wasi-shim 的
+ *              ConsoleStdout/OpenFile/File/WASI 也确实导出 ——
+ *              接线**看着是对的**，只是没跑起来验证过
  */
 /* 清单里的运行时 id 与 PROBES 的语言 key 不同名：
    清单用 pyodide/sqlite，PROBES 用 python/sql —— 抄表必然漂移，这里显式映射。 */
@@ -724,16 +730,31 @@ function runLua(code) {
 }
 
 function runPHP(code) {
+  /* ⚠ 这一整块原来都是错的 —— 实测（全文搜索确认）逐条对照：
+   *
+   *   原代码用的                    php-web.js 里有没有
+   *   ─────────────────────────    ──────────────────────
+   *   php.addEventListener(...)      **全文零次**（不是模块，是裸 Emscripten 产物）
+   *   php.run(code)                 **不存在**（没有 Module["run"]、没有 .run=）
+   *
+   *   也就是说：addEventListener 一调用就 TypeError，而它被 try/catch 包着，
+   *   于是每次都静默返回「PHP 初始化失败：...is not a function」。
+   *   **PHP 从来没跑起来过，而且看起来还像是"初始化有问题"** ——
+   *   用户会以为环境有问题，不会想到是 API 整个对不上。
+   *
+   * 它真正暴露的入口（逐个从源码里确认过）：
+   *   Module["ready"]   —— **Promise**，不是事件
+   *   Module["print"] / ["printErr"] —— 输出捕获
+   *   _pib_run / _pib_exec / _zend_eval_string —— 执行 PHP 源码
+   *
+   * ⚠ 修完**尚未真跑验证**：php-web.js.wasm 有 16.5 MB，
+   *   本环境反复下载都失败（502 / 403），拿不到就跑不了。
+   *   所以下面是按源码推断的正确 API，不是已验证结论。
+   */
   load('php-web.js');
   return new Promise(function (resolve) {
-    var out = [];
+    var out = [], err = [];
     try {
-      /* ⚠ 导出名实测是 **PHP**，不是 PhpWeb。
-           此前这里只认 self.PhpWeb —— 而 php-web.js 的收尾是
-             var PHP = ...;  if (module) module.exports = PHP
-           Worker 里没有 module，于是靠"顶层 var 成为全局属性"挂到 self 上，
-           名字就是 PHP。认错名字 = 永远抛"未导出"，PHP 一次都没跑起来过。
-           现在两个名字都认，并在都不在时把实际全局列出来（不静默失败）。 */
       var PhpWeb = self.PhpWeb || self.PHP ||
                    (self.phpwasm && (self.phpwasm.PhpWeb || self.phpwasm.PHP));
       if (!PhpWeb) {
@@ -742,47 +763,85 @@ function runPHP(code) {
         throw new Error('php-web.js 未导出可识别的运行时（找过 PhpWeb / PHP）。' +
           '全局里 PHP 相关的键：' + (gl.length ? gl.join(', ') : '(无)'));
       }
-      var php = new PhpWeb({ locateFile: function (f) { return urlOf(f); } });
-      php.addEventListener('output', function (e) { out.push(e.detail); });
-      php.addEventListener('error', function (e) { out.push('[stderr] ' + e.detail); });
-      php.addEventListener('ready', function () {
-        php.run(code).then(function () { resolve(out.join('')); },
-                           function (e) { resolve(out.join('') + '\n' + (e && e.message || e)); });
+      var php = new PhpWeb({
+        locateFile: function (f) { return urlOf(f); },
+        print: function (t) { out.push(t); },        // stdout
+        printErr: function (t) { err.push(t); }      // stderr
+      });
+
+      Promise.resolve(php.ready).then(function () {
+        /* 执行入口按版本可能不同，依次尝试已知的几种。
+           全都对不上时把实际导出列出来 —— 不静默返回空。 */
+        var names = ['pib_run', 'pib_exec', 'zend_eval_string'];
+        var hit = null;
+        for (var i = 0; i < names.length; i++) {
+          if (php.ccall) {
+            try { php.ccall(names[i], 'number', ['string'], [code]); hit = names[i]; break; }
+            catch (e) { /* 换下一个 */ }
+          }
+        }
+        if (!hit) {
+          var has = [];
+          for (var k2 in php) { if (/^_?(pib|zend)/.test(k2)) has.push(k2); }
+          resolve((out.join('') || '(无输出)') +
+            '\nPHP 未能执行：没有可用的执行入口。实际导出：' +
+            (has.length ? has.join(', ') : '(无)'));
+          return;
+        }
+        var text = out.join('');
+        if (err.length) text += (text ? '\n' : '') + '[stderr] ' + err.join('');
+        resolve(text);
+      }, function (e) {
+        resolve('PHP 启动失败：' + String((e && e.message) || e));
       });
     } catch (e) {
-      resolve('PHP 初始化失败：' + (e && e.message || e));
+      resolve('PHP 初始化失败：' + String((e && e.message) || e));
     }
   });
 }
 
 function runRuby(code) {
-  /* ruby-wasi.js 是 ESM，importScripts 吃不下 —— 改用动态 import()。
-     导出形状没在真机确认过，所以依次尝试常见名字；
-     全都对不上时把实际导出列出来，不静默返回空。 */
+  /* ⚠ 原来这里找的是 `RubyVM`，而 ruby-wasi.js **只导出 DefaultRubyVM**
+     （源码末尾：`export{X as DefaultRubyVM}`，全局搜不到 RubyVM、也没有 default）。
+     所以每次都走进 `if (!VM) throw '没有可识别的导出'` ——
+     **Ruby 从来没跑起来过**，而且报错还挺像"文件有问题"。
+     用户会以为下载坏了，不会想到是 API 名字整个不对。
+
+     签名也和原来假设的不同：
+       DefaultRubyVM(wasmModule, options) → { vm, wasi, instance }
+     也就是
+       ① 第一个参数是**编译好的 WebAssembly.Module**，不是 URL 字符串
+       ② 返回的是**包装对象**，真正能 eval 的是里面的 .vm
+       ③ 执行用 vm.eval(code) / vm.evalAsync(code)
+
+     ⚠ 修完**尚未真跑验证**：ruby+stdlib.wasm 有 33.6 MB，
+       本环境下载不下来（与 php 的 16.5 MB 同样下不到）。
+       下面是按源码确认的 API 写的正确形态，不是已验证结论。
+  */
   return loadESM('ruby-wasi.js').then(function (m) {
-    var keys = Object.keys(m || {});
-    var VM = m.RubyVM || m.default || (m.default && m.default.RubyVM);
-    if (!VM) {
-      throw new Error('ruby-wasi.js 没有可识别的导出。实际导出：' +
-        (keys.length ? keys.join(', ') : '(空)'));
+    var Factory = m.DefaultRubyVM || m.RubyVM ||
+                  (m.default && (m.default.DefaultRubyVM || m.default.RubyVM));
+    if (!Factory) {
+      throw new Error('ruby-wasi.js 未导出 DefaultRubyVM。实际导出：' +
+        (Object.keys(m || {}).join(', ') || '(空)'));
     }
-    /* 各版本构造方式不同：有的要先 new 再 await init，有的是工厂函数 */
-    return Promise.resolve()
-      .then(function () { return typeof VM === 'function' ? new VM() : VM; })
-      .then(function (vm) {
-        return (vm && typeof vm.init === 'function') ? vm.init().then(function () { return vm; }) : vm;
+    /* 先把 wasm 编译成 Module —— DefaultRubyVM 要的是这个，不是 URL */
+    return (origFetch || self.fetch)(urlOf('ruby+stdlib.wasm'))
+      .then(function (r) {
+        if (!r.ok) throw new Error('ruby+stdlib.wasm 读取失败：HTTP ' + r.status);
+        return r.arrayBuffer();
       })
-      .then(function (vm) {
-        var run = null;
-        ['eval', 'evalAsync', 'run', 'runAsync'].forEach(function (k) {
-          if (!run && vm && typeof vm[k] === 'function') run = vm[k].bind(vm);
-        });
+      .then(function (buf) { return WebAssembly.compile(buf); })
+      .then(function (mod) { return Factory(mod); })
+      .then(function (built) {
+        var vm = built && (built.vm || built);
+        var run = (vm && (vm.evalAsync || vm.eval)) ||
+                  (built && (built.evalAsync || built.eval));
         if (!run) {
-          throw new Error('RubyVM 实例没有可识别的执行方法。实例导出：' +
-            (vm ? Object.keys(vm).join(', ') : '(空)'));
+          throw new Error('RubyVM 实例没有可识别的执行方法。实际键：' +
+            (built ? Object.keys(built).join(', ') : '(空)'));
         }
-        return Promise.resolve(run(code)).then(function (r) {
-          /* 不同版本返回值形态不一：可能是字符串，也可能是带 output 的对象 */
+        return Promise.resolve(run.call(vm || built, code)).then(function (r) {
           if (r == null) return '';
           if (typeof r === 'string') return r;
           if (typeof r === 'object') {

@@ -915,7 +915,11 @@
         return;
       }
       var who = r.who && r.who.uid ? '账号 ' + U.esc(r.who.uid) : '已就绪';
-      st.innerHTML = '<b>可用</b> · ' + who;
+      /* 快通道（后端直连）是秒级，慢通道（Actions 搬运）要等几十秒 ——
+         不说清楚的话，快通道的用户看到"要等一会儿"会以为坏了，
+         慢通道的用户看到没提示会以为卡死然后刷新。 */
+      var chTxt = (r.channel === 'worker') ? '快通道' : '慢通道（每次要等一会儿）';
+      st.innerHTML = '<b>可用</b> · ' + who + ' · ' + chTxt;
       return D.list().then(function (items) {
         if (!list) return;
         list.innerHTML = '';
@@ -947,6 +951,21 @@
     });
   };
 
+  /* 错误提示要说人话。有一条尤其必须单独处理：
+       对面上传时**会先查重**，内容完全一样就拒绝并抛
+       "存储里已经有完全一样的内容了"。
+       这其实是成功（东西确实在那儿），但报成了失败 ——
+       用户会以为上传坏了，于是反复重试、甚至改坏文件再去传。
+       所以把它翻成"已经在里面了，不用再传"。 */
+  UI.driveErr = function (what, e) {
+    var m = String((e && e.message) || e);
+    if (/已经有完全一样的内容|dup/.test(m)) {
+      U.toast(what + '完成：里面已经有完全一样的内容了，不用再传');
+      return;
+    }
+    U.toast(what + '失败：' + m, 'err');
+  };
+
   function fmtSize(n) {
     n = Number(n) || 0;
     if (n < 1024) return n + ' B';
@@ -960,10 +979,10 @@
   UI.driveGet = function (id, name) {
     var D = Code.drive;
     if (!D) return;
-    U.toast('正在取回…（要等一会儿）');
+    U.toast('正在取回…');
     D.download(id).then(function (blob) {
       return blob.text().then(function (txt) { return UI.drivePut(name || 'drive-file.txt', txt); });
-    }).catch(function (e) { U.toast('取回失败：' + String((e && e.message) || e), 'err'); });
+    }).catch(function (e) { UI.driveErr('取回', e); });
   };
 
   /* 把一段文本落成文件并打开。重名自动改名，不覆盖。 */
@@ -986,6 +1005,14 @@
     }).catch(function (e) { U.toast('存不进去：' + String((e && e.message) || e), 'err'); });
   };
 
+  /* 慢通道（Actions 搬运）要等几十秒 —— 这期间刷新会前功尽弃，
+     所以必须**在操作开始前**就说清楚，而不是等用户等急了才提示。
+     快通道秒级返回，不需要这句话（说了反而是噪音）。 */
+  function slowHint(r) {
+    if (r && r.channel === 'worker') return null;
+    return '加密网盘要由后台搬一趟，通常要等几十秒 —— 这期间别刷新页面。';
+  }
+
   /* 存进去：把当前打开的文件传上去。
      用**完整路径**当名字 —— 只传文件名的话，不同目录下的同名文件会互相覆盖。 */
   UI.driveSave = function () {
@@ -995,14 +1022,19 @@
     if (!path) { U.toast('先打开一个文件', 'err'); return; }
     var fs = Code.fs;
     if (!fs || !fs.read) { U.toast('文件系统还没就绪', 'err'); return; }
-    U.toast('正在上传…（要等一会儿，这期间别刷新）');
-    fs.read(path).then(function (txt) {
-      var blob = new Blob([String(txt == null ? '' : txt)], { type: 'text/plain;charset=utf-8' });
-      return D.upload(blob, path).then(function () {
-        U.toast('已存入加密网盘');
-        UI.refreshDrive();
+    U.toast('正在上传…');
+    D.status().then(function (r) {
+      if (r && !r.ok) { U.toast('加密网盘用不了：' + (r.reason || ''), 'err'); return null; }
+      var hint = slowHint(r);
+      if (hint) U.toast(hint);
+      return fs.read(path).then(function (txt) {
+        var blob = new Blob([String(txt == null ? '' : txt)], { type: 'text/plain;charset=utf-8' });
+        return D.upload(blob, path).then(function () {
+          U.toast('已存入加密网盘');
+          UI.refreshDrive();
+        });
       });
-    }).catch(function (e) { U.toast('上传失败：' + String((e && e.message) || e), 'err'); });
+    }).catch(function (e) { UI.driveErr('上传', e); });
   };
 
   /* 统一身份服务的状态变化（含**跨标签页**）要能带动云盘刷新。

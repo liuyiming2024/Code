@@ -31,7 +31,15 @@
   var Code = global.Code || (global.Code = {});
 
   var CLOUD_PAGE = 'https://liuyiming2024.github.io/Cloud/';
-  var READY_TIMEOUT = 15000;   /* Cloud 页面要 fetch 账号信息，15 秒够了 */
+
+  /* ---------- 契约版本 ----------
+     对面（Cloud）在 Cloud.api 上声明了 version。**改接口必须跟着 bump**。
+     这边记下自己认得的范围，超出就明确报不兼容。
+     不查版本的话，对面改了方法名而我们照旧调用，报的是
+     "加密网盘没有 xxx 这个方法" —— 看不出是版本问题，只会以为功能坏了。 */
+  var MIN_VER = 1, MAX_VER = 99;
+
+  var READY_TIMEOUT = 20000;   /* Cloud 页面要 fetch 账号信息，慢通道也可能在跑 */
   var POLL = 120;
 
   var frame = null;
@@ -81,7 +89,17 @@
           return;
         }
         /* api 对象在，但内部 ensure() 可能是异步的 —— 用 ready()/reason() 判 */
-        if (api.ready()) { clearInterval(timer); resolve(api); return; }
+        if (api.ready()) {
+          clearInterval(timer);
+          /* 版本只在就绪后查一次：没就绪时 version 也可能还没定 */
+          var v = Number(api.version || 0);
+          if (v && (v < MIN_VER || v > MAX_VER)) {
+            reject(new Error('加密网盘接口版本 ' + v + ' 不在这边支持的范围内'));
+            return;
+          }
+          resolve(api);
+          return;
+        }
         var r = '';
         try { r = api.reason() || ''; } catch (e) { }
         /* reason 为 null 表示可用；还在"还没初始化"就继续等 */
@@ -115,7 +133,12 @@
     status: function () {
       if (!sameOrigin()) return Promise.resolve({ ok: false, reason: '不同源', canJump: true });
       return boot().then(function (api) {
-        return { ok: !!api.ready(), reason: api.reason() || null, who: api.who() };
+        var ch = 'actions';
+        try { if (typeof api.channel === 'function') ch = api.channel() || 'actions'; } catch (e) { }
+        return {
+          ok: !!api.ready(), reason: api.reason() || null,
+          who: api.who(), channel: ch, version: Number(api.version || 0)
+        };
       }).catch(function (e) {
         return { ok: false, reason: String((e && e.message) || e), canJump: true };
       });
@@ -135,6 +158,27 @@
     /* 专业模式：口令不跨页面存，所以每次都要显式交一次。
        只在本次会话的 iframe 里有效，不会写进任何存储。 */
     unlock: function (pass) { return call('unlock', [pass]); },
+
+    /* ---------- 反向：项目云盘 → 加密网盘 ----------
+       对面（Cloud）在被嵌进来时会挂上 CloudBridge，
+       它借这边的能力去读项目云盘，再把内容转存进加密网盘。
+       方向是**单向**的、由人发起的，不是自动同步。 */
+    importFromCode: function (path) {
+      return boot().then(function () {
+        var B = null;
+        try { B = frame && frame.contentWindow && frame.contentWindow.CloudBridge; } catch (e) { }
+        if (!B || typeof B.importFromCode !== 'function') {
+          throw new Error('对面没有提供转存通道（可能不是当模块加载的）');
+        }
+        return B.importFromCode(path);
+      });
+    },
+    canImport: function () {
+      try {
+        var B = frame && frame.contentWindow && frame.contentWindow.CloudBridge;
+        return !!(B && typeof B.importFromCode === 'function');
+      } catch (e) { return false; }
+    },
 
     reset: function () {
       bootPromise = null;

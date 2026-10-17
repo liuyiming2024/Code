@@ -1034,6 +1034,34 @@
        ⚠ 刷新时机在 UI.setView('cloud')，不在这里 ——
           它要加载 Cloud 页面（隐藏 iframe），不该在启动时就做。 */
     on('#btn-drive-save', 'click', function () { UI.driveSave(); });
+    /* 转存：项目云盘 → 加密网盘。
+       走的是对面提供的通道（它借这边的 Code.cloud 去读，再存进它那边）。
+       ⚠ 这是**单向、手动**的动作，不是自动同步。 */
+    on('#btn-drive-import', 'click', function () {
+      var D = Code.drive;
+      if (!D) return;
+      var cur = (UI.tabs && UI.tabs.current) ? UI.tabs.current() : '';
+      U.modal({
+        title: '转存到加密网盘',
+        inputs: [{ name: 'p', label: '项目云盘里的路径', value: cur || '', placeholder: 'src/main.js' }],
+        actions: [
+          { label: '取消' },
+          {
+            label: '转存', primary: true, onClick: function (close, v) {
+              var p = String((v && v.p) || '').trim();
+              if (!p) { U.toast('填个路径', 'err'); return false; }
+              close();
+              U.toast('正在转存…');
+              D.importFromCode(p).then(function () {
+                U.toast('已转存到加密网盘');
+                UI.refreshDrive();
+              }).catch(function (e) { UI.driveErr('转存', e); });
+            }
+          }
+        ]
+      });
+    });
+
     on('#btn-drive-open', 'click', function () {
       if (Code.drive && Code.drive.page) window.open(Code.drive.page, '_blank', 'noopener');
     });

@@ -165,5 +165,27 @@ t(/fs\.exists\(p\)/.test(ui), '取回前要检查同名文件是否已存在');
 /* 上传要用完整路径当名字 */
 t(/D\.upload\(blob, path\)/.test(ui), '上传要用完整路径当名字（否则同名互相覆盖）');
 
+console.log('\n=== 12. 对面（Cloud）适配后的契约 ===');
+/* 对面给 Cloud.api 加了 version 与 channel()，这边要跟着认。
+   不认版本的话，对面改了接口我们照旧调用，报出来的是
+   "没有这个方法"，看不出是版本问题。 */
+t(/MIN_VER/.test(drive), '要声明支持的契约版本范围');
+t(/api\.version/.test(drive), '就绪后要查一次契约版本');
+t(/不在这边支持的范围内/.test(drive), '版本不匹配要明确报不兼容');
+/* 通道决定等待提示：快通道说"要等一会儿"是误导，慢通道不说会让人以为卡死 */
+t(/api\.channel/.test(drive), '要探测通道（快/慢）');
+t(/channel === 'worker'/.test(ui), '快通道要能识别出来');
+t(/慢通道（每次要等一会儿）/.test(ui), '状态要显示当前是快通道还是慢通道');
+/* 查重被拒其实是成功（东西确实在），报成失败会让人反复重试甚至改坏文件 */
+t(/已经有完全一样的内容/.test(ui), '查重被拒要翻成"已经在里面了"，不能报成失败');
+
+/* 反向通道：项目云盘 → 加密网盘 */
+t(/importFromCode/.test(drive), 'drive.js 要提供反向转存');
+t(/CloudBridge/.test(drive), '要访问对面的 CloudBridge');
+t(html.indexOf('id="btn-drive-import"') >= 0, '界面有转存入口');
+t(/D\.importFromCode\(p\)/.test(app), '转存按钮真的调了 importFromCode');
+/* 转存必须手动、单向 —— 说清楚不是自动同步 */
+t(/不是自动同步|单向/.test(app) || /不互通/.test(html), '要说清是手动单向，不是自动同步');
+
 console.log('\n\u901a\u8fc7 ' + P + ' / ' + (P + F));
 process.exit(F ? 1 : 0);

@@ -6,6 +6,8 @@
 var fs = require('fs'), path = require('path');
 var root = path.join(__dirname, '..');
 var html = fs.readFileSync(path.join(root, 'index.html'), 'utf8');
+var runnerSrc = fs.readFileSync(path.join(root, 'js/runner.js'), 'utf8');
+var workSrc = fs.readFileSync(path.join(root, 'js/rt-worker.js'), 'utf8');
 var ui = fs.readFileSync(path.join(root, 'js/ui.js'), 'utf8');
 var app = fs.readFileSync(path.join(root, 'js/app.js'), 'utf8');
 var css = fs.readFileSync(path.join(root, 'css/style.css'), 'utf8');
@@ -208,6 +210,34 @@ t(/这不是文本文件，Code 里改不了/.test(ui), '非文本要如实拒�
 /* 对面的已知 bug 要能识别出来，别让用户对着自己的文件反复重试 */
 t(/function explain/.test(drive), '要能识别"对面代码的问题"');
 t(/procArg/.test(drive), '要认得对面的 procArg 未定义错误');
+
+console.log('\n=== 14. stdin（竞赛刚需）与 store 接口 ===');
+/* Code.store 没有 get 方法 —— 只有 set / prefs / load / save / reset。
+   调用 store.get(...) 会在启动阶段抛 TypeError，整个 app.js 挂掉。
+   ⚠ 这条断言必须**剥掉注释再查**，否则注释里为了解释原因提到的
+   store.get( 会被当成真的在调用（与 HTML 注释那次同类误判）。 */
+var codeOf = function (src) {
+  return src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '');
+};
+for (var f of ['js/app.js', 'js/ui.js', 'js/runner.js', 'js/runtimes.js']) {
+  var c = codeOf(fs.readFileSync(path.join(root, f), 'utf8'));
+  t(f + ' 没有调用不存在的 store.get', !/\bstore\.get\s*\(/.test(c));
+}
+/* store 上真实存在的方法，引用了就该存在 */
+var storeSrc = fs.readFileSync(path.join(root, 'js/store.js'), 'utf8');
+t('Code.store 确实没有 get（断言的前提成立）',
+  !/^\s{4}get:/m.test(storeSrc) && /set: function/.test(storeSrc));
+
+/* stdin 链路：UI → runner → runtimes → Worker，四段都要接上 */
+t(html.indexOf('id="stdin-input"') >= 0, '界面有 stdin 输入区');
+t(/stdin = String\(si\.value/.test(runnerSrc), 'runner 读取 stdin 输入框');
+t(/\}, path, stdin\)/.test(runnerSrc), 'runner 把 stdin 传给 runtimes.run');
+t(/stdin: stdin \|\| ''/.test(fs.readFileSync(path.join(root, 'js/runtimes.js'), 'utf8')),
+  'runtimes 把 stdin 放进发给 Worker 的消息');
+t(/msg && msg\.stdin/.test(workSrc), 'Worker 真的用了消息里的 stdin');
+/* 这个坑实测过：new File([u8]) 会得到长度 1 的空字节，输入全丢 */
+t(/new File\(inBytes\.buffer\)/.test(workSrc),
+  'File 必须传 ArrayBuffer（传 [u8] 会变成 1 个空字节，输入静默丢失）');
 
 console.log('\n\u901a\u8fc7 ' + P + ' / ' + (P + F));
 process.exit(F ? 1 : 0);

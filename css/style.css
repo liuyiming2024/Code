@@ -924,3 +924,22 @@ body.has-vkb .mobile-bar { display: none; }   /* 互斥：有键盘就不显示�
   color: #ff6b6b;
   font-weight: 700;
 }
+
+/* 程序输入（stdin）区 */
+.panel-stdin {
+  border-top: 1px solid var(--line, #333);
+  padding: 6px 10px 8px;
+  background: var(--panel-2, #1c1c1c);
+}
+.stdin-head {
+  display: flex; align-items: center; gap: 8px;
+  font-size: 11px; opacity: .75; margin-bottom: 4px;
+}
+.stdin-head .spacer { flex: 1; }
+#stdin-input {
+  width: 100%; resize: vertical;
+  font-family: var(--mono, monospace); font-size: 12px; line-height: 1.5;
+  background: var(--bg, #111); color: var(--fg, #ddd);
+  border: 1px solid var(--line, #333); border-radius: 4px; padding: 5px 7px;
+}
+#btn-stdin-toggle.active { opacity: 1; color: var(--accent, #6cf); }

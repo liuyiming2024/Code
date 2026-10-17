@@ -1375,6 +1375,36 @@
     var px = U.$('#btn-panel-close');
     if (px) px.onclick = function () { UI.panel.open(false); store.set('panelOpen', false); };
 
+    /* 程序输入（stdin）区的展开 / 收起。
+       默认收起 —— 多数时候用不到，占着面板高度反而碍事。
+       ⚠ 展开状态要存下来：竞赛时反复用，每次都手动展开很烦。 */
+    /* ⚠ Code.store **没有 get 方法**（只有 set / prefs / load / save / reset）。
+       我第一版写了 store.get('stdinOpen', false) —— 那是调用不存在的函数，
+       会在启动阶段直接抛 TypeError，整个 app.js 挂掉。
+       读偏好只能走 store.prefs。 */
+    var stdinOpen = !!(store.prefs && store.prefs.stdinOpen);
+    function setStdin(open) {
+      stdinOpen = !!open;
+      var box = U.$('#panel-stdin');
+      if (box) box.classList.toggle('hidden', !stdinOpen);
+      var btn = U.$('#btn-stdin-toggle');
+      if (btn) btn.classList.toggle('active', stdinOpen);
+      if (stdinOpen) {
+        var ta = U.$('#stdin-input');
+        if (ta) { try { ta.focus(); } catch (e) { } }
+      }
+      store.set('stdinOpen', stdinOpen);
+    }
+    UI.setStdin = setStdin;
+    setStdin(stdinOpen);
+    var stg = U.$('#btn-stdin-toggle');
+    if (stg) stg.onclick = function () { setStdin(!stdinOpen); };
+    var stc = U.$('#btn-stdin-clear');
+    if (stc) stc.onclick = function () {
+      var ta = U.$('#stdin-input');
+      if (ta) { ta.value = ''; try { ta.focus(); } catch (e) { } }
+    };
+
     bindSettings();
 
     /* 快捷键 */

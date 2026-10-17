@@ -301,6 +301,14 @@
       return;
     }
     var langKey = RT_KEY[id] || id;
+    /* stdin：竞赛题几乎都要读输入。
+       不传的话程序一开头就遇到 EOF —— 用户只会以为"程序没跑起来"，
+       而不会想到是缺少输入。 */
+    var stdin = '';
+    try {
+      var si = U.$('#stdin-input');
+      if (si) stdin = String(si.value || '');
+    } catch (e) { }
     Code.runtimes.run(langKey, code, {
       begin: function (d) {
         printSys('准备 ' + (d.lang ? Code.runtimes.label(d.lang) : '') +
@@ -319,7 +327,7 @@
         printSys('结束');
       },
       fail: function (d) { line('err', (d && d.error) || '运行时失败'); }
-    }, path);
+    }, path, stdin);
   }
 
   /* 注册表 id → runtimes.js 用的语言键。

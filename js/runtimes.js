@@ -152,8 +152,9 @@
 
   /* fileName 决定编译器按哪种语言处理（.c 与 .cpp 的 flags 不同），
      有就传下去；没有就让 Worker 侧用默认值。 */
-  function run(lang, code, hooks, fileName) {
-    call({ cmd: 'run', lang: lang, code: code, fileName: fileName || '' },
+  function run(lang, code, hooks, fileName, stdin) {
+    call({ cmd: 'run', lang: lang, code: code, fileName: fileName || '',
+           stdin: stdin || '' },
          hooks || {}, 10 * 60 * 1000);
   }
 

@@ -1082,7 +1082,19 @@ function runCpp(code, msg) {
       }
       var captured = '';
       var sink = function (d) { captured += new TextDecoder().decode(d); };
-      var fds = [new OpenFile(new File([])),
+      /* stdin：竞赛题几乎都要读输入，空着的话 scanf/cin 立刻 EOF。
+         ⚠ 末尾补换行 —— 否则最后一行没有行尾，
+         `while (getline(cin, s))` 能读到，但 `cin >> x` 之后
+         某些实现不会触发 EOF，程序会多等一下。加上换行最稳。 */
+      var inBytes = new TextEncoder().encode(
+        (msg && msg.stdin) ? String(msg.stdin).replace(/\r\n/g, '\n') : '');
+      /* ⚠⚠ 必须传 **ArrayBuffer**，不能传 [inBytes]：
+         wasi-shim 的 File 构造是 `new Uint8Array(t)`，
+         而 `new Uint8Array([u8])` 会把 u8 当**一个数字**来转 ——
+         实测：输入 "3 4\n"（4 字节）变成 data 长度 1、内容 "\u0000"。
+         输入被静默吞掉，程序读到的是空，用户只会以为程序有 bug。
+         正确写法是 new File(inBytes.buffer)：实测 4 字节原样保留。 */
+      var fds = [new OpenFile(new File(inBytes.buffer)),
                  new ConsoleStdout(sink), new ConsoleStdout(sink)];
       var wasi = new WASI([], [], fds);
       /* 告诉主线程"我要开始执行了" —— 它会把超时切成 20 秒。

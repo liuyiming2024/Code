@@ -10,6 +10,7 @@ import androidx.compose.material3.darkColorScheme
 import androidx.compose.runtime.*
 import androidx.compose.ui.tooling.preview.Preview
 import io.code.app.data.FileStore
+import io.code.app.run.RunHost
 import io.code.app.ui.EditorScreen
 import io.code.app.ui.FileDrawer
 
@@ -29,8 +30,15 @@ import io.code.app.ui.FileDrawer
    ============================================================ */
 
 class MainActivity : ComponentActivity() {
+
+    /* 运行调度器。**必须在这里持有**（而不是在 Compose 内部）：
+       Compose 重组可能多次创建对象，引擎跟着泄漏。
+       并且在 onDestroy 里显式释放。 */
+    private lateinit var runHost: RunHost
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        runHost = RunHost()
         enableEdgeToEdge()
         setContent {
             CodeApp {
@@ -63,6 +71,8 @@ class MainActivity : ComponentActivity() {
                     EditorScreen(
                         fileName = current,
                         store = store,
+                        runHost = runHost,
+                        sourceOf = { id -> readInterpreter(this@MainActivity, id) },
                         onOpenDrawer = { files = store.list(); drawer = true },
                         onFileChanged = { files = store.list() }
                     )
@@ -122,4 +132,32 @@ fun CodeApp(content: @Composable () -> Unit) {
 @Composable
 fun PreviewEditor() {
     CodeApp { }
+
+    /* 释放引擎。不调的话 QuickJS Runtime 一直占着内存，
+       症状是"来回切几次就越来越卡"，很难联想到这里。 */
+    override fun onDestroy() {
+        super.onDestroy()
+        if (::runHost.isInitialized) runHost.close()
+    }
+}
+
+/* ============================================================
+   从 assets 读解释器源码
+   ------------------------------------------------------------
+   ⚠ 读不到必须**明确报错**，不能返回空串让引擎静默失败：
+     空串 → 引擎建得出来、run 也不报错，只是永远提示
+     "Code.cpplite 不存在"。这种"什么都没发生"是最难查的一类，
+     用户会以为是自己的代码有问题。
+   ============================================================ */
+fun readInterpreter(ctx: android.content.Context, id: String): String {
+    val name = when (id) {
+        "cpplite", "pylite" -> "$id.js"
+        else -> return ""
+    }
+    return try {
+        ctx.assets.open(name).bufferedReader().use { it.readText() }
+    } catch (e: Exception) {
+        android.util.Log.e("code_runner", "读不到 assets/$name：${e.message}")
+        ""
+    }
 }

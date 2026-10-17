@@ -178,9 +178,22 @@
       U.$$('#panel .pt').forEach(function (b) {
         b.classList.toggle('active', b.getAttribute('data-panel') === name);
       });
-      ['output', 'console'].forEach(function (n) {
-        U.$('#panel-' + n).classList.toggle('hidden', n !== name);
+      /* ⚠ 页签名单不能硬编码。
+         原本写死 ['output','console']，加了「判题」页签后如果不同步改这里，
+         点判题就会**只高亮页签、内容不显示** —— 看起来像判题没做完，
+         实际是这里漏了一个词。这跟云盘白屏是同一个坑（硬编码视图名单漏项）。
+         改成直接从 DOM 读实际存在的页签。 */
+      U.$$('#panel .pt').forEach(function (b) {
+        var n = b.getAttribute('data-panel');
+        var body = U.$('#panel-' + n);
+        if (body) body.classList.toggle('hidden', n !== name);
       });
+      /* 切到判题就把这个文件的样例读出来。
+         样例是手敲的，切个文件就没了的话用户不会再用第二次。 */
+      if (name === 'judge' && Code.judgeUI) {
+        var p = (UI.tabs && UI.tabs.current) ? UI.tabs.current() : '';
+        Code.judgeUI.load(p);
+      }
       if (name === 'console') setTimeout(function () { var i = U.$('#console-input'); i && i.focus(); }, 0);
     },
     open: function (yes) {

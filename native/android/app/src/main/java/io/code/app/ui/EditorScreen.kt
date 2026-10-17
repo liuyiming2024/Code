@@ -40,11 +40,30 @@ import java.io.IOException
 fun EditorScreen(
     fileName: String,
     store: io.code.app.data.FileStore,
+    runHost: io.code.app.run.RunHost,
+    sourceOf: (String) -> String = { "" },
     onOpenDrawer: () -> Unit = {},
     onFileChanged: () -> Unit = {}
 ) {
     val scope = rememberCoroutineScope()
     val ctx = LocalContext.current
+
+    /* 运行面板状态 */
+    val run = rememberRunState()
+
+    /* 语言：由**扩展名**决定跑哪个解释器。
+       认不出就返回 null —— 那时点运行要给明确提示，
+       而不是拿个默认值去跑（跑出来一堆莫名其妙的语法错误，
+       用户会以为是自己的代码错了）。 */
+    val runnerId = remember(fileName) { io.code.app.run.runnerIdForExt(fileName.substringAfterLast('.', "")) }
+
+    /* 换文件时把上次的结果清掉。
+       不清的话，切到另一个文件会**继续显示上一个文件的输出** ——
+       用户以为自己刚跑的是新文件。这种"张冠李戴"比没有输出更糟。 */
+    LaunchedEffect(fileName) {
+        run.result = null
+        run.running = false
+    }
 
     var value by remember {
         mutableStateOf(TextFieldValue(store.read(fileName)))
@@ -124,7 +143,7 @@ fun EditorScreen(
                     IconButton(onClick = onOpenDrawer) {
                         Icon(Icons.Default.Menu, contentDescription = "文件")
                     }
-                    IconButton(onClick = { /* 第三阶段接运行时 */ }) {
+                    IconButton(onClick = { doRun(scope, runHost, run, value.text, fileName, sourceOf, runnerId) }) {
                         Icon(Icons.Default.PlayArrow, contentDescription = "运行")
                     }
                 }
@@ -132,11 +151,31 @@ fun EditorScreen(
         },
         bottomBar = {
             Column {
+                RunPanel(
+                    state = run,
+                    onRun = { doRun(scope, runHost, run, value.text, fileName, sourceOf, runnerId) },
+                    onStop = { runHost.cancel(); run.running = false },
+                    onStdinAction = { run.stdin = applyToStdin(run.stdin, it) }
+                )
                 SaveStatusBar(saveState)
                 // 原生键盘：系统输入法全程不参与
                 CodeKeyboard(
                     indentUnit = DEFAULT_INDENT,
                     onAction = { act ->
+                        /* ⚠ 输入区聚焦时，按键必须转投给它。
+                           全局禁用了系统输入法，输入区没有别的输入途径 ——
+                           不改投的话用户点输入区敲键盘，**字符全进代码里**，
+                           而输入区永远是空的。他只会以为输入区坏了。 */
+                        if (run.stdinFocused) {
+                            run.stdin = applyToStdin(run.stdin, act)
+                            return@CodeKeyboard
+                        }
+                        /* 键盘上有「运行」键。不接线的话它就是个坏按钮：
+                           按下去毫无反应，用户会以为键盘失灵。 */
+                        if (act == EditAction.Run) {
+                            doRun(scope, runHost, run, value.text, fileName, sourceOf, runnerId)
+                            return@CodeKeyboard
+                        }
                         /* 撤销 / 重做单独处理：它们改的是历史，不是"一次编辑" */
                         if (act == EditAction.Undo) {
                             history.undo(value.text)?.let { value = TextFieldValue(it) }
@@ -275,5 +314,85 @@ private fun SaveStatusBar(state: SaveState) {
             fontSize = 12.sp,
             modifier = Modifier.padding(horizontal = 12.dp, vertical = 3.dp)
         )
+    }
+}
+
+
+/* ============================================================
+   运行与输入区编辑的辅助函数
+   ------------------------------------------------------------
+   放在外面是为了能被测试直接调（不依赖 Compose 运行时）。
+   ============================================================ */
+
+/* 把自研键盘的动作作用到输入区。
+   复用 editor 包里那些已测过的纯函数：退格删整个缩进、
+   回车继承缩进、上下移保持列号 —— 输入区理应和代码区一样好用。 */
+internal fun applyToStdin(v: androidx.compose.ui.text.input.TextFieldValue, act: EditAction)
+        : androidx.compose.ui.text.input.TextFieldValue = when (act) {
+    is EditAction.Insert   -> insertText(v, act.text)
+    is EditAction.Bracket  -> insertBracket(v, act.open, act.close)
+    EditAction.Tab         -> insertText(v, DEFAULT_INDENT)
+    EditAction.Enter       -> enter(v, DEFAULT_INDENT)
+    EditAction.Backspace   -> backspace(v, DEFAULT_INDENT)
+    EditAction.Left        -> moveLeft(v)
+    EditAction.Right       -> moveRight(v)
+    EditAction.Up          -> moveVertical(v, -1)
+    EditAction.Down        -> moveVertical(v, 1)
+    EditAction.Home        -> home(v)
+    EditAction.End         -> end(v)
+    EditAction.SelectAll   -> v.copy(selection = androidx.compose.ui.text.TextRange(0, v.text.length))
+    /* 输入区没有历史栈：它只是临时数据，撤销在这里没意义。
+       吞掉而不是让键盘报错。 */
+    EditAction.Undo, EditAction.Redo -> v
+    EditAction.Save        -> v
+    EditAction.PageUp      -> moveVertical(v, -10)
+    EditAction.PageDown    -> moveVertical(v, 10)
+    /* ⚠ 下面三个不能漏：EditAction 是 sealed interface，
+       when 作表达式用时缺分支**编译不过**。
+       但更要紧的是语义：剪贴板三类在输入区不该静默变成"什么都不做"，
+       所以交给调用方处理（见 EditorScreen 里的 Paste 分支）。 */
+    EditAction.Copy        -> v
+    EditAction.Cut         -> v
+    EditAction.Paste       -> v
+    EditAction.Run         -> v
+    /* Escape：键盘切页/收起。输入区里没有"页"的概念，
+       吞掉即可 —— 但不能漏，漏了会编译不过。 */
+    EditAction.Escape      -> v
+}
+
+internal fun doRun(
+    scope: kotlinx.coroutines.CoroutineScope,
+    host: io.code.app.run.RunHost,
+    state: RunState,
+    code: String,
+    fileName: String,
+    sourceOf: (String) -> String,
+    runnerId: String?
+) {
+    state.visible = true
+    if (runnerId == null) {
+        state.result = io.code.app.run.RunResult(
+            out = "",
+            err = "这个文件认不出是哪种语言，没法运行。\n" +
+                "目前支持：C / C++（.c .cpp .cc）、Python（.py）、JavaScript（.js）。"
+        )
+        return
+    }
+    state.running = true
+    state.result = null
+    val source = sourceOf(runnerId)
+    if (source.isBlank()) {
+        state.running = false
+        state.result = io.code.app.run.RunResult(
+            out = "",
+            err = "解释器源码没读到（$runnerId.js 不在 assets 里）。\n" +
+                "构建时请把 js/cpplite.js 与 js/pylite.js 放进 app/src/main/assets/。"
+        )
+        return
+    }
+    scope.launch {
+        val r = host.runSync(code, state.stdin.text, runnerId, source)
+        state.running = false
+        state.result = r
     }
 }

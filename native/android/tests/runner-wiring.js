@@ -124,5 +124,51 @@ for (const f of ['quickjs.c', 'libregexp.c', 'libunicode.c', 'libbf.c', 'cutils.
 t('QuickJS 缺失时给出明确错误而不是一堆 undefined reference', /FATAL_ERROR/.test(cmake) && /缺少 QuickJS 源码/.test(cmake));
 t('写了接入说明 NDK.md', fs.existsSync(path.join(root, 'NDK.md')));
 
+/* ---------- 8. 运行面板的接线 ---------- */
+const ed = fs.readFileSync(path.join(app, 'ui/EditorScreen.kt'), 'utf8');
+const panel = fs.readFileSync(path.join(app, 'ui/RunPanel.kt'), 'utf8');
+const host = fs.readFileSync(path.join(app, 'run/RunHost.kt'), 'utf8');
+const main = fs.readFileSync(path.join(app, 'MainActivity.kt'), 'utf8');
+
+/* sealed interface 的 when 作表达式必须穷尽全部子类。
+   少一个分支 = **编译不过**；但更难查的是语义漏掉：
+   键盘有 Run 键却没接线，按钮按下去毫无反应。 */
+const kb = fs.readFileSync(path.join(app, 'ui/CodeKeyboard.kt'), 'utf8');
+const subs = [...kb.matchAll(/^\s*(?:data object|data class) (\w+)\s*:/gm)].map(m => m[1]);
+t('解析到 EditAction 子类', subs.length >= 10, '实得 ' + subs.length);
+const stdinWhen = /internal fun applyToStdin[\s\S]*?\n\}/.exec(ed);
+const sw = stdinWhen ? stdinWhen[0] : '';
+t('applyToStdin 覆盖了 EditAction 全部子类',
+  subs.every(n => new RegExp('EditAction\\.' + n + '\\b').test(sw)),
+  '缺：' + subs.filter(n => !new RegExp('EditAction\\.' + n + '\\b').test(sw)).join(','));
+
+/* 键盘「运行」键必须真的接线，否则是坏按钮 */
+t('键盘 Run 键接到了 doRun（不能是空按钮）', /EditAction\.Run\)\s*\{[\s\S]{0,200}?doRun\(/.test(ed));
+
+/* stdin 聚焦时按键必须转投输入区 —— 否则字符全进代码，输入区永远空 */
+t('stdin 聚焦时按键转投给输入区', /if \(run\.stdinFocused\)[\s\S]{0,160}?applyToStdin\(run\.stdin, act\)/.test(ed));
+t('输入区用 TextFieldValue（复用已测过的编辑函数）', /var stdin by mutableStateOf\([\s\S]{0,80}?TextFieldValue/.test(panel));
+
+/* 换文件必须清掉上次结果：不清会"张冠李戴"（显示上一个文件的输出） */
+t('换文件时清掉运行结果', /LaunchedEffect\(fileName\)[\s\S]{0,200}?run\.result = null/.test(ed));
+
+/* 语言认不出要给明确提示，不能拿默认值硬跑 */
+t('认不出语言时明确报错而不是硬跑', /runnerId == null[\s\S]{0,200}?认不出是哪种语言/.test(ed));
+t('解释器源码读不到时明确报错（不能静默空串）', /source\.isBlank\(\)[\s\S]{0,220}?解释器源码没读到/.test(ed));
+
+/* RunHost：后台线程 + 主线程回调 + 释放 */
+t('RunHost 用后台调度器（主线程跑会 ANR）', /Dispatchers\.Default/.test(host));
+t('结果回调切回主线程（后台改 Compose 状态会崩）', /withContext\(Dispatchers\.Main\)/.test(host));
+t('引擎按脚本缓存（避免每次重 eval 三千行）', /engines\[script\]/.test(host));
+t('close 释放全部引擎', /engines\.values\.forEach[\s\S]{0,80}?it\.close\(\)/.test(host));
+t('Activity 销毁时释放', /onDestroy[\s\S]{0,140}?runHost\.close\(\)/.test(main));
+
+/* 解释器源码必须真的在 assets 里 —— 缺了就是"什么都没发生"那种失败 */
+for (const f of ['cpplite.js', 'pylite.js']) {
+  const ap = path.join(root, 'app/src/main/assets', f);
+  t('assets 里有 ' + f, fs.existsSync(ap) && fs.statSync(ap).size > 10000);
+}
+t('提供了同步脚本 sync-assets.sh（避免两份代码各自维护）', fs.existsSync(path.join(root, 'sync-assets.sh')));
+
 console.log('\n通过 ' + P + ' / ' + (P + F));
 process.exit(F ? 1 : 0);

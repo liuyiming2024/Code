@@ -81,6 +81,9 @@
       tree.init({ open: openPath, rename: askRename, remove: askRemove, jump: jumpTo });
       ed.init(elWrap());
       runner.init();
+      /* 判题面板。不调 init 的话三个按钮全是死的 ——
+         点了没反应，用户只会以为功能没做完。 */
+      if (Code.judgeUI) Code.judgeUI.init();
       /* 探一次各运行时的缓存状态，扩展中心才知道谁已下载。
          失败不影响启动 —— 这只是界面显示用的探测。 */
       if (Code.runtime && Code.runtime.refreshStatus) {

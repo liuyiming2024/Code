@@ -353,6 +353,7 @@
       <div class="panel-tabs">
         <button class="pt active" data-panel="output">输出</button>
         <button class="pt" data-panel="console">控制台</button>
+        <button class="pt" data-panel="judge">判题</button>
         <div class="spacer"></div>
         <button class="icon-btn sm" id="btn-stdin-toggle" title="程序输入（stdin）" aria-label="程序输入"><svg><use href="#i-prompt"/></svg></button>
         <button class="icon-btn sm" id="btn-panel-clear" title="清空" aria-label="清空"><svg><use href="#i-trash"/></svg></button>
@@ -360,6 +361,20 @@
       </div>
       <div class="panel-body" id="panel-output"></div>
       <div class="panel-body hidden" id="panel-console"></div>
+      <!-- 判题：拿样例一组一组验证。
+           为什么不显示"提交到 OJ"：见 js/judge.js 文件头 ——
+           爬题与代提交涉及反爬对抗与平台条款，且要存用户的 OJ 密码；
+           本项目是纯前端无后端，本来没有任何值得偷的东西。 -->
+      <div class="panel-body hidden" id="panel-judge">
+        <div class="judge-head">
+          <span>本地判题 —— 把题目的样例填进来，逐组比对</span>
+          <button class="btn tiny" id="btn-judge-add">+ 加一组</button>
+          <button class="btn tiny primary" id="btn-judge-run">判题</button>
+          <button class="btn tiny" id="btn-judge-clear">清空</button>
+        </div>
+        <div id="judge-cases"></div>
+        <div id="judge-result" class="judge-result"></div>
+      </div>
       <!-- 程序输入（stdin）。竞赛题几乎都要读输入，没有它 C++ 真编译器
            对竞赛几乎没有用处 —— 程序一开头就遇到 EOF。
            默认收起：多数时候用不到，展开反而占地方。 -->
@@ -416,6 +431,8 @@
 <script src="js/pylite.js"></script>
 <script src="js/cpplite.js"></script>
 <script src="js/runner.js"></script>
+<script src="js/judge.js"></script>
+<script src="js/judge-ui.js"></script>
 <!-- 全站统一身份服务（login.html / account.html / perm.html 用的同一份）。
      同源（都在 liuyiming2024.github.io），localStorage 直接共享，
      所以在主页/聊天室登录过，打开 Code 就是同一个人 —— 不需要 Code 自己再登一次。

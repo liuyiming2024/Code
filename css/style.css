@@ -943,3 +943,31 @@ body.has-vkb .mobile-bar { display: none; }   /* 互斥：有键盘就不显示�
   border: 1px solid var(--line, #333); border-radius: 4px; padding: 5px 7px;
 }
 #btn-stdin-toggle.active { opacity: 1; color: var(--accent, #6cf); }
+
+/* 判题面板 */
+.judge-head{display:flex;align-items:center;gap:6px;flex-wrap:wrap;
+  padding:6px 0;font-size:12px;color:var(--fg-dim,#8b98a9)}
+.judge-head .spacer{flex:1}
+.judge-case{border:1px solid var(--line,#2a313c);border-radius:6px;margin:6px 0}
+.jc-head{display:flex;justify-content:space-between;align-items:center;
+  padding:3px 8px;font-size:11px;color:var(--fg-dim,#8b98a9);
+  border-bottom:1px solid var(--line,#2a313c)}
+.jc-io{display:flex;gap:6px;padding:6px}
+.jc-io textarea{flex:1;min-width:0;background:var(--bg2,#161b22);
+  color:var(--fg,#e6edf3);border:1px solid var(--line,#2a313c);
+  border-radius:4px;padding:5px;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12px}
+.judge-result{padding:4px 0}
+.jr-sum{padding:5px 8px;border-radius:5px;font-size:12px;font-weight:600;margin:4px 0}
+.jr-case{border-left:3px solid var(--line,#2a313c);padding:4px 8px;margin:4px 0;font-size:12px}
+.jr-ch{color:var(--fg-dim,#8b98a9)}
+.jr-kv{display:flex;gap:6px;margin:3px 0}
+.jr-kv span{flex:0 0 40px;color:var(--fg-dim,#8b98a9)}
+.jr-kv pre,.jr-err{margin:0;white-space:pre-wrap;word-break:break-all;
+  font-family:ui-monospace,Menlo,Consolas,monospace;font-size:11px}
+.jr-err{color:var(--err,#f85149)}
+.ok{color:var(--ok,#3fb950)} .bad{color:var(--err,#f85149)} .warn{color:var(--warn,#d29922)}
+.jr-sum.ok{background:rgba(63,185,80,.12)} .jr-sum.bad{background:rgba(248,81,73,.12)}
+.jr-sum.warn{background:rgba(210,153,34,.12)}
+.jr-case.ok{border-left-color:var(--ok,#3fb950)}
+.jr-case.bad{border-left-color:var(--err,#f85149)}
+.jr-case.warn{border-left-color:var(--warn,#d29922)}

@@ -239,5 +239,34 @@ t(/msg && msg\.stdin/.test(workSrc), 'Worker 真的用了消息里的 stdin');
 t(/new File\(inBytes\.buffer\)/.test(workSrc),
   'File 必须传 ArrayBuffer（传 [u8] 会变成 1 个空字节，输入静默丢失）');
 
+/* ---------- 15. 判题面板的接线 ---------- */
+const htmlJ = fs.readFileSync(path.join(__dirname, '..', 'index.html'), 'utf8');
+const uiSrc = fs.readFileSync(path.join(__dirname, '..', 'js', 'ui.js'), 'utf8');
+const appSrc = fs.readFileSync(path.join(__dirname, '..', 'js', 'app.js'), 'utf8');
+const jui = fs.readFileSync(path.join(__dirname, '..', 'js', 'judge-ui.js'), 'utf8');
+const cssSrc = fs.readFileSync(path.join(__dirname, '..', 'css', 'style.css'), 'utf8');
+
+t('HTML 里有判题页签', /data-panel="judge"/.test(htmlJ));
+t('HTML 里有判题容器', /id="panel-judge"/.test(htmlJ));
+t('引入了 judge.js 与 judge-ui.js', /js\/judge\.js/.test(htmlJ) && /js\/judge-ui\.js/.test(htmlJ));
+
+/* 页签名单硬编码是本项目踩过的坑（云盘白屏就是这么来的）：
+   加了页签不同步名单 = 只高亮不显示内容，看起来像功能没做完。 */
+t('面板切换不再硬编码名单（改成从 DOM 读）',
+  /U\.\$\$\('#panel \.pt'\)\.forEach\([\s\S]{0,220}?toggle\('hidden'/.test(uiSrc));
+t('切到判题会载入该文件的样例', /name === 'judge'[\s\S]{0,200}?judgeUI\.load/.test(uiSrc));
+t('judgeUI.init 真的被调用（否则按钮全死）', /judgeUI\.init\(\)/.test(appSrc));
+
+const judgeSrc = fs.readFileSync(path.join(__dirname, '..', 'js', 'judge.js'), 'utf8');
+t('judge 内部真的执行代码（不是只比字符串）', /lib\.create\(/.test(judgeSrc) && /\.run\(code/.test(judgeSrc));
+t('judge 认不出语言时不硬跑', /if \(!kind\)[\s\S]{0,220}?认不出/.test(judgeSrc));
+t('judge 空样例不算 WA', /verdict = 'NONE'/.test(judgeSrc));
+
+t('样例按文件存（切回来还在）', /'code:judge:'/.test(jui));
+t('只剩一组时不显示删除按钮', /cases\.length > 1/.test(jui));
+t('判题前先显示判题中（同步跑会像卡住）', /判题中/.test(jui));
+t('编辑器为空时明确提示', /编辑器是空的/.test(jui));
+t('样式里有判题相关类', /judge-head/.test(cssSrc) && /jr-sum/.test(cssSrc));
+
 console.log('\n\u901a\u8fc7 ' + P + ' / ' + (P + F));
 process.exit(F ? 1 : 0);

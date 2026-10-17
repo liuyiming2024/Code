@@ -137,5 +137,33 @@ t(/ba\.onclick = function \(\) \{ UI\.openCloud\(\); \}/.test(app), '页眉账�
 t(/on\('#btn-goto-cloud', 'click', function \(\) \{ UI\.openCloud\(\); \}\)/.test(app),
   '设置面板「前往云盘」也走 UI.openCloud');
 
+console.log('\n=== 11. 加密网盘（另一个网盘）互通 ===');
+var drive = fs.readFileSync(path.join(root, 'js/drive.js'), 'utf8');
+
+t(fs.existsSync(path.join(root, 'js/drive.js')), '有 js/drive.js');
+t(html.indexOf('js/drive.js') >= 0, 'index.html 引入 drive.js');
+t(html.indexOf('id="drive-state"') >= 0, '云盘视图有加密网盘状态区');
+
+/* 隐藏 iframe 不能用 display:none —— 部分浏览器会推迟加载，脚本根本不跑 */
+/* ⚠ 只查**实际写在 style 里的那一段** —— 注释里提到 display:none 是为了解释
+   为什么不能用它，全文件搜会把注释当成违规（和 HTML 注释那次同一类误判）。 */
+var styleLine = (drive.match(/f\.style\.cssText\s*=\s*'([^']*)'/) || ['', ''])[1];
+t(/left:-9999px/.test(styleLine), 'iframe 要移出屏幕（left:-9999px）');
+t(!/display:\s*none/.test(styleLine), 'iframe 不能用 display:none（否则脚本不执行）');
+/* 等就绪不能只等对象出现 —— ensure() 是异步的 */
+t(/api\.ready\(\)/.test(drive), '要等 Cloud.api.ready()（对象出现 ≠ 就绪）');
+t(/READY_TIMEOUT/.test(drive), '要有超时（不能无限等）');
+/* 失败要能重试：填过令牌之后应该能再来一次 */
+t(/bootPromise = null/.test(drive), '启动失败要能重试（换账号/填令牌后）');
+t(/sameOrigin/.test(drive), '要先判同源（不同源时走跳转，不能硬来）');
+
+/* 界面与实现不能说谎 */
+t(/两块空间|不互通|独立的一块空间/.test(html), '界面要说明两块空间不互通');
+/* 取回不能覆盖已有文件 */
+t(/重名|不覆盖/.test(ui), '取回重名时不能覆盖本地文件');
+t(/fs\.exists\(p\)/.test(ui), '取回前要检查同名文件是否已存在');
+/* 上传要用完整路径当名字 */
+t(/D\.upload\(blob, path\)/.test(ui), '上传要用完整路径当名字（否则同名互相覆盖）');
+
 console.log('\n\u901a\u8fc7 ' + P + ' / ' + (P + F));
 process.exit(F ? 1 : 0);

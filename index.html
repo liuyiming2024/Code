@@ -234,6 +234,18 @@
         </div>
 
         <p class="hint">云盘是<b>可选</b>的。不登录时一切照旧，文件只存在这台设备上。</p>
+
+        <hr>
+        <div class="field"><label>加密网盘</label>
+          <div id="drive-state" class="hint">（未连接）</div>
+        </div>
+        <div id="drive-list" class="run-list"></div>
+        <div class="row">
+          <button class="btn" id="btn-drive-save">把当前文件存进去</button>
+          <button class="btn" id="btn-drive-open">打开加密网盘</button>
+        </div>
+        <p class="hint">这是另一个网盘：文件在离开这台设备之前就加密好了，
+          上传下载要等几十秒。<b>两个网盘不互通</b>，它是独立的一块空间。</p>
       </div>
     </div>
 
@@ -398,6 +410,7 @@
        不能因为这一个脚本挂了就让云盘整个不可用。 -->
 <script src="/assets/identity.js" onerror="window.__identityFailed=1"></script>
 <script src="js/cloud.js"></script>
+<script src="js/drive.js"></script>
 <script src="js/ai.js"></script>
 <script src="js/api.js"></script>
 <script src="js/tree.js"></script>

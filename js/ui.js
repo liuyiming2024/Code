@@ -132,9 +132,12 @@
 
   /* ================= 侧栏 ================= */
   UI.setView = function (name) {
-    /* 切到云盘就刷一次状态：登录态可能已在别处变化 */
-    if (name === 'cloud' && Code.cloud) {
-      try { setTimeout(function () { UI.refreshCloud(); }, 0); } catch (e) { }
+    /* 切到云盘就刷一次状态：登录态可能已在别处变化。
+       加密网盘**按需**刷 —— 它要加载另一个页面（隐藏 iframe），
+       启动时就做会白白拖慢首屏，而多数人根本不用它。 */
+    if (name === 'cloud') {
+      if (Code.cloud) { try { setTimeout(function () { UI.refreshCloud(); }, 0); } catch (e) { } }
+      try { setTimeout(function () { UI.refreshDrive(); }, 0); } catch (e) { }
     }
     /* ⚠ 这个名单必须**包含 activitybar 上每一个 data-view**。
        之前漏了 'cloud'，后果是：点左侧云盘图标按钮会亮起（active 生效），
@@ -888,6 +891,118 @@
     /* 窄屏下抽屉会盖住编辑器，加遮罩让用户能一键收起 */
     if (isNarrow()) document.body.classList.add('side-open');
     if (UI.refreshCloud) UI.refreshCloud();
+  };
+
+  /* ================= 加密网盘（另一个网盘） =================
+     它与本项目云盘**完全独立**：那边存的是加密后的字节，走 GitHub Actions，
+     上传下载要等几十秒；这边是按文件同步的代码。
+     界面上必须说清这是两块空间 —— 叫混了用户会以为存一份两边都有。 */
+  UI.refreshDrive = function () {
+    var st = U.$('#drive-state');
+    var list = U.$('#drive-list');
+    if (!st) return;
+    var D = Code.drive;
+    if (!D) { st.innerHTML = '（不可用）'; return; }
+
+    /* 状态先如实报，不猜测 */
+    st.innerHTML = '（正在连接…）';
+    D.status().then(function (r) {
+      if (!r.ok) {
+        /* 不可用也要给得出路：能跳过去就用，跳过去之后用户至少知道去哪设置 */
+        st.innerHTML = '用不了：' + U.esc(r.reason || '未知原因') +
+          (r.canJump ? '（点右侧「打开加密网盘」去设置）' : '');
+        if (list) list.innerHTML = '';
+        return;
+      }
+      var who = r.who && r.who.uid ? '账号 ' + U.esc(r.who.uid) : '已就绪';
+      st.innerHTML = '<b>可用</b> · ' + who;
+      return D.list().then(function (items) {
+        if (!list) return;
+        list.innerHTML = '';
+        if (!items || !items.length) {
+          list.innerHTML = '<p class="hint">里面还是空的。</p>';
+          return;
+        }
+        items.forEach(function (it) {
+          var row = document.createElement('div');
+          row.className = 'row';
+          var nm = document.createElement('span');
+          nm.className = 'row-key';
+          nm.textContent = it.name || it.id || '(无名)';
+          var sz = document.createElement('span');
+          sz.className = 'hint';
+          sz.textContent = (it.size != null) ? fmtSize(it.size) : '';
+          var dl = document.createElement('button');
+          dl.className = 'btn';
+          dl.textContent = '取回';
+          dl.onclick = function () { UI.driveGet(it.id, it.name); };
+          row.appendChild(nm); row.appendChild(sz); row.appendChild(dl);
+          list.appendChild(row);
+        });
+      }).catch(function (e) {
+        st.innerHTML = '连上了，但列不出来：' + U.esc(String((e && e.message) || e));
+      });
+    }).catch(function (e) {
+      st.innerHTML = '用不了：' + U.esc(String((e && e.message) || e));
+    });
+  };
+
+  function fmtSize(n) {
+    n = Number(n) || 0;
+    if (n < 1024) return n + ' B';
+    if (n < 1048576) return (n / 1024).toFixed(1) + ' KB';
+    return (n / 1048576).toFixed(1) + ' MB';
+  }
+
+  /* 取回：拿到明文后**存成新文件再打开**。
+     ⚠ 绝不直接覆盖同名文件 —— 本地那份可能已经有改动，
+        覆盖掉就是不可逆的丢失。所以重名时换个名字存，让用户自己比对。 */
+  UI.driveGet = function (id, name) {
+    var D = Code.drive;
+    if (!D) return;
+    U.toast('正在取回…（要等一会儿）');
+    D.download(id).then(function (blob) {
+      return blob.text().then(function (txt) { return UI.drivePut(name || 'drive-file.txt', txt); });
+    }).catch(function (e) { U.toast('取回失败：' + String((e && e.message) || e), 'err'); });
+  };
+
+  /* 把一段文本落成文件并打开。重名自动改名，不覆盖。 */
+  UI.drivePut = function (name, txt) {
+    var fs = Code.fs;
+    if (!fs) { U.toast('文件系统还没就绪', 'err'); return; }
+    var p = U.normPath(String(name || 'drive-file.txt'));
+    /* 重名就加后缀 —— 宁可多一个文件，也不覆盖已有内容 */
+    if (fs.exists && fs.exists(p)) {
+      var dot = p.lastIndexOf('.');
+      var base = dot > 0 ? p.slice(0, dot) : p;
+      var ext = dot > 0 ? p.slice(dot) : '';
+      var i = 1, np;
+      do { np = base + '-' + (i++) + ext; } while (fs.exists(np) && i < 100);
+      p = np;
+    }
+    fs.create(p, 'file', txt).then(function () {
+      if (Code.app && Code.app.open) Code.app.open(p);
+      U.toast('已取回为 ' + p);
+    }).catch(function (e) { U.toast('存不进去：' + String((e && e.message) || e), 'err'); });
+  };
+
+  /* 存进去：把当前打开的文件传上去。
+     用**完整路径**当名字 —— 只传文件名的话，不同目录下的同名文件会互相覆盖。 */
+  UI.driveSave = function () {
+    var D = Code.drive;
+    if (!D) return;
+    var path = UI.tabs && UI.tabs.current && UI.tabs.current();
+    if (!path) { U.toast('先打开一个文件', 'err'); return; }
+    var fs = Code.fs;
+    if (!fs || !fs.read) { U.toast('文件系统还没就绪', 'err'); return; }
+    U.toast('正在上传…（要等一会儿，这期间别刷新）');
+    fs.read(path).then(function (txt) {
+      var blob = new Blob([String(txt == null ? '' : txt)], { type: 'text/plain;charset=utf-8' });
+      return D.upload(blob, path).then(function () {
+        U.toast('已存入加密网盘');
+        UI.refreshDrive();
+      });
+    }).catch(function (e) { U.toast('上传失败：' + String((e && e.message) || e), 'err'); });
   };
 
   /* 统一身份服务的状态变化（含**跨标签页**）要能带动云盘刷新。

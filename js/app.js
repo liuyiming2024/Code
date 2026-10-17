@@ -1030,6 +1030,14 @@
       });
     });
 
+    /* 加密网盘：与本项目云盘是两块独立空间，按钮单独绑。
+       ⚠ 刷新时机在 UI.setView('cloud')，不在这里 ——
+          它要加载 Cloud 页面（隐藏 iframe），不该在启动时就做。 */
+    on('#btn-drive-save', 'click', function () { UI.driveSave(); });
+    on('#btn-drive-open', 'click', function () {
+      if (Code.drive && Code.drive.page) window.open(Code.drive.page, '_blank', 'noopener');
+    });
+
     on('#btn-cloud-redeem', 'click', function () {
       var t = (U.$('#cloud-ticket') || {}).value || '';
       if (!t.trim()) { U.toast('请粘贴票据码', 'err'); return; }

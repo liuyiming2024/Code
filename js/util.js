@@ -121,6 +121,24 @@
 
   /* ---------- 轻提示 ---------- */
   var toastTimer = null;
+  /* HTML 转义。**任何**来自外部的值（服务端返回的昵称、文件名、代码内容等）
+     拼进 innerHTML 前都必须过这一道。
+     为什么单独抽出来：转义函数散在各文件里，就会出现"有的地方转了有的没转"，
+     而漏掉的那一处就是漏洞 —— 且看代码的人分不出哪个是哪个。
+     统一到 U.esc，之后只要 grep `innerHTML` 附近有没有 U.esc 就能查。
+     ⚠ 只做字符转义，**不做协议校验** —— 拼进 href/src 时还要另走 safeURL。 */
+  U.esc = function (v) {
+    return String(v == null ? '' : v)
+      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+  };
+  /* 只允许 http/https —— 挡掉 javascript: 与 data: 这类伪协议。
+     ⚠ 光有 U.esc 挡不住 javascript: —— 它在 HTML 里是合法字符串，
+       真正执行是在浏览器解析 href/src 的时候。所以两者必须搭配。 */
+  U.safeURL = function (u) {
+    return /^https?:\/\//i.test(String(u || '').trim());
+  };
+
   U.toast = function (msg, kind) {
     var t = U.$('#toast');
     if (!t) return;

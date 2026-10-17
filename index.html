@@ -194,23 +194,27 @@
         <div id="cloud-state" class="cloud-state">（正在查看登录状态…）</div>
 
         <div id="cloud-login-box">
-          <div class="field"><label>登录（用 Chat 的账号）</label>
-            <input id="cloud-nick" type="text" placeholder="昵称" autocomplete="username" spellcheck="false">
-          </div>
-          <div class="field">
-            <input id="cloud-pwd" type="password" placeholder="密码" autocomplete="current-password" spellcheck="false">
-          </div>
+          <!-- 登录不再由 Code 自己实现：跳全站统一的登录页（/login.html）。
+               理由（这条是硬性的，别退回去各做各的）：
+                 失败冻结（15 分钟 8 次）、全局爆破闸门、记住账号 30 天、
+                 桌面版桥接票据 —— 这四条在 A 项目改了 B 项目不会跟着改。
+                 于是同一个账号「在聊天室会被冻结，在 Code 里不会」，
+                 安全边界取决于用户从哪个入口进 —— 这是真漏洞。
+               统一之后只有一份实现，登录界面也只有一份。 -->
           <div class="row">
-            <button class="btn" id="btn-cloud-login">登录</button>
-            <button class="btn" id="btn-cloud-register">注册</button>
+            <button class="btn primary" id="btn-cloud-gologin">去登录（全站通用账号）</button>
           </div>
+          <p class="hint">
+            账号是全站通用的：在<b>主页</b>或<b>聊天室</b>注册登录过，这里直接就是同一个人。
+            登录后会自动回到本页。
+          </p>
           <hr>
           <div class="field"><label>或用票据登录（免输密码）</label>
-            <input id="cloud-ticket" type="text" placeholder="在 Chat 里申领的票据码" autocomplete="off" spellcheck="false">
+            <input id="cloud-ticket" type="text" placeholder="票据码" autocomplete="off" spellcheck="false">
           </div>
           <div class="row"><button class="btn" id="btn-cloud-redeem">兑换票据</button></div>
-          <p class="hint">在 <b>Chat</b> 里登录后可以申领一张票据，粘到这里即可免密登录。
-            Chat 与 Code 同一个后端、同一套账号，注册过的账号直接能登。</p>
+          <p class="hint">票据是 Code 侧保留的免密入口（统一身份服务不带它），
+            适合在没有键盘的设备上用。</p>
         </div>
 
         <div id="cloud-ops-box" class="hidden">
@@ -389,6 +393,14 @@
 <script src="js/pylite.js"></script>
 <script src="js/cpplite.js"></script>
 <script src="js/runner.js"></script>
+<!-- 全站统一身份服务（login.html / account.html / perm.html 用的同一份）。
+     同源（都在 liuyiming2024.github.io），localStorage 直接共享，
+     所以在主页/聊天室登录过，打开 Code 就是同一个人 —— 不需要 Code 自己再登一次。
+     ⚠ 必须联网：它要访问服务端的 whoami。离线时 state.offline=true，
+       与"未登录"是两回事，Code 里要分别显示（见 UI.refreshAcct）。
+     ⚠ 它定义了 window.SiteIdentity；加载失败时 Code 必须能降级回自己的登录流程，
+       不能因为这一个脚本挂了就让云盘整个不可用。 -->
+<script src="/assets/identity.js" onerror="window.__identityFailed=1"></script>
 <script src="js/cloud.js"></script>
 <script src="js/ai.js"></script>
 <script src="js/api.js"></script>

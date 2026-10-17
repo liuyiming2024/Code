@@ -268,6 +268,29 @@ grant usage on schema public to anon, authenticated;
    这里与 Chat 对齐：表对 anon 与 authenticated 一律 revoke，
    唯一入口是 security definer 函数（它们内部按 code_me() 隔离）。 */
 revoke all on code_files from anon, authenticated;
+
+/* ---------- RLS：第二层（安全简报 D-1） ----------
+   revoke 只挡住了"没有权限"的情况：一旦有人误发一次 grant，
+   表立刻裸奔，而 revoke 这一层不会有任何提示。
+   RLS 是第二把锁 —— **即使权限被误发，读不到就是读不到**。
+
+   ⚠⚠ 为什么启用 RLS 却**不建任何 policy**：
+     启用 RLS + 零 policy = 除表所有者外，任何人（含 authenticated）
+     对这张表的直接访问一律返回空/拒绝。这正是我们要的最严状态。
+     补 policy 反而是开新口子，且 policy 写错就是全表泄露 ——
+     Chat 的文件头硬约定明写"别把 RLS 当防线"，这里同理：
+     RLS 只作兜底，真正的防线仍是 security definer 函数。
+
+   ⚠ 函数为什么不受影响：
+     security definer 函数以**所有者**身份执行，Supabase 的 postgres
+     带 BYPASSRLS，所以函数内对 code_files 的读写照常。
+     这也正是"函数能读、别人不能读"得以同时成立的原因。
+
+   ⚠ 迁移后必须验证（否则就是赌）：
+     跑一次 code_file_list()，能返回自己的文件才算通过。
+     若哪天函数所有者被改成不带 BYPASSRLS 的角色，函数会突然全挂。 */
+alter table code_files enable row level security;
+
 grant execute on function code_path_norm(text) to anon, authenticated;
 grant execute on function code_me() to anon, authenticated;
 grant execute on function code_file_list() to anon, authenticated;

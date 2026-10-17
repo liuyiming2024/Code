@@ -848,15 +848,44 @@
     var btn = U.$('#btn-acct');
     var lab = U.$('#acct-label');
     if (!btn || !lab) return;
+    var SI = window.SiteIdentity;
+
+    /* ⚠「离线」与「未登录」必须分开显示 —— 这两件事对用户完全不同：
+         "未登录" → 我知道我没登录
+         "离线"   → 我登录了，但现在连不上
+       不区分的话，用户在地铁里打开会以为自己被登出了，
+       于是重新登录、改密码，制造出一堆本来不存在的问题。
+       （这条判定来自统一身份服务的约定，不是本文件自创。） */
+    if (!m && SI && SI.state && SI.state.offline) {
+      lab.textContent = '离线';
+      btn.classList.remove('on');
+      btn.classList.add('off');
+      btn.title = '连不上服务器 —— 你可能是已登录的，只是现在没网';
+      return;
+    }
+    btn.classList.remove('off');
     if (m && m.nick) {
       lab.textContent = m.nick;
       btn.classList.add('on');
-      btn.title = '已登录：' + m.nick + '（点击管理云盘）';
+      btn.title = '已登录：' + m.nick +
+        (SI && SI.state && SI.state.role ? '（' + SI.state.role + '）' : '') + ' —— 点击管理云盘';
     } else {
       lab.textContent = '登录';
       btn.classList.remove('on');
       btn.title = '未登录 —— 点击登录并管理云盘';
     }
+  };
+
+  /* 统一身份服务的状态变化（含**跨标签页**）要能带动云盘刷新。
+     场景：用户在另一个标签页的主页登录了，切回 Code 这个标签 ——
+     不订阅的话这里还显示"未登录"，而 token 其实已经写进 localStorage 了。
+     用户看到的是"我明明登录了，它还说没有"。 */
+  UI.watchIdentity = function () {
+    var SI = window.SiteIdentity;
+    if (!SI || !SI.onChange) return;
+    SI.onChange(function () {
+      try { UI.refreshCloud(); } catch (e) { }
+    });
   };
 
   UI.refreshCloud = function () {
@@ -883,6 +912,15 @@
       if (opsBox) opsBox.classList.toggle('hidden', !logged);
     }
 
+    /* 统一身份服务说"离线"：不要去问后端（问了也是失败），
+       直接显示离线态。注意它**可能仍然是已登录的**，只是连不上。 */
+    var SI = window.SiteIdentity;
+    if (SI && SI.state && SI.state.offline && !Code.cloud.token()) {
+      show('<b>离线</b><br>连不上服务器，无法确认登录状态。本地文件照常可用。', false);
+      UI.refreshAcct(null);
+      return;
+    }
+
     /* 没有会话就不必发请求：省一次往返，也不会出现"请先登录"的红字 */
     if (!Code.cloud.token()) {
       show('<b>未登录</b><br>文件只存在这台设备上。登录后可存到云端，换设备能取回。', false);
@@ -895,7 +933,12 @@
       var mb = function (n) { return (n / 1048576).toFixed(2) + ' MB'; };
       var shared = Code.cloud.isSharedSession()
         ? '<br><span class="hint">（已沿用 Chat 的登录态）</span>' : '';
-      show('<b>已登录：' + (m.nick || '?') + '</b>' +
+      /* ⚠ nick 来自服务端、由用户自己设定 —— **不是可信内容**。
+         把它原样拼进 innerHTML 就是一个存储型 XSS：
+         把昵称改成 `<img src=x onerror=fetch(...)>`
+         就能在任何看到这条状态的页面上执行脚本。
+         安全简报 D-3 要逐处复核的就是这一类。 */
+      show('<b>已登录：' + U.esc(m.nick || '?') + '</b>' +
         '<br>云端 ' + (m.files || 0) + ' 个文件，' + mb(m.used || 0) + ' / ' + mb(m.quota || 0) +
         shared, true);
       UI.refreshAcct(m);

@@ -93,6 +93,7 @@
      读的顺序：自己本页登的 → Chat 共享的。
      写的时候两边都写，这样在 Code 登录，回到 Chat 也是同一个人。 */
   function token() {
+    syncOptOut();
     /* 主动退出过就别再沿用 —— 否则"退出"是假的（S-047） */
     if (optedOut()) return ls(OWN_TOKEN_KEY) || null;
     return ls(OWN_TOKEN_KEY) || ls(CHAT_TOKEN_KEY) || null;
@@ -126,6 +127,25 @@
 
   /* 用户主动退出过 → 不再沿用 Chat 的登录态，直到他再次主动登录 */
   function optedOut() { return ls(OPT_OUT_KEY) === '1'; }
+
+  /* ⚠ 统一身份后必须处理的一个分裂（不改就会出现"登录了却说没登录"）：
+     OPT_OUT_KEY 是「用户点过退出」的标记，用来防止退出是假的
+     （Chat 的 token 还在，刷新又被沿用回来）。
+     但登录现在统一到 /login.html 了 —— 用户在**那里**重新登录之后，
+     这个标记还留着，于是 Code 继续拒绝沿用：
+       用户在主页登录成功 → 回到 Code → 仍显示"未登录"
+     用户只会以为账号坏了，而实际是本应用记了一笔过期的账。
+
+     判据：统一身份服务说 ok、且共享 token 确实存在 ——
+     那就是用户重新登录过了，这笔账该销掉。 */
+  function syncOptOut() {
+    if (!optedOut()) return;
+    var SI = (typeof window !== 'undefined') && window.SiteIdentity;
+    var loggedIn = (SI && SI.state && SI.state.ok) || !!ls(CHAT_TOKEN_KEY);
+    /* 只有"确实重新登录了"才销账；没有 token 时不能销，
+       否则退出标记形同虚设，退了又立刻沿用回来 —— 回到 S-047 的 bug。 */
+    if (loggedIn && ls(CHAT_TOKEN_KEY)) ls(OPT_OUT_KEY, null);
+  }
 
   /* 是否"借"到了 Chat 的登录态（自己没单独登过） */
   function isSharedSession() {
@@ -372,7 +392,7 @@
     me: me,
     fileList: fileList, fileGet: fileGet, fileSave: fileSave, fileDelete: fileDelete,
     cloudReset: cloudReset, pushAll: pushAll, pullAll: pullAll,
-    token: token, uid: uid, setSession: setSession, dropSession: dropSession,
+    token: token, uid: uid, setSession: setSession, dropSession: dropSession, syncOptOut: syncOptOut,
     isSharedSession: isSharedSession,
     rpc: rpc,
     /* 给设置面板显示用 */

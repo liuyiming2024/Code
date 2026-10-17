@@ -98,6 +98,17 @@
       /* 启动时探一次云盘状态。失败不能影响编辑器 ——
          没登录是常态，不能因为云端连不上就拦着人写代码。 */
       try { if (UI.refreshCloud) UI.refreshCloud(); } catch (e) { }
+      /* 统一身份服务加载完成 + 状态变化时都要刷新。
+         ready 是它首次 whoami 的 Promise —— 启动时它可能还没探测完，
+         那时 state 还是初始的"未登录"，直接用会闪一下错误状态。 */
+      try {
+        var SI0 = window.SiteIdentity;
+        if (SI0 && SI0.ready && SI0.ready.then) {
+          SI0.ready.then(function () { try { UI.refreshCloud(); } catch (e) { } },
+                         function () { try { UI.refreshCloud(); } catch (e) { } });
+        }
+        if (UI.watchIdentity) UI.watchIdentity();
+      } catch (e) { }
       restoreDraftIfAny();
       ed.on('change', onChange);
       ed.on('cursor', onCursor);
@@ -1002,28 +1013,23 @@
     };
     if (!Code.cloud) return;
 
-    on('#btn-cloud-login', 'click', function () {
-      var nick = (U.$('#cloud-nick') || {}).value || '';
-      var pwd = (U.$('#cloud-pwd') || {}).value || '';
-      if (!nick.trim() || !pwd) { U.toast('请填昵称与密码', 'err'); return; }
-      U.toast('登录中…');
-      Code.cloud.login(nick.trim(), pwd)
-        .then(function () { U.toast('已登录'); if (UI.refreshCloud) UI.refreshCloud(); })
-        .catch(function (e) { U.toast(String(e.message || e), 'err'); });
-    });
-
-    on('#btn-cloud-register', 'click', function () {
-      var nick = (U.$('#cloud-nick') || {}).value || '';
-      var pwd = (U.$('#cloud-pwd') || {}).value || '';
-      if (!nick.trim() || !pwd) { U.toast('请填昵称与密码', 'err'); return; }
-      U.toast('注册中…');
-      Code.cloud.register(nick.trim(), pwd)
-        .then(function () {
-          /* 注册后多数站点要求审核，不自动登录 */
-          U.toast('注册成功。若站点需审核，请等管理员通过后再登录');
-          if (UI.refreshCloud) UI.refreshCloud();
-        })
-        .catch(function (e) { U.toast(String(e.message || e), 'err'); });
+    /* 登录/注册**不在 Code 里做** —— 跳全站统一的登录页。
+       原因写在 index.html 那段注释里（安全边界不能取决于从哪个入口进）。
+       回来时带上 next=当前页，登录完自动回来。
+       ⚠ next 由 SiteIdentity.goLogin 内部的白名单校验（只接受同源），
+         我们这里不要自己去拼 URL —— 拼了就是开放重定向。 */
+    on('#btn-cloud-gologin', 'click', function () {
+      var SI = window.SiteIdentity;
+      if (SI && SI.goLogin) { SI.goLogin(location.href); return; }
+      /* identity.js 没加载出来（离线/脚本挂了）：不能让按钮变成死的，
+         如实说明并给出可点的地址 —— 比"点了没反应"强。 */
+      U.modal({
+        title: '统一登录页没加载出来',
+        body: '<p class="about-p">Code 不自己做登录，统一身份服务需要联网才能用。</p>' +
+          '<p class="about-p">请检查网络后刷新；或直接打开 ' +
+          '<b>liuyiming2024.github.io/login.html</b> 登录，再回到本页。</p>',
+        actions: [{ label: '知道了', primary: true }]
+      });
     });
 
     on('#btn-cloud-redeem', 'click', function () {

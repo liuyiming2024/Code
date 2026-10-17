@@ -4,6 +4,7 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Save
 import androidx.compose.material3.*
@@ -33,7 +34,12 @@ import java.io.IOException
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun EditorScreen(fileName: String, store: io.code.app.data.FileStore) {
+fun EditorScreen(
+    fileName: String,
+    store: io.code.app.data.FileStore,
+    onOpenDrawer: () -> Unit = {},
+    onFileChanged: () -> Unit = {}
+) {
     val scope = rememberCoroutineScope()
     val ctx = LocalContext.current
 
@@ -42,6 +48,18 @@ fun EditorScreen(fileName: String, store: io.code.app.data.FileStore) {
     }
     var saveState by remember { mutableStateOf<SaveState>(SaveState.Idle) }
     var lastSaved by remember { mutableStateOf(store.read(fileName)) }
+
+    /* 撤销栈。**换文件必须 reset** ——
+       不重置的话，在新文件里撤销会把上一个文件的内容倒进来。
+       那种错法用户完全没法理解：他明明只改了一个字，整篇变了。 */
+    val history = remember { UndoStack() }
+    LaunchedEffect(fileName) {
+        val t = store.read(fileName)
+        history.reset(t)
+        value = TextFieldValue(t)
+        lastSaved = t
+        saveState = SaveState.Idle
+    }
 
     /* 自动保存：700ms debounce，与 Web 端一致。
        ⚠ 失败必须常驻可见 —— 只弹一次 toast 的话用户在看代码就错过了，
@@ -91,6 +109,9 @@ fun EditorScreen(fileName: String, store: io.code.app.data.FileStore) {
                     }) {
                         Icon(Icons.Default.Save, contentDescription = "保存")
                     }
+                    IconButton(onClick = onOpenDrawer) {
+                        Icon(Icons.Default.Menu, contentDescription = "文件")
+                    }
                     IconButton(onClick = { /* 第三阶段接运行时 */ }) {
                         Icon(Icons.Default.PlayArrow, contentDescription = "运行")
                     }
@@ -104,7 +125,17 @@ fun EditorScreen(fileName: String, store: io.code.app.data.FileStore) {
                 CodeKeyboard(
                     indentUnit = DEFAULT_INDENT,
                     onAction = { act ->
-                        value = when (act) {
+                        /* 撤销 / 重做单独处理：它们改的是历史，不是"一次编辑" */
+                        if (act == EditAction.Undo) {
+                            history.undo(value.text)?.let { value = TextFieldValue(it) }
+                            return@CodeKeyboard
+                        }
+                        if (act == EditAction.Redo) {
+                            history.redo()?.let { value = TextFieldValue(it) }
+                            return@CodeKeyboard
+                        }
+                        val before = value.text
+                        val next = when (act) {
                             is EditAction.Insert -> insertText(value, act.text)
                             is EditAction.Bracket -> insertBracket(value, act.open, act.close)
                             EditAction.Tab -> insertText(value, DEFAULT_INDENT)
@@ -127,14 +158,21 @@ fun EditorScreen(fileName: String, store: io.code.app.data.FileStore) {
                                         store.write(fileName, value.text)
                                         lastSaved = value.text
                                         saveState = SaveState.Saved
+                                        onFileChanged()
                                     } catch (e: IOException) {
                                         saveState = SaveState.Failed(e.message ?: "写入失败")
                                     }
                                 }
                                 value
                             }
-                            else -> value   // 复制/粘贴/撤销/运行：第三阶段接
+                            else -> value   // 复制/粘贴/运行：第三阶段接
                         }
+                        /* 记录历史。光标移动也走这里，但 push 内部会
+                           比较 before/after，内容没变就不入栈 ——
+                           所以不用在这里筛哪些动作"算编辑"。 */
+                        val (ds, de) = diffRange(before, next.text)
+                        history.push(before, next.text, ds, de, System.currentTimeMillis())
+                        value = next
                     }
                 )
             }
@@ -145,7 +183,12 @@ fun EditorScreen(fileName: String, store: io.code.app.data.FileStore) {
         CompositionLocalProvider(LocalTextInputService provides null) {
             BasicTextField(
                 value = value,
-                onValueChange = { value = it },
+                onValueChange = { nv ->
+                    val before = value.text
+                    val (ds, de) = diffRange(before, nv.text)
+                    history.push(before, nv.text, ds, de, System.currentTimeMillis())
+                    value = nv
+                },
                 modifier = Modifier
                     .padding(pad)
                     .fillMaxSize()

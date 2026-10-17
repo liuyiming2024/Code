@@ -919,7 +919,13 @@
          不说清楚的话，快通道的用户看到"要等一会儿"会以为坏了，
          慢通道的用户看到没提示会以为卡死然后刷新。 */
       var chTxt = (r.channel === 'worker') ? '快通道' : '慢通道（每次要等一会儿）';
-      st.innerHTML = '<b>可用</b> · ' + who + ' · ' + chTxt;
+      var bindTxt = '';
+      try {
+        var cur = (UI.tabs && UI.tabs.current) ? UI.tabs.current() : '';
+        var b = cur ? bindGet(cur) : null;
+        if (b) bindTxt = '<br>当前文件已连到里面的一条，改完点「把当前文件存进去」就是更新它，不会多出副本。';
+      } catch (e) { }
+      st.innerHTML = '<b>可用</b> · ' + who + ' · ' + chTxt + bindTxt;
       return D.list().then(function (items) {
         if (!list) return;
         list.innerHTML = '';
@@ -963,6 +969,12 @@
       U.toast(what + '完成：里面已经有完全一样的内容了，不用再传');
       return;
     }
+    /* 先判是不是**对面代码的问题** —— 是的话说清楚，
+       否则用户会对着自己的文件反复重试，而根因在另一个仓库。 */
+    if (Code.drive && Code.drive.explain) {
+      var why = Code.drive.explain(m);
+      if (why) { U.toast(why, 'err'); return; }
+    }
     U.toast(what + '失败：' + m, 'err');
   };
 
@@ -981,15 +993,24 @@
     if (!D) return;
     U.toast('正在取回…');
     D.download(id).then(function (blob) {
-      return blob.text().then(function (txt) { return UI.drivePut(name || 'drive-file.txt', txt); });
+      return blob.text().then(function (txt) {
+        return UI.drivePut(name || 'drive-file.txt', txt, id);
+      });
     }).catch(function (e) { UI.driveErr('取回', e); });
   };
 
-  /* 把一段文本落成文件并打开。重名自动改名，不覆盖。 */
-  UI.drivePut = function (name, txt) {
+  /* 把一段文本落成文件并打开。重名自动改名，不覆盖。
+     ⚠ 非文本（图片/压缩包等）不往编辑器里塞 —— 塞进去就是一堆乱码，
+       而且保存时会把二进制写坏。如实告诉用户，并给出"下载到本地"的出路。 */
+  UI.drivePut = function (name, txt, driveId) {
     var fs = Code.fs;
     if (!fs) { U.toast('文件系统还没就绪', 'err'); return; }
-    var p = U.normPath(String(name || 'drive-file.txt'));
+    name = String(name || 'drive-file.txt');
+    if (!isTextPath(name)) {
+      U.toast('这不是文本文件，Code 里改不了', 'err');
+      return;
+    }
+    var p = U.normPath(name);
     /* 重名就加后缀 —— 宁可多一个文件，也不覆盖已有内容 */
     if (fs.exists && fs.exists(p)) {
       var dot = p.lastIndexOf('.');
@@ -1001,9 +1022,53 @@
     }
     fs.create(p, 'file', txt).then(function () {
       if (Code.app && Code.app.open) Code.app.open(p);
-      U.toast('已取回为 ' + p);
+      /* 记下它来自哪一条 —— 之后"存回去"就是更新这一条，不是新建副本 */
+      if (driveId) bindSet(p, driveId, name);
+      U.toast('已取回为 ' + p + (driveId ? '（改完可存回同一条）' : ''));
     }).catch(function (e) { U.toast('存不进去：' + String((e && e.message) || e), 'err'); });
   };
+
+  /* ---------- 来自加密网盘的文件的"身份" ----------
+     从加密网盘取回一个文件，改完再存回去 —— 这应当是**更新同一条**，
+     不是新增一份。否则来回几次就堆出一串副本，用户自己都分不清哪个是新的。
+
+     所以记下「本地路径 → 加密网盘里的条目 id」。
+     存进 prefs 而不是只放内存：今天取回、明天再来存回也应该还认得。 */
+  function bindMap() {
+    try { return (Code.store && Code.store.prefs && Code.store.prefs.driveBind) || {}; } catch (e) { return {}; }
+  }
+  function bindSet(path, id, name) {
+    try {
+      var m = bindMap();
+      m[path] = { id: id, name: name || path, at: Date.now() };
+      Code.store.set('driveBind', m);
+    } catch (e) { }
+  }
+  function bindGet(path) { return bindMap()[path] || null; }
+  function bindDrop(path) {
+    try {
+      var m = bindMap();
+      if (m[path]) { delete m[path]; Code.store.set('driveBind', m); }
+    } catch (e) { }
+  }
+  UI.driveBound = function (path) { return bindGet(path); };
+
+  /* 文本判断：代码文件一律当文本。
+     ⚠ 按扩展名判，不按内容猜 —— 内容 sniff 对短文件不准，
+       而"明明能编辑却被当成二进制"比反过来更烦。
+     没有扩展名的（README / Makefile）也算文本 —— 网盘里放这些很常见。 */
+  var BIN_EXT = {
+    png: 1, jpg: 1, jpeg: 1, gif: 1, webp: 1, ico: 1, bmp: 1,
+    mp3: 1, mp4: 1, wav: 1, mov: 1, avi: 1, webm: 1,
+    zip: 1, gz: 1, tar: 1, rar: 1, '7z': 1, pdf: 1,
+    wasm: 1, exe: 1, dll: 1, so: 1, dylib: 1, ttf: 1, woff: 1, woff2: 1
+  };
+  function isTextPath(p) {
+    var ext = String(p || '').split('.').pop().toLowerCase();
+    if (!ext || ext === String(p || '').toLowerCase()) return true;  /* 无扩展名 */
+    return !BIN_EXT[ext];
+  }
+  UI.isTextPath = isTextPath;
 
   /* 慢通道（Actions 搬运）要等几十秒 —— 这期间刷新会前功尽弃，
      所以必须**在操作开始前**就说清楚，而不是等用户等急了才提示。
@@ -1029,8 +1094,24 @@
       if (hint) U.toast(hint);
       return fs.read(path).then(function (txt) {
         var blob = new Blob([String(txt == null ? '' : txt)], { type: 'text/plain;charset=utf-8' });
-        return D.upload(blob, path).then(function () {
-          U.toast('已存入加密网盘');
+        var old = bindGet(path);
+        /* 文本走压缩：代码文本压缩率很高，能省下不少存储和搬运时间。
+           ⚠ 只建议、不强制 —— 对面会自己判断压不压得动
+             （压完更大就存原样），所以传 'auto' 就够，不必替它决定。 */
+        return D.upload(blob, path, 'auto').then(function (newId) {
+          /* 更新 = 先存新的，再删旧的。
+             **顺序不能反** —— 先删后传，中途失败就是两边都没有，
+             那才是真的丢了。先传后删，最坏情况是留一条重复的，可以手动删。 */
+          if (old && old.id && old.id !== newId) {
+            return D.remove(old.id).catch(function () {
+              /* 删不掉不报错到用户脸上：东西已经存好了，
+                 只是多留了一条旧的，用户自己能删。 */
+            }).then(function () { return newId; });
+          }
+          return newId;
+        }).then(function (newId) {
+          if (newId) bindSet(path, newId, path);
+          U.toast(old ? '已更新加密网盘里的同一条' : '已存入加密网盘');
           UI.refreshDrive();
         });
       });

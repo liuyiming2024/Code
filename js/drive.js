@@ -149,8 +149,21 @@
     limits: function () { return call('limits', []); },
 
     /* 上传。file 可以是 File/Blob；name 必填 ——
-       Blob 自己没名字，不给名字存进去就是一堆认不出的条目。 */
-    upload: function (file, name) { return call('upload', [file, name]); },
+       Blob 自己没名字，不给名字存进去就是一堆认不出的条目。
+
+       proc 是**给对面的建议**：'auto'（压了更小才压，默认）/'gzip'/'none'。
+
+       ⚠⚠ 我们绝不能自己先把内容压一遍再传 ——
+         对面的容器是「先压缩，再加密」，压缩发生在它内部。
+         我们传过去的是**明文**，它压完再加密；
+         下载时它解密完再按密文头里的标记自动解压还原。
+         要是我们提前压了，它拿到的是 gzip 二进制当明文存，
+         下载出来还是二进制，而 Code 里打开的就是一坨乱码，
+         而且**没有任何报错** —— 文件在，只是打不开。
+         所以这里只传建议，实际压缩交给对面。 */
+    upload: function (file, name, proc) {
+      return call('upload', [file, name, proc || 'auto']);
+    },
 
     /* 下载，返回明文 Blob */
     download: function (id) { return call('download', [id]); },
@@ -186,6 +199,25 @@
       frame = null;
     }
   };
+
+  /* 有些失败是**对面代码里的问题**，不是用户操作问题。
+     不识别的话，用户看到"上传失败：xxx is not defined"只会以为自己用错了，
+     反复重试、甚至去改自己的文件。而真正的原因在另一个仓库里。 */
+  function explain(m) {
+    m = String(m || '');
+    /* 对面 js/pageapi.js 的 upload(file, name, proc) 里，
+       调用 encryptBlob 时写的是 procArg —— 而参数名是 proc，
+       procArg 从未定义。所以任何一次 upload 都会抛
+       ReferenceError: procArg is not defined。
+       这个只能由对面改：把 procArg 改成 proc（或删掉第三参走默认）。 */
+    if (/procArg/.test(m)) {
+      return '加密网盘那边上传接口有个变量名写错了（procArg 未定义），' +
+        '得他们改。你这边重试没用。';
+    }
+    if (/is not defined/.test(m)) return '加密网盘那边脚本报错了，与你的文件无关：' + m;
+    return null;
+  }
+  Drive.explain = explain;
 
   Code.drive = Drive;
 })(typeof window !== 'undefined' ? window : globalThis);

@@ -163,7 +163,7 @@ t(/两块空间|不互通|独立的一块空间/.test(html), '界面要说明两
 t(/重名|不覆盖/.test(ui), '取回重名时不能覆盖本地文件');
 t(/fs\.exists\(p\)/.test(ui), '取回前要检查同名文件是否已存在');
 /* 上传要用完整路径当名字 */
-t(/D\.upload\(blob, path\)/.test(ui), '上传要用完整路径当名字（否则同名互相覆盖）');
+t(/D\.upload\(blob, path, 'auto'\)/.test(ui), '上传要用完整路径当名字（否则同名互相覆盖）');
 
 console.log('\n=== 12. 对面（Cloud）适配后的契约 ===');
 /* 对面给 Cloud.api 加了 version 与 channel()，这边要跟着认。
@@ -186,6 +186,28 @@ t(html.indexOf('id="btn-drive-import"') >= 0, '界面有转存入口');
 t(/D\.importFromCode\(p\)/.test(app), '转存按钮真的调了 importFromCode');
 /* 转存必须手动、单向 —— 说清楚不是自动同步 */
 t(/不是自动同步|单向/.test(app) || /不互通/.test(html), '要说清是手动单向，不是自动同步');
+
+console.log('\n=== 13. 对面加了压缩：这边怎么兼容 ===');
+/* 关键认知：压缩和解密都在**对面**做完了。
+   它的容器是「先 gzip 再加密」，proc 标记写在密文头里，
+   下载时它解密完自动按标记 gunzip —— 我们拿到的已经是明文。
+   所以这边**不该**自己解压：**多此一举，且必然出错**。 */
+t(/D\.upload\(blob, path, 'auto'\)/.test(ui), '上传要给对面传压缩建议（auto）');
+t(/绝不能自己先|不能自己把内容压|提前压了/.test(drive) || /先压缩，再加密/.test(drive),
+  '注释要写明"不能自己先压"（压了会存成二进制乱码且不报错）');
+/* 往返编辑：取回 → 改 → 存回，应该是更新同一条，不是堆副本 */
+t(/function bindSet/.test(ui), '要记录"本地路径 → 网盘条目 id"的绑定');
+t(/Code\.store\.set\('driveBind'/.test(ui), '绑定要持久化（今天取回、明天存回也认得）');
+t(/D\.remove\(old\.id\)/.test(ui), '存回时要删掉旧条目（更新而非新增）');
+/* 顺序不能反：先删后传，中途失败就两边都没有 */
+t(/顺序不能反|最坏情况是留一条重复/.test(ui), '要先传后删（反了中途失败就真丢了）');
+/* 文本判断：二进制不能往编辑器里塞 */
+t(/function isTextPath/.test(ui), '要有文本判断');
+t(/BIN_EXT/.test(ui), '要有一份二进制扩展名表');
+t(/这不是文本文件，Code 里改不了/.test(ui), '非文本要如实拒绝，不能塞乱码进编辑器');
+/* 对面的已知 bug 要能识别出来，别让用户对着自己的文件反复重试 */
+t(/function explain/.test(drive), '要能识别"对面代码的问题"');
+t(/procArg/.test(drive), '要认得对面的 procArg 未定义错误');
 
 console.log('\n\u901a\u8fc7 ' + P + ' / ' + (P + F));
 process.exit(F ? 1 : 0);

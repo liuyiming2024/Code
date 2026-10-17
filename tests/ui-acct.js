@@ -41,9 +41,9 @@ t(html.indexOf('id="btn-acct"') >= 0, '页眉有账号按钮');
 t(html.indexOf('id="acct-label"') >= 0, '有账号文字标签');
 t(html.indexOf('id="i-user"') >= 0, '有 i-user 图标（否则按钮是空的）');
 t(app.indexOf("U.$('#btn-acct')") >= 0, 'app.js 绑定了点击');
-t(/UI\.setView\('cloud'\)/.test(app), '点击会切到 cloud 视图');
+t(/UI\.setView\('cloud'\)/.test(ui), '点击会切到 cloud 视图');
 /* 折叠状态下切视图没有任何视觉变化 → 点了像坏了 */
-t(/classList\.contains\('collapsed'\)\)\s*UI\.toggleSide\(\)/.test(app),
+t(/classList\.contains\('collapsed'\)\)\s*UI\.toggleSide\(\)/.test(ui),
   '侧栏折叠时要先展开（否则点了没反应）');
 
 console.log('\n=== 3. 页眉与侧栏云盘状态必须同步 ===');
@@ -58,7 +58,7 @@ t(cnt >= 3, '三条分支都要同步页眉（当前 ' + cnt + ' 处）',
 console.log('\n=== 4. cloud.js 未加载时的降级 ===');
 t(/if \(!Code\.cloud\)/.test(ui), 'refreshCloud 要处理 cloud 缺失');
 t(/b0\.disabled = true/.test(ui), '未启用时按钮要禁用（不是点了没反应的坏按钮）');
-t(/if \(!Code\.cloud\) \{ U\.toast/.test(app), '点击时也要提示未配置');
+t(/if \(!Code\.cloud\) \{ U\.toast/.test(ui), '点击时也要提示用不了');
 
 console.log('\n=== 5. 样式 ===');
 t(css.indexOf('.acct-btn') >= 0, '有 .acct-btn 样式');
@@ -114,6 +114,28 @@ t(/revoke all on code_files from anon, authenticated/.test(sql), '表级 DML 仍
 t(/U\.esc\(m\.nick/.test(ui), 'D-3 昵称拼进 innerHTML 必须转义（否则是存储型 XSS）');
 t(/U\.esc = function/.test(util), 'util 要有公用的 U.esc');
 t(/U\.safeURL = function/.test(util), 'util 要有 U.safeURL（esc 挡不住 javascript:）');
+
+console.log('\n=== 10. 文案：界面上不许出现架构术语 ===');
+/* 面向游客的界面，术语只会让人不知道该不该点。
+   架构原因写在源码注释里给后来的人看，不该出现在按钮上。 */
+var banList = ['全站通用', '统一身份', 'Chat', '聊天室', 'Supabase', 'publishable', 'RPC'];
+/* 只查**用户看得见**的文字 —— HTML 注释是给开发者看的，术语该写在那儿。
+   不剥注释的话，注释里解释架构原因的用词会误判成界面文案。 */
+var visible = html.slice(html.indexOf('<body')).replace(/<!--[\s\S]*?-->/g, '');
+banList.forEach(function (w) {
+  t(visible.indexOf(w) < 0, '用户看得见的文案里不该出现「' + w + '」');
+});
+/* 反向确认：注释里**确实**写了原因（不能只删文案不写理由，
+   否则后来的人不知道为什么不能各做各的） */
+t(/失败冻结|爆破闸门/.test(html), '架构原因要留在注释里（给后来的人看）');
+t(/id="btn-cloud-gologin">登录</.test(html), '登录按钮就写「登录」（不要括号补充说明）');
+t(html.indexOf('>兑换<') >= 0, '票据按钮写「兑换」');
+
+/* 两处入口共用同一个打开动作，否则会出现"从这里点正常、从那里点没反应" */
+t(/UI\.openCloud = function/.test(ui), '要有公用的 UI.openCloud');
+t(/ba\.onclick = function \(\) \{ UI\.openCloud\(\); \}/.test(app), '页眉账号走 UI.openCloud');
+t(/on\('#btn-goto-cloud', 'click', function \(\) \{ UI\.openCloud\(\); \}\)/.test(app),
+  '设置面板「前往云盘」也走 UI.openCloud');
 
 console.log('\n\u901a\u8fc7 ' + P + ' / ' + (P + F));
 process.exit(F ? 1 : 0);

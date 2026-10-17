@@ -202,19 +202,15 @@
                  安全边界取决于用户从哪个入口进 —— 这是真漏洞。
                统一之后只有一份实现，登录界面也只有一份。 -->
           <div class="row">
-            <button class="btn primary" id="btn-cloud-gologin">去登录（全站通用账号）</button>
+            <button class="btn primary" id="btn-cloud-gologin">登录</button>
           </div>
-          <p class="hint">
-            账号是全站通用的：在<b>主页</b>或<b>聊天室</b>注册登录过，这里直接就是同一个人。
-            登录后会自动回到本页。
-          </p>
+          <p class="hint">登录后文件可以存到云端，换台设备也能取回。登录完会自动回到本页。</p>
           <hr>
-          <div class="field"><label>或用票据登录（免输密码）</label>
+          <div class="field"><label>用票据登录</label>
             <input id="cloud-ticket" type="text" placeholder="票据码" autocomplete="off" spellcheck="false">
           </div>
-          <div class="row"><button class="btn" id="btn-cloud-redeem">兑换票据</button></div>
-          <p class="hint">票据是 Code 侧保留的免密入口（统一身份服务不带它），
-            适合在没有键盘的设备上用。</p>
+          <div class="row"><button class="btn" id="btn-cloud-redeem">兑换</button></div>
+          <p class="hint">没键盘时用票据更方便，不用输密码。</p>
         </div>
 
         <div id="cloud-ops-box" class="hidden">

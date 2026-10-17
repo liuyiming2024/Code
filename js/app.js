@@ -1024,10 +1024,8 @@
       /* identity.js 没加载出来（离线/脚本挂了）：不能让按钮变成死的，
          如实说明并给出可点的地址 —— 比"点了没反应"强。 */
       U.modal({
-        title: '统一登录页没加载出来',
-        body: '<p class="about-p">Code 不自己做登录，统一身份服务需要联网才能用。</p>' +
-          '<p class="about-p">请检查网络后刷新；或直接打开 ' +
-          '<b>liuyiming2024.github.io/login.html</b> 登录，再回到本页。</p>',
+        title: '连不上登录服务',
+        body: '<p class="about-p">登录要联网才能用。请检查网络后刷新页面再试。</p>',
         actions: [{ label: '知道了', primary: true }]
       });
     });
@@ -1216,11 +1214,7 @@
       store.set('showWS', this.value === 'on');
       ed.refresh();
     });
-    on('#btn-goto-cloud', 'click', function () {
-      UI.setView('cloud');
-      try { store.set('sideView', 'cloud'); } catch (e) { }
-      if (UI.refreshCloud) UI.refreshCloud();
-    });
+    on('#btn-goto-cloud', 'click', function () { UI.openCloud(); });
     bindCloud();
     bindVkb();
     bindAi();
@@ -1282,14 +1276,7 @@
        ⚠ 必须先确保侧栏是展开的 —— 侧栏折叠时切视图没有任何视觉变化，
        用户点了没反应，只会以为按钮坏了。 */
     var ba = U.$('#btn-acct');
-    if (ba) ba.onclick = function () {
-      if (!Code.cloud) { U.toast('云盘未配置：后端地址缺失', 'err'); return; }
-      var side = U.$('#sidebar');
-      if (side && side.classList.contains('collapsed')) UI.toggleSide();
-      UI.setView('cloud');
-      /* 窄屏下抽屉会盖住编辑器，让用户能一键收起 */
-      if (UI.isNarrow && UI.isNarrow()) document.body.classList.add('side-open');
-    };
+    if (ba) ba.onclick = function () { UI.openCloud(); };
     /* 顶栏菜单：以前这个按钮绑的是 toggleSide，而 #top-menu 没有任何代码
        给它加 open 类 —— 那 7 个菜单项（新建、导出、导入、扩展中心、关于…）
        从来没有出现在界面上，是死 UI。

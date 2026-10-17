@@ -860,20 +860,34 @@
       lab.textContent = '离线';
       btn.classList.remove('on');
       btn.classList.add('off');
-      btn.title = '连不上服务器 —— 你可能是已登录的，只是现在没网';
+      btn.title = '连不上服务器 —— 本地照常能用';
       return;
     }
     btn.classList.remove('off');
     if (m && m.nick) {
       lab.textContent = m.nick;
       btn.classList.add('on');
-      btn.title = '已登录：' + m.nick +
-        (SI && SI.state && SI.state.role ? '（' + SI.state.role + '）' : '') + ' —— 点击管理云盘';
+      btn.title = '已登录：' + m.nick + ' —— 点击查看云盘';
     } else {
       lab.textContent = '登录';
       btn.classList.remove('on');
-      btn.title = '未登录 —— 点击登录并管理云盘';
+      btn.title = '未登录 —— 点击登录';
     }
+  };
+
+  /* 打开云盘视图。页眉账号按钮和设置面板的「前往云盘」都走这里 ——
+     两处各写一份就会出现"从这里点正常、从那里点没反应"。
+     ⚠ 必须先确保侧栏是展开的：侧栏折叠时切视图没有任何视觉变化，
+       用户点了没反应，只会以为按钮坏了。 */
+  UI.openCloud = function () {
+    if (!Code.cloud) { U.toast('云盘暂时用不了', 'err'); return; }
+    var side = U.$('#sidebar');
+    if (side && side.classList.contains('collapsed')) UI.toggleSide();
+    UI.setView('cloud');
+    try { Code.store.set('sideView', 'cloud'); } catch (e) { }
+    /* 窄屏下抽屉会盖住编辑器，加遮罩让用户能一键收起 */
+    if (isNarrow()) document.body.classList.add('side-open');
+    if (UI.refreshCloud) UI.refreshCloud();
   };
 
   /* 统一身份服务的状态变化（含**跨标签页**）要能带动云盘刷新。
@@ -899,8 +913,8 @@
     if (!Code.cloud) {
       var b0 = U.$('#btn-acct');
       var l0 = U.$('#acct-label');
-      if (l0) l0.textContent = '云盘未启用';
-      if (b0) { b0.disabled = true; b0.title = '云盘未配置（后端地址缺失）'; }
+      if (l0) l0.textContent = '云盘';
+      if (b0) { b0.disabled = true; b0.title = '云盘暂时用不了'; }
       if (!st) return;
     }
     if (!st) return;
@@ -916,14 +930,14 @@
        直接显示离线态。注意它**可能仍然是已登录的**，只是连不上。 */
     var SI = window.SiteIdentity;
     if (SI && SI.state && SI.state.offline && !Code.cloud.token()) {
-      show('<b>离线</b><br>连不上服务器，无法确认登录状态。本地文件照常可用。', false);
+      show('<b>连不上服务器</b><br>本地照常能用，云盘暂时用不了。', false);
       UI.refreshAcct(null);
       return;
     }
 
     /* 没有会话就不必发请求：省一次往返，也不会出现"请先登录"的红字 */
     if (!Code.cloud.token()) {
-      show('<b>未登录</b><br>文件只存在这台设备上。登录后可存到云端，换设备能取回。', false);
+      show('<b>未登录</b><br>文件只存在这台设备上，换台设备就看不到了。', false);
       UI.refreshAcct(null);
       return;
     }
@@ -946,7 +960,7 @@
       var msg = String((e && e.message) || e);
       /* 会话失效就清掉，避免一直显示"已登录"却什么都用不了 */
       if (/失效|未登录|请先登录/.test(msg)) Code.cloud.dropSession();
-      show('<b>未登录</b>' + (/失效/.test(msg) ? '（登录已失效）' : '') +
+      show('<b>未登录</b>' + (/失效/.test(msg) ? '（登录已失效，请重新登录）' : '') +
         '<br>文件只存在这台设备上。', false);
       UI.refreshAcct(null);
     });

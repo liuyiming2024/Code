@@ -181,11 +181,10 @@
       "id": "cpp",
       "name": "C / C++（真 Clang）",
       "license": "MIT",
-      "ready": false,
-      "readyNote": "资源已就位（90.2 MB），但 C++ 真编译器（browsercc）的接线尚未完成：下载后仍不可用。在此之前 C/C++ 走内置自研子集，离线即可运行。",
+      "ready": true,
       "workerType": "module",
       "entry": "cpp-index.js",
-      "desc": "browsercc：真正的 Clang + LLD，浏览器内编译运行完整 C/C++（90 MB，首次很慢）",
+      "desc": "真 Clang + LLD 在浏览器里编译出 wasm 再执行。已端到端跑通（printf/cout/STL/bits/stdc++.h 全通过）",
       "files": [
         {
           "name": "cpp-index.js",
@@ -234,16 +233,23 @@
         "cpp-index.js",
         "wasi-shim.js"
       ],
-      "caveat": "clang.wasm 43MB + lld.wasm 23MB + sysroot.tar 29MB，内存占用大、首次编译慢"
+      "caveat": "clang.wasm 43MB + lld.wasm 23MB + sysroot.tar 29MB，内存占用大、首次编译慢",
+      "caveats": [
+        "禁用了异常（sysroot 没有异常运行库）：写 throw / try-catch 会编译失败。竞赛代码基本不受影响",
+        "首次运行要下载约 90 MB，之后走本地缓存",
+        "每次编译约 5–12 秒（要实例化 42 MB 的 clang.wasm 与 23 MB 的 lld.wasm），不是即时",
+        "程序读不到交互式输入：stdin 是空的，scanf / cin 会立刻遇到 EOF",
+        "死循环会在 20 秒后被强制终止（wasm 跑飞无法中断，只能终止 Worker）"
+      ]
     }
   ],
   "planned": [
     "找 ruby-wasi.js 的 IIFE 版（当前 ruby 入口是 ESM，需 module Worker）",
     "给 Ruby 单起 module Worker（与 classic Worker 并存）",
-    "完成 browsercc 的 C++ 接线（资源已就位，链路未通）",
     "验证 file:// 下 Worker 是否被拦（当前只在 http(s) 下测过）",
     "Lua 选型决策：docs/runtimes.md 结论选 Wasmley，代码锁 Fengari，需定一个",
-    "quickjs 只登记了 optIn 常量，未实际接入（清单里列了但代码里没接）"
+    "quickjs 只登记了 optIn 常量，未实际接入（清单里列了但代码里没接）",
+    "给 C++ 真编译器接 stdin 输入（竞赛题要读输入，现在 stdin 是空的）"
   ],
   "sizes": {
     "sqlite": 708594,

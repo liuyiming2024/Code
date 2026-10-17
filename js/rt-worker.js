@@ -1035,10 +1035,32 @@ function runCpp(code, msg) {
     /* 扩展名决定 clang 按 C 还是 C++ 编译 —— 传 .c 却按 C++ 编会出莫名其妙的错 */
     var fileName = (msg && msg.fileName) || 'main.cpp';
     if (!/\.(c|cc|cpp|cxx)$/i.test(fileName)) fileName = 'main.cpp';
+    var isC = /\.c$/i.test(fileName);
 
-    var flags = /\.c$/i.test(fileName)
-      ? ['-std=c17', '-O2']
-      : ['-std=c++20', '-O2'];
+    /* ---------- flags：三条都是**真跑出来**才确定的 ----------
+       ① **-fno-exceptions 必须加**。
+          不加的话，只要用到 iostream / string 就会链接失败：
+              wasm-ld: error: undefined symbol: __cxa_allocate_exception
+              wasm-ld: error: undefined symbol: __cxa_throw
+          实测：`cout << 1+1` 侥幸能过（没拉进异常相关代码），
+          而 `cout << "hello"`、`std::string`、`cerr` **全部失败**。
+          这种"有的能跑有的不能"最难查 —— 用户会以为是自己的代码问题。
+          sysroot 里没有异常运行库，所以只能禁用异常。
+          代价：写 throw / try-catch 会编译失败（竞赛代码基本不用）。
+
+       ② **C 文件不能传 -std=c17 / -std=c99**。
+          cpp-index.js 里 thisProgram 硬编码 "clang++"，
+          C++ 驱动会直接拒绝 C 的 -std：
+              error: invalid argument '-std=c17' not allowed with 'C++'
+          （实测 -std=c99 同样被拒。）所以 C 靠 `-x c` + 扩展名定语言，
+          不指定标准版本。实测 .c + ['-x','c','-O2','-fno-exceptions'] 通过。
+
+       ③ **-O2 不能省**：它同时是发包体积和执行速度的关键，
+          而且与 -std=c++20 + -fno-exceptions 一起才命中 PCH 条件
+          （虽然我们没用 PCH，但保持一致没坏处）。 */
+    var flags = isC
+      ? ['-x', 'c', '-O2', '-fno-exceptions']
+      : ['-std=c++20', '-O2', '-fno-exceptions'];
 
     return compile({ source: code, fileName: fileName, flags: flags });
   }).then(function (r) {
@@ -1063,6 +1085,10 @@ function runCpp(code, msg) {
       var fds = [new OpenFile(new File([])),
                  new ConsoleStdout(sink), new ConsoleStdout(sink)];
       var wasi = new WASI([], [], fds);
+      /* 告诉主线程"我要开始执行了" —— 它会把超时切成 20 秒。
+         必须发：执行阶段是同步阻塞的，主线程没有别的办法知道
+         现在是"在编译"还是"在跑一个跑飞的程序"。 */
+      try { self.postMessage({ type: 'begin', lang: msg && msg.lang, phase: 'exec' }); } catch (e) { }
       return WebAssembly.instantiate(r.module, {
         wasi_snapshot_preview1: wasi.wasiImport
       }).then(function (inst) {

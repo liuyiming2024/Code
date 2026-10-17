@@ -17,6 +17,7 @@ var fs = require('fs'), path = require('path');
 var root = path.join(__dirname, '..');
 var w = fs.readFileSync(path.join(root, 'js/rt-worker.js'), 'utf8');
 var langs = fs.readFileSync(path.join(root, 'js/langs.js'), 'utf8');
+var runtimes = fs.readFileSync(path.join(root, 'js/runtimes.js'), 'utf8');
 
 var P = 0, F = 0;
 function t(ok, msg, extra) {
@@ -132,6 +133,34 @@ if (sb) {
       id + ' 的体积提示 ' + h + ' MB 与清单 ' + mb.toFixed(1) + ' MB 相符');
   });
 }
+
+console.log('\n=== C++ 真编译器的接线（端到端跑通后补的断言）===');
+/* 这三条都是**真跑出来**才发现的：静态看代码都对，一跑就失败。
+   所以必须用断言钉住，防止以后有人"顺手改回去"。 */
+t(w.indexOf("-fno-exceptions") >= 0,
+  'C++ 必须带 -fno-exceptions（否则 iostream/string 链接失败：undefined symbol __cxa_allocate_exception）');
+/* ⚠ 只查**实际的 flags 数组**，不查全文 —— 注释里为了解释原因
+   提到了 "-std=c17"，全文搜索会把注释当成在用（这跟 HTML 注释那次同类）。 */
+var flagsM = /var flags = isC\s*\?\s*(\[[^\]]*\])/.exec(w);
+t(!!flagsM, '找得到 C 分支的 flags 数组');
+t(flagsM && !/-std=/.test(flagsM[1]),
+  'C 分支的 flags 里不能有 -std（clang++ 驱动会拒：-std=c17 not allowed with C++）',
+  flagsM ? flagsM[1] : '');
+t(/'-x', 'c'/.test(w) || /"-x", "c"/.test(w),
+  'C 要用 -x c 指定语言');
+/* 死循环保护：wasm 跑飞无法中断，只能 terminate */
+t(runtimes.indexOf("phase === 'exec'") >= 0, '主线程要识别执行阶段');
+t(runtimes.indexOf('EXEC_MS') >= 0, '执行阶段要有独立的短超时');
+t(w.indexOf("phase: 'exec'") >= 0, 'Worker 执行前要发 exec 信号（否则主线程无从判断）');
+/* 清掉"接线未完成"的旧标记 */
+var manifest = fs.readFileSync(path.join(root, 'api/runtimes.json'), 'utf8');
+var mj = JSON.parse(manifest);
+var list = mj.runtimes || mj;
+var cpp = (list || []).filter(function (r) { return r && r.id === 'cpp'; })[0];
+t(cpp && cpp.ready === true, '清单里 cpp 标记为可用（ready=true）');
+t(!/接线未完成/.test(manifest), '清掉"接线未完成"的旧文案');
+t(cpp && Array.isArray(cpp.caveats) && cpp.caveats.length >= 3,
+  '要写上已知限制（异常禁用 / 编译慢 / 无 stdin / 死循环终止）');
 
 console.log('\n\u901a\u8fc7 ' + P + ' / ' + (P + F));
 process.exit(F ? 1 : 0);

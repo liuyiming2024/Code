@@ -77,15 +77,36 @@
     var token = ++seq;
     pending = { on: null, token: token };
     var timer = null;
-    if (timeoutMs) {
+
+    /* ---------- 两段式超时 ----------
+       一个 timeoutMs 要同时覆盖"下载 90 MB"和"执行"，只能设得很大
+       （10 分钟）。但**执行阶段**的死循环是同步阻塞 Worker 的 ——
+       主线程唯一能做的就是 terminate，而用户要为此干等 10 分钟。
+
+       实测：真 Clang 编出来的 wasm 里 `while(1){}` 会**永久卡死**
+       Worker（wasm 同步执行，没有任何中断机制）。
+
+       所以 Worker 在进入执行阶段前会发 {phase:'exec'}，
+       收到后把计时器切成 EXEC_MS（20 秒）。
+       编译慢（约 10 秒）不受影响 —— 那是 exec 之前的事。 */
+    var EXEC_MS = 20000;
+    var phase = 'prep';
+
+    function armTimer(ms, msg) {
+      if (timer) clearTimeout(timer);
+      if (!ms) { timer = null; return; }
       timer = setTimeout(function () {
         if (!pending || pending.token !== token) return;
         pending = null;
         if (w) { try { w.terminate(); } catch (e) { } }
         w = null;
-        on.fail && on.fail({ error: '运行时超时（' + Math.round(timeoutMs / 1000) + ' 秒）。' +
-          'C/C++ 首次编译需要下载约 90 MB，请耐心等待或稍后重试。' });
-      }, timeoutMs);
+        on.fail && on.fail({ error: msg });
+      }, ms);
+    }
+
+    if (timeoutMs) {
+      armTimer(timeoutMs, '运行时超时（' + Math.round(timeoutMs / 1000) + ' 秒）。' +
+        'C/C++ 首次编译需要下载约 90 MB，请耐心等待或稍后重试。');
     }
     var wrapped = {};
     /* ⚠ 每加一种 Worker 消息类型，都要同步加到这个数组。
@@ -101,6 +122,15 @@
         if (k === 'done' || k === 'fail') {
           if (timer) clearTimeout(timer);
           pending = null;
+        }
+        /* 进入执行阶段 → 换成短超时（见上面"两段式超时"） */
+        if (k === 'begin' && d && d.phase === 'exec' && phase !== 'exec') {
+          phase = 'exec';
+          armTimer(EXEC_MS, '程序执行超过 ' + Math.round(EXEC_MS / 1000) +
+            ' 秒还没结束，已强制终止。\n' +
+            '常见原因是死循环或等待输入 —— 这条保护是必要的：\n' +
+            '真 Clang 编出来的 wasm 一旦跑飞，Worker 会永久卡住，\n' +
+            '除了终止没有别的办法。');
         }
         on[k] && on[k](d);
       };

@@ -12,7 +12,10 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalTextInputService
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -48,6 +51,15 @@ fun EditorScreen(
     }
     var saveState by remember { mutableStateOf<SaveState>(SaveState.Idle) }
     var lastSaved by remember { mutableStateOf(store.read(fileName)) }
+
+    /* 语法高亮。
+       lang 按**扩展名**判定，认不出就返回 "" —— 那时不涂任何颜色。
+       涂错色比不涂色更糟：用户会以为是自己的代码写错了。 */
+    val lang = remember(fileName) { Highlighter.langOf(fileName) }
+
+    /* ⚠ 必须把 value.text 当 key：只 remember(lang) 的话，
+       改了文字但语言没变，颜色不会重算 —— 表现是"高亮卡在第一版不动"。 */
+    val annotated = remember(value.text, lang) { buildHighlighted(value.text, lang) }
 
     /* 撤销栈。**换文件必须 reset** ——
        不重置的话，在新文件里撤销会把上一个文件的内容倒进来。
@@ -183,6 +195,10 @@ fun EditorScreen(
         CompositionLocalProvider(LocalTextInputService provides null) {
             BasicTextField(
                 value = value,
+                /* 用带样式的 AnnotatedString，但**保留光标位置** ——
+                   只传 annotated 会把光标弹回开头，表现为"每打一个字光标就跳走"。
+                   composition 也要带上，否则输入法/自动纠错会错位。 */
+                value = TextFieldValue(annotated, value.selection, value.composition),
                 onValueChange = { nv ->
                     val before = value.text
                     val (ds, de) = diffRange(before, nv.text)
@@ -202,6 +218,36 @@ fun EditorScreen(
             )
         }
     }
+}
+
+/* 把 token 序列变成带样式的文本。
+   只给非 Plain 的段上色 —— Plain 用默认色即可。 */
+private fun buildHighlighted(src: String, lang: String) = buildAnnotatedString {
+    append(src)
+    if (lang.isEmpty()) return@buildAnnotatedString
+    for (t in Highlighter.highlight(src, lang)) {
+        if (t.type == TokType.Plain) continue
+        val st = when (t.type) {
+            TokType.Comment -> SpanStyle(color = HL.comment, fontStyle = FontStyle.Italic)
+            TokType.String  -> SpanStyle(color = HL.str)
+            TokType.Number  -> SpanStyle(color = HL.number)
+            TokType.Keyword -> SpanStyle(color = HL.keyword)
+            TokType.Type    -> SpanStyle(color = HL.type)
+            TokType.Func    -> SpanStyle(color = HL.func)
+            else            -> return@buildAnnotatedString.run { } as SpanStyle
+        }
+        addStyle(st, t.start, t.end)
+    }
+}
+
+/* 配色集中放一处 —— 散在代码里的话，改主题时必然漏掉一两个。 */
+private object HL {
+    val keyword = androidx.compose.ui.graphics.Color(0xFFC792EA)
+    val type    = androidx.compose.ui.graphics.Color(0xFF82AAFF)
+    val str     = androidx.compose.ui.graphics.Color(0xFFC3E88D)
+    val number  = androidx.compose.ui.graphics.Color(0xFFF78C6C)
+    val comment = androidx.compose.ui.graphics.Color(0xFF6B7A8F)
+    val func    = androidx.compose.ui.graphics.Color(0xFF82AAFF)
 }
 
 sealed interface SaveState {

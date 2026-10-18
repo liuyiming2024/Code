@@ -374,6 +374,8 @@
         </div>
         <div id="judge-cases"></div>
         <div id="judge-result" class="judge-result"></div>
+        <!-- 远程提交（代提交）。凭据只存本机，转发服务不保存。 -->
+        <div id="oj-box" class="oj-box"></div>
       </div>
       <!-- 程序输入（stdin）。竞赛题几乎都要读输入，没有它 C++ 真编译器
            对竞赛几乎没有用处 —— 程序一开头就遇到 EOF。
@@ -433,6 +435,7 @@
 <script src="js/runner.js"></script>
 <script src="js/judge.js"></script>
 <script src="js/judge-ui.js"></script>
+<script src="js/oj.js"></script>
 <!-- 全站统一身份服务（login.html / account.html / perm.html 用的同一份）。
      同源（都在 liuyiming2024.github.io），localStorage 直接共享，
      所以在主页/聊天室登录过，打开 Code 就是同一个人 —— 不需要 Code 自己再登一次。

@@ -36,9 +36,17 @@ function json(body: unknown, status = 200) {
 }
 
 /* ---------- 密钥 ---------- */
+/* ⚠ 诱饵（canary）绝不能被当成真密钥用 —— 这是硬保护。
+   诱饵值是公开写在仓库里的，一旦被部署上去，
+   就等于用一把全世界都知道的密钥加密所有人的凭据，
+   那比不加密更糟（界面上还写着"已加密"）。
+   所以这里主动拒绝，让它启动失败，而不是静默工作。 */
+const CANARY_PREFIX = "canary_";
+
 async function key(): Promise<CryptoKey> {
   const raw = Deno.env.get("OJ_CRED_KEY");
   if (!raw) throw new Error("KEY_NOT_CONFIGURED");
+  if (raw.startsWith(CANARY_PREFIX)) throw new Error("CANARY_KEY_REFUSED");
   const bin = Uint8Array.from(atob(raw), (c) => c.charCodeAt(0));
   if (bin.length !== 32) throw new Error("KEY_BAD_LENGTH");
   return crypto.subtle.importKey("raw", bin, { name: "AES-GCM" }, false, ["encrypt", "decrypt"]);
@@ -113,6 +121,12 @@ serve(async (req: Request) => {
       }, 503);
     }
     if (m === "KEY_BAD_LENGTH") return json({ ok: false, error: "密钥长度不对（要 32 字节）" }, 500);
+    if (m === "CANARY_KEY_REFUSED") {
+      return json({
+        ok: false,
+        error: "配置的是诱饵密钥，已拒绝启动。请换成真密钥（诱饵值不能用来加密真实数据）。",
+      }, 500);
+    }
     return json({ ok: false, error: m.slice(0, 200) }, 502);
   }
 });

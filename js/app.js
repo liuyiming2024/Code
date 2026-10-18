@@ -1300,6 +1300,21 @@
        点了没反应会让人以为编辑器坏了。
        所以改成全量绑定，不再限定父容器。 */
     U.$$('[data-act]').forEach(function (b) {
+      /* ⚠⚠ "键盘几乎用不了 + 弹『命令未接入』" 的**同一个**根因（E-043）
+         ------------------------------------------------------------------
+         这里用 `[data-act]` **全量**绑定，把任何 data-act 都当成命令名
+         交给 command()。而虚拟键盘（vkeyboard.js）与移动键条（mobile-bar.js）
+         也用 data-act 标记自己的键位（shift / tab / left / copy …）。
+
+         两套东西撞了同一个属性名，于是键盘上**每一个键**都被挂上 onclick：
+           · 按 ⇧        → command('shift')   → default → 「命令未接入：shift」
+           · 按 ←        → command('left')    → default → 「命令未接入：left」
+         键盘自己的 pointerdown 处理还在，但被 onclick 抢先弹了警告，
+         表现出来就是"键盘完全用不了，还一直弹命令未接入"。
+
+         修法：这两个容器自己处理按键，命令绑定必须跳过它们。
+         （不能在键盘侧改属性名了事 —— 旧版本已存的状态和 CSS 都挂着 data-act。） */
+      if (b.closest && b.closest('.vkb, .mobile-bar')) return;
       b.onclick = function () {
         var a = b.getAttribute('data-act');
         if (a === 'about') UI.about();

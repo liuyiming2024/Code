@@ -20,8 +20,48 @@
   var Code = global.Code || (global.Code = {});
 
   var LS_ON = 'code_vkb_on';
+  var LS_COLLAPSE = 'code_vkb_collapsed';
   var bar = null, curPage = 'abc', shift = false, caps = false;
   var repeatTimer = null;
+
+  /* ---------- 桌面端就别占着半屏 ----------
+     ⚠ 探测函数必须**只有一份**（原来 maybeOffer 里内联写了一遍）。
+     两份判定一旦写歪，就会"提示时算桌面、渲染时算触摸"，
+     表现是键盘在该出现时不出现 —— 而且不报错。 */
+  function isTouchDevice() {
+    try {
+      var coarse = !!(global.matchMedia && global.matchMedia('(pointer: coarse)').matches);
+      var hasTouch = ('ontouchstart' in global) ||
+                     ((global.navigator && global.navigator.maxTouchPoints) || 0) > 0;
+      return !!(coarse && hasTouch);
+    } catch (e) { return false; }
+  }
+
+  /* 折叠状态：没选过就按设备猜。
+     ⚠ 猜错必须可救 —— 所以把手**永远**在（见 build 里的 vk-toggle），
+     桌面端误判成触摸、或触摸端误判成桌面，用户都能自己点开。 */
+  function loadCollapsed() {
+    try {
+      var v = localStorage.getItem(LS_COLLAPSE);
+      if (v === '1') return true;
+      if (v === '0') return false;
+    } catch (e) { }
+    return !isTouchDevice();     /* 桌面端默认收起：有物理键盘 */
+  }
+  function saveCollapsed(v) {
+    try { localStorage.setItem(LS_COLLAPSE, v ? '1' : '0'); } catch (e) { }
+  }
+  function setCollapsed(v) {
+    saveCollapsed(v);
+    if (!bar) return;
+    bar.classList.toggle('collapsed', !!v);
+    document.body.classList.toggle('vkb-collapsed', !!v);
+    var t = bar.querySelector('.vk-toggle');
+    if (t) {
+      t.textContent = v ? '▲ 展开键盘' : '▼ 收起键盘';
+      t.setAttribute('aria-expanded', v ? 'false' : 'true');
+    }
+  }
 
   /* ---------- 键位布局 ----------
      每页 4~5 行。k=插入文本，act=动作，w=相对宽度，ic=图标名 */
@@ -345,16 +385,27 @@
     bar.setAttribute('role', 'group');
     bar.setAttribute('aria-label', '内置键盘');
 
+    /* ⚠ 折叠把手必须在**最前面**，且折叠时也只有它显示。
+       它是"探测错了"的唯一自救出口 —— 桌面端被误判成触摸（键盘白占半屏）、
+       或触摸端被误判成桌面（键盘收起来了但用户想要），都靠它翻回来。 */
+    var toggle = document.createElement('button');
+    toggle.className = 'vk-toggle';
+    toggle.type = 'button';
+    toggle.setAttribute('aria-controls', 'vkb-body');
+    bind(toggle, function () { setCollapsed(!bar.classList.contains('collapsed')); });
+
     var hintEl = document.createElement('div');
     hintEl.className = 'vk-hint';
     hintEl.style.opacity = '0';
 
     var pages = document.createElement('div');
     pages.className = 'vk-pages';
+    pages.id = 'vkb-body';
 
     var body = document.createElement('div');
     body.className = 'vk-body';
 
+    bar.appendChild(toggle);
     bar.appendChild(hintEl);
     bar.appendChild(pages);
     bar.appendChild(body);
@@ -374,32 +425,75 @@
     try { saved = localStorage.getItem('code_vkb_page'); } catch (e) { }
     showPage((saved && PAGES[saved]) ? saved : curPage);
     document.body.classList.add('has-vkb');
+    setCollapsed(loadCollapsed());
   }
 
-  /* 按下即阻止默认 —— 否则 textarea 失焦、光标丢、系统键盘弹出 */
+  /* ⚠⚠ "键盘按了没反应 / 很慢" 的真因就在这里（E-042）
+     ------------------------------------------------------------------
+     原实现是：touchstart 只 preventDefault，**真正干活的是 click**。
+       touchstart → e.preventDefault()   （为了压住系统输入法）
+       click      → fn()                 （真正输入）
+
+     preventDefault 掉 touchstart 之后，click 是浏览器**合成**出来的：
+       · 部分移动浏览器（尤其安卓 WebView）被 preventDefault 后不再合成 click
+         → **按了完全没反应**
+       · 即便合成，也要走完手势判定再等约 300ms
+         → **反应慢**
+
+     改法：**按下即触发**（pointerdown 统一覆盖触摸与鼠标），
+     然后把浏览器随后合成的那个 click 挡掉。
+
+     ⚠ 挡 click 这一步不能省：
+       不挡的话一次按键会走两遍 fn —— **每按一下插入两个字符**。
+       那比"没反应"更糟：用户会以为键盘在乱跳、不敢再用。
+       用时间戳去重（700ms 内的 click 视为同一次交互的回声）。 */
   function bind(el, fn, opts) {
-    var down = function (e) { e.preventDefault(); };
-    el.addEventListener('touchstart', down, { passive: false });
-    el.addEventListener('mousedown', down);
-    el.addEventListener('click', function (e) { e.preventDefault(); fn(); });
-    if (opts && opts.repeat) {
-      var start = function (e) {
-        e.preventDefault();
-        fn();
+    var repeat = !!(opts && opts.repeat);
+    var lastDown = 0;
+    var hasPointer = !!(global.PointerEvent);
+
+    function down(e) {
+      /* 鼠标只认左键；触摸/笔没有 button，undefined 会被这里放行 */
+      if (e && e.pointerType === 'mouse' && e.button) return;
+      if (e && e.preventDefault) e.preventDefault();
+      lastDown = Date.now();
+      fn();
+      if (repeat) {
         clearTimeout(repeatTimer);
         repeatTimer = setTimeout(function loop() {
           fn();
           repeatTimer = setTimeout(loop, 70);
         }, 400);
-      };
-      var stop = function () { clearTimeout(repeatTimer); repeatTimer = null; };
-      el.addEventListener('touchstart', start, { passive: false });
-      el.addEventListener('mousedown', start);
-      el.addEventListener('touchend', stop);
-      el.addEventListener('mouseup', stop);
-      el.addEventListener('mouseleave', stop);
-      el.addEventListener('touchcancel', stop);
+      }
     }
+    function up() {
+      if (!repeat) return;
+      clearTimeout(repeatTimer); repeatTimer = null;
+    }
+
+    if (hasPointer) {
+      el.addEventListener('pointerdown', down);
+      el.addEventListener('pointerup', up);
+      el.addEventListener('pointercancel', up);
+      el.addEventListener('pointerleave', up);
+    } else {
+      /* 极老的浏览器没有 PointerEvent：退化到 touch/mouse 双注册。
+         这里两者都触发 fn 会重复，所以只在**没有** pointer 时这样注册。 */
+      el.addEventListener('touchstart', down, { passive: false });
+      el.addEventListener('mousedown', down);
+      el.addEventListener('touchend', up);
+      el.addEventListener('mouseup', up);
+      el.addEventListener('mouseleave', up);
+      el.addEventListener('touchcancel', up);
+    }
+
+    el.addEventListener('click', function (e) {
+      e.preventDefault();
+      /* 已被 pointerdown 处理过 → 这是合成的回声，丢弃 */
+      if (hasPointer && Date.now() - lastDown < 700) return;
+      if (!hasPointer) return;      /* 退化分支已由 down 处理过 */
+      fn();
+    });
   }
 
   function showPage(p) {
@@ -497,8 +591,10 @@
   }
   function setOn(v) {
     try { localStorage.setItem(LS_ON, v ? 'on' : 'off'); } catch (e) { }
-    if (v) { build(); } else if (bar) { bar.classList.add('off'); document.body.classList.remove('has-vkb'); }
+    if (v) { build(); }
+    else if (bar) { bar.classList.add('off'); document.body.classList.remove('has-vkb'); }
     else { document.body.classList.remove('has-vkb'); }
+    if (!v) document.body.classList.remove('vkb-collapsed');
     if (v && bar) bar.classList.remove('off');
     /* 通知移动键条：两套并存会互相挡 */
     try { if (Code.mobileBar) Code.mobileBar.onVkbChange && Code.mobileBar.onVkbChange(v); } catch (e) { }
@@ -514,12 +610,7 @@
   function maybeOffer() {
     try { if (localStorage.getItem(LS_ASKED)) return; } catch (e) { return; }
     if (loadOn()) return;
-    var touch = false;
-    try {
-      touch = !!(window.matchMedia && window.matchMedia('(pointer: coarse)').matches) &&
-              (('ontouchstart' in window) || navigator.maxTouchPoints > 0);
-    } catch (e) { }
-    if (!touch) return;
+    if (!isTouchDevice()) return;
 
     var done = function () {
       try { localStorage.setItem(LS_ASKED, '1'); } catch (e) { }
@@ -546,6 +637,8 @@
 
   Code.vkb = {
     setOn: setOn, isOn: isOn, loadOn: loadOn,
+    setCollapsed: setCollapsed, loadCollapsed: loadCollapsed,
+    isTouchDevice: isTouchDevice,
     showPage: showPage, maybeOffer: maybeOffer,
     PAGES: PAGES,
     _build: build

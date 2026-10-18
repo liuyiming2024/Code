@@ -156,7 +156,14 @@
 
   function decryptStr(env) {
     if (!env) return Promise.resolve('');
-    if (env.indexOf('enc1:') !== 0) return Promise.resolve(env); /* 旧明文，见 migrate */
+    /* 红队 V-04：旧版对非 enc1: 的值**原样返回**。
+       那是为兼容早期明文设计的，但意味着任何非密文值都被当明文读出 ——
+       包括误写进来的其它数据。明文迁移早已自动完成（见 migrate），
+       所以兼容分支可以去掉：不是密文就当作读不出来，
+       让界面提示重新填，而不是把一个奇怪的值塞进输入框。 */
+    if (env.indexOf('enc1:') !== 0) {
+      return Promise.reject(new Error('CRED_UNREADABLE'));
+    }
     return getKey().then(function (k) {
       var parts = env.split(':');
       if (parts.length !== 3) return Promise.reject(new Error('密文格式不对'));

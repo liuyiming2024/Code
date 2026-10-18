@@ -25,6 +25,7 @@
    ============================================================ */
 
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
+import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
 const CORS = {
   "Access-Control-Allow-Origin": "*",
@@ -184,6 +185,18 @@ function extractCsrf(html: string): string {
   return m2 ? m2[1] : "";
 }
 
+/* ---------- 题号白名单 ----------
+   红队 V-02：pid 未经校验就拼进 URL。
+   如实说清边界：host 是硬编码的 codeforces.com，
+   所以 pid 只能影响 path 与 query，**偷不走 cookie、不构成 SSRF**。
+   但会造成 path 注入（取到非预期页面）和超长 URL。
+   题号格式就是「数字 + 可选一个字母」，如 4A / 1234 / 2000B。
+   按白名单收紧，不给自己留意外。 */
+const PID_RE = /^\d{1,4}[A-Za-z]?$/;
+function validPid(p: string): boolean {
+  return typeof p === "string" && PID_RE.test(p);
+}
+
 function pick(cookie: string, name: string): string {
   const m = cookie.match(new RegExp("(?:^|;\\s*)" + name + "=([^;]*)"));
   return m ? m[1] : "";
@@ -213,6 +226,55 @@ serve(async (req: Request) => {
   }
   if (!a.cred || !a.code || !a.pid) {
     return json({ ok: false, error: "缺少凭据 / 代码 / 题号" }, 400);
+  }
+
+  /* ============================================================
+     鉴权（红队 V-01，P0）
+     ------------------------------------------------------------
+     上一版**完全没有鉴权** —— 只校验 method 和四个字段，
+     CORS 还是 *。后果是任何人、任何网站的 JS 都能把这里
+     当成匿名代提交中继：
+       · 匿名、不可溯源
+       · 刷量触发 CF 风控 → **封的是出口 IP，所有人的代交一起失效**
+     所以这一层不是"加个校验"，是这功能能不能对外开放的前提。
+
+     ⚠ 用调用者 token 解析身份，不能只看有没有 Bearer ——
+        anon key 也是 Bearer 开头，只检查前缀等于没鉴权。
+     ============================================================ */
+  const auth = req.headers.get("authorization") || "";
+  if (!auth.startsWith("Bearer ")) return json({ ok: false, error: "未登录" }, 401);
+
+  const sb = createClient(
+    Deno.env.get("SUPABASE_URL")!,
+    Deno.env.get("SUPABASE_ANON_KEY")!,
+    { global: { headers: { authorization: auth } } },
+  );
+  const { data: ud, error: ue } = await sb.auth.getUser();
+  const uid = (!ue && ud && ud.user) ? ud.user.id : null;
+  if (!uid) return json({ ok: false, error: "登录态无效，请重新登录" }, 401);
+
+  /* ---------- 限流 ----------
+     不限制的话，一个账号就能把配额和出口 IP 一起打没。
+     判据交给数据库（函数内按 uid 统计），Edge Function 无状态，
+     多实例各自计数会各算各的 —— 那是假限流。 */
+  const { data: allowed, error: re } = await sb.rpc("code_oj_rate_allow", {
+    p_budget: 30,        // 每窗口最多 30 次
+    p_window: "1 hour",
+  });
+  if (re) return json({ ok: false, error: "限流检查失败：" + String(re.message).slice(0, 120) }, 500);
+  if (allowed !== true) {
+    return json({
+      ok: false,
+      error: "提交太频繁了，请稍后再试。限制是为了不牵连其他人的代提交。",
+    }, 429);
+  }
+
+  /* ---------- pid 白名单（V-02） ---------- */
+  if (!validPid(a.pid)) {
+    return json({
+      ok: false,
+      error: "题号格式不对（应为数字加可选字母，如 4A、2000B）",
+    }, 400);
   }
 
   try {

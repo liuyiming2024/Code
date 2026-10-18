@@ -31,7 +31,43 @@
   function esc(s) { return U.esc ? U.esc(s) : String(s == null ? '' : s)
     .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;'); }
 
-  var state = { agreed: false, oj: 'codeforces', pid: '', lang: '54', cred: '' };
+  /* ============================================================
+     凭据存哪：三档开关
+     ------------------------------------------------------------
+     · server —— 存服务端，换设备能用
+     · local  —— 存本机（加密，密钥不可导出）
+     · none   —— 不存，每次手填
+
+     ---------- 为什么必须让用户选，而不是我们替他定 ----------
+     三档的安全性质**不一样**，而且差别是实质性的：
+
+       none   最安全，代价是每次手填
+       local  加密、密钥不可导出 → **我们拿不到明文**
+       server 跨设备方便，但**服务端能解密**（密钥在它的环境里）
+
+     所以默认给 **local**。
+     默认给 server 等于替用户选了"方便但服务端能解密" ——
+     而这个差别如果不说明，用户根本不知道自己放弃了什么。
+
+     ---------- server 档到底承诺了什么 ----------
+     只承诺「**拖库拿不到明文**」：库里只有密文，密钥在 Edge Function
+     的环境变量里，不在库里。
+     不能承诺「我们拿不到」—— 服务端本身当然能解密。
+     想拿这个承诺就选 local。这一点在界面上直说，不包装。
+     ============================================================ */
+  var STORE = {
+    NONE: 'none',
+    LOCAL: 'local',
+    SERVER: 'server'
+  };
+  var STORE_DESC = {
+    none: '不存 —— 每次手填，什么都不留（最安全）',
+    local: '存本机 —— 加密，密钥不可导出，我们拿不到明文',
+    server: '存服务端 —— 换设备能用；拖库拿不到明文，但服务端能解密'
+  };
+
+  var state = { agreed: false, oj: 'codeforces', pid: '', lang: '54', cred: '',
+    store: STORE.LOCAL };
 
   /* ============================================================
      凭据的本地加密存储
@@ -135,6 +171,48 @@
     return saveCred(oj, raw).then(function () { }, function () { });
   }
 
+  /* ============================================================
+     server 档：向服务端收**密文**
+     ------------------------------------------------------------
+     注意这里前端**只做收发**，不做加解密：
+     密钥在 Edge Function 的环境变量里，浏览器拿不到它 ——
+     浏览器拿到了就等于密钥随页面下发，那加密就没意义了。
+     所以浏览器收到的是密文，要提交时原样回传给转发函数，
+     由转发函数解密后拿去提交。
+     ============================================================ */
+  function serverGet(oj) {
+    var url = (Code.SUPABASE_URL || '') + '/functions/v1/oj-cred';
+    var key = Code.SUPABASE_KEY || '';
+    return fetch(url, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', apikey: key,
+        authorization: 'Bearer ' + ((Code.auth && Code.auth.token) ? Code.auth.token() : key) },
+      body: JSON.stringify({ action: 'get', oj: oj })
+    }).then(function (r) {
+      return r.json().then(function (j) {
+        if (!j.ok) throw new Error(j.error || 'HTTP ' + r.status);
+        return j.cred || '';
+      }, function () { throw new Error('返回不是合法 JSON'); });
+    });
+  }
+  /* 发明文给服务端、由服务端加密后落盘。
+     这一档的性质就是这样（服务端能解密），界面上已写明。 */
+  function serverSet(oj, plain) {
+    var url = (Code.SUPABASE_URL || '') + '/functions/v1/oj-cred';
+    var key = Code.SUPABASE_KEY || '';
+    return fetch(url, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', apikey: key,
+        authorization: 'Bearer ' + ((Code.auth && Code.auth.token) ? Code.auth.token() : key) },
+      body: JSON.stringify({ action: 'save', oj: oj, cred: plain || '' })
+    }).then(function (r) {
+      return r.json().then(function (j) {
+        if (!j.ok) throw new Error(j.error || 'HTTP ' + r.status);
+        return true;
+      }, function () { throw new Error('返回不是合法 JSON'); });
+    });
+  }
+
   function loadCred(oj) {
     /* 同步返回"这一刻能拿到的明文"，加密版本随后填回输入框。
        不能让调用方等 Promise —— 界面初始化是同步的。 */
@@ -209,9 +287,23 @@
     }
 
     say('', '提交中…');
-    /* 加密保存。失败**不阻断提交** —— 存不下只是下次要重填，
-       而阻断提交会让用户以为功能坏了。但要如实告知。 */
-    saveCred(state.oj, state.cred).then(post, function (e) {
+    /* 按档位保存。**保存失败一律不阻断提交** ——
+       存不下只是下次要重填，而阻断提交会让用户以为功能坏了。 */
+    var saveP;
+    if (state.store === STORE.NONE) {
+      /* 不存：把之前留的都清掉。
+         否则用户以为选了"不存"，旧凭据还躺在本地 —— 这比不给他选更糟。 */
+      saveP = saveCred(state.oj, '').catch(function () { });
+      try { localStorage.removeItem(KEY + 'cred:' + state.oj); } catch (e) { }
+    } else if (state.store === STORE.SERVER) {
+      /* 这一档也顺手清掉本地的，避免两处各留一份 ——
+         用户改了档位却两处都有，他自己也不知道哪个在生效。 */
+      saveP = serverSet(state.oj, state.cred);
+      try { localStorage.removeItem(KEY + 'cred:' + state.oj); } catch (e) { }
+    } else {
+      saveP = saveCred(state.oj, state.cred);
+    }
+    saveP.then(post, function (e) {
       if (e && e.message === 'NO_WEBCRYPTO') {
         var w = U && U.$ ? U.$('#oj-result') : null;
         if (w) w.innerHTML += '<div class="jr-line warn">' +
@@ -252,6 +344,20 @@
                      否则用户会以为自己从没填过而反复填 */
   function fillCred(input, oj) {
     if (!input) return;
+    if (state.store === STORE.NONE) { input.value = ''; return; }
+    if (state.store === STORE.SERVER) {
+      input.value = '';
+      input.placeholder = '正在从服务端取…';
+      serverGet(oj).then(function (t) {
+        input.value = t || '';
+        input.placeholder = '登录 OJ 后复制的 cookie';
+      }, function (e) {
+        /* 取失败要说明原因，不能默默空着 ——
+           空着的话用户会以为自己从没存过，于是又填一遍。 */
+        input.placeholder = '取不到服务端凭据：' + String(e.message || e).slice(0, 60);
+      });
+      return;
+    }
     var raw = loadCred(oj);
     if (!raw) { input.value = ''; return; }
     if (raw.indexOf('enc1:') !== 0) {
@@ -269,6 +375,26 @@
     });
   }
 
+  /* 每档的实际含义必须写出来。
+     只写"本地/服务端/不存"的话，用户看不出 server 档服务端能解密，
+     会以为三档一样安全 —— 那这个开关就是骗人的。 */
+  function showStoreNote() {
+    var n = U && U.$ ? U.$('#oj-store-note') : null;
+    if (!n) return;
+    var txt = {
+      none: '什么都不存。每次提交都要重新填一次凭据。',
+      local: '加密后存在这台设备，密钥不可导出 —— <b>我们拿不到明文</b>。' +
+             '清浏览器数据会连密钥一起清掉，那时需要重填。',
+      /* ⚠ 文案里不要出现"我们拿不到"这个字面 ——
+         它在引导句里出现过一次（"要…请选存本机"），
+         结果断言用全文匹配时把引导当成了声称，误报红。
+         消除歧义后，断言可以严格地写成"server 档绝不能出现这几个字"。 */
+      server: '存在服务端，换设备能用。<b>拖库拿不到明文</b>（库里只有密文），' +
+              '<b>但服务端能解密</b>。想要更强的保证请选「存本机」。'
+    }[state.store] || '';
+    n.innerHTML = txt;
+  }
+
   function langName() {
     var s = (SUPPORTED.filter(function (x) { return x.id === state.oj; })[0] || {}).langs || [];
     var m = s.filter(function (x) { return x.id === state.lang; })[0];
@@ -284,6 +410,10 @@
     if (!box) return;
     var agreed = loadAgree();
     state.agreed = agreed;
+    try {
+      var sv = localStorage.getItem(KEY + 'store');
+      if (sv && STORE_DESC[sv]) state.store = sv;
+    } catch (e) { }
 
     box.innerHTML =
       '<div class="oj-note">' +
@@ -303,9 +433,16 @@
           return '<option value="' + l.id + '">' + esc(l.name) + '</option>';
         }).join('') +
       '</select></div>' +
+      '<div class="oj-row"><label>存哪</label><select id="oj-store">' +
+        ['none', 'local', 'server'].map(function (k) {
+          return '<option value="' + k + '"' + (k === state.store ? ' selected' : '') + '>' +
+            esc(STORE_DESC[k]) + '</option>';
+        }).join('') +
+      '</select></div>' +
       '<div class="oj-row"><label>凭据</label>' +
         '<input id="oj-cred" placeholder="登录 OJ 后复制的 cookie" spellcheck="false">' +
       '</div>' +
+      '<div class="oj-help" id="oj-store-note"></div>' +
       '<div class="oj-help">取法：登录目标平台 → 按 F12 → Console 里执行 ' +
         '<code>document.cookie</code> → 把输出粘贴到上面。</div>' +
       '<div class="oj-row"><label class="oj-check">' +
@@ -320,7 +457,19 @@
       state.oj = site.value;
       fillCred(U.$('#oj-cred'), state.oj);
     });
+
+    var sel = U.$('#oj-store');
+    sel.addEventListener('change', function () {
+      state.store = sel.value;
+      try { localStorage.setItem(KEY + 'store', state.store); } catch (e) { }
+      showStoreNote();
+      /* 切档就要按新档重新取 ——
+         不重新取的话，从 local 切到 server 后输入框还是旧的本地凭据，
+         而保存时会存到服务端：**用户以为存这，实际存那**。 */
+      fillCred(U.$('#oj-cred'), state.oj);
+    });
     U.$('#oj-submit').addEventListener('click', function () { submit(); });
+    showStoreNote();
     fillCred(U.$('#oj-cred'), state.oj);
   }
 

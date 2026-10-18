@@ -632,6 +632,51 @@
     return v === 'ifstream' || v === 'ofstream' || v === 'fstream';
   }
 
+  /* stringstream 也走"流声明"这条路。
+     不认它就报"语法错误：期望 ;，实际读到 ss" ——
+     这个措辞会让人去补分号，越改越远。 */
+  function isStringStreamName(v) {
+    return v === 'stringstream' || v === 'istringstream' || v === 'ostringstream';
+  }
+
+  /* ⚠ SStream 必须定义在**模块级**，不能放在 funcs 初始化那个函数里。
+     放在里面的话 doStreamDecl（原型方法）访问不到它 ——
+     运行时直接 ReferenceError: SStream is not defined，
+     而这个错在语法检查阶段完全看不出来。 */
+  function SStream() { this.buf = ''; this.tokens = null; }
+  SStream.prototype.__out = function (s) { this.buf += s; return this; };
+  SStream.prototype.__nextToken = function () {
+    if (!this.tokens) {
+      this.tokens = String(this.buf).trim().split(/\s+/).filter(function (x) { return x !== ''; });
+      this.tokens.push('');
+    }
+    var w = this.tokens.shift();
+    var num = Number(w);
+    return (w !== '' && isFinite(num)) ? num : w;
+  };
+  SStream.prototype.str = function () { return this.buf; };
+  /* ⚠ `while (ss >> x)` 必须能在读完时变假。
+     返回恒 true 的话循环永远不结束 ——
+     解释器会报"跑满时间预算"，而这个提示说的是**性能**，
+     用户会去优化自己的循环，想不到是流读完没变假。 */
+  SStream.prototype.__bool = function () {
+    if (!this.tokens) {
+      this.tokens = String(this.buf).trim().split(/\s+/).filter(function (x) { return x !== ''; });
+      this.tokens.push('');
+    }
+    return this.tokens.length > 1;
+  };
+
+  /* 基础类型的字节数，给 sizeof(int) 这类用。
+     注意这是"教学口径"：真机上 long 在 64 位 Linux 是 8、Windows 是 4。
+     竞赛里 sizeof 几乎只用在 memset 上，取数组长度才是主要用途，
+     所以单个基础类型给个自洽的值即可 —— 但要在文档里说清不是真值。 */
+  var TYPE_SIZES = {
+    'bool': 1, 'char': 1, 'short': 2, 'int': 4,
+    'long': 8, 'long long': 8, 'float': 4, 'double': 8,
+    'unsigned': 4, 'unsigned int': 4, 'unsigned long long': 8
+  };
+
   function isContainerName(v) {
     return v === 'vector' || v === 'map' || v === 'set' || v === 'unordered_map' ||
            v === 'unordered_set' || v === 'deque' || v === 'stack' || v === 'queue' ||
@@ -748,6 +793,17 @@
         } else {
           init = this.assign();
         }
+      } else if (this.atOp('{')) {
+        /* ⚠ C++11 花括号直接初始化：`vector<int> v{1,2,3};`
+           这条**必须单独加**，不能指望上面 `= {}` 那个分支 ——
+           那个以 eat('=') 为前提，`v{...}` 没有等号就永远进不去。
+           我第一版只改了 varDeclarator，结果 vector 依然报
+           "期望 ;，实际读到 {" —— 因为容器走的是 containerVarDecl，
+           根本不是同一条路。
+
+           为什么值得加：这是竞赛里最常见的初始化写法，
+           而报错"期望分号"会诱导用户去补分号，越改越远。 */
+        init = this.initOrExpr();
       }
       this.expect('OP', ';');
       return { type: 'ContainerDecl', kind: cdecl.kind, elem: cdecl.elem, name: name, init: init };
@@ -827,15 +883,29 @@
           else if (ftype === 'unsigned' && (nx3 === 'long' || nx3 === 'int' || nx3 === 'char' || nx3 === 'short')) { ftype += ' ' + nx3; this.p++; }
           else break;
         }
-        var fname = this.next().v;
-        var farr = null;
-        while (this.atOp('[')) {
-          this.p++;
-          (farr || (farr = [])).push(this.atOp(']') ? null : this.expr());
-          this.expect('OP', ']');
+        /* ⚠ 逗号分隔的多个成员：`struct P{ int x, y; };`
+           竞赛里坐标、点对几乎都这么写（`int x,y;`），
+           而此前一个成员声明只吃一个名字，遇到逗号就
+           "语法错误：期望 ;，实际读到 ,"。
+
+           这个报错特别误导：用户看到"期望分号"会去
+           把逗号改成分号 —— 而那确实是等价写法，
+           于是他学会了绕开，却不知道我们少支持了一件事。
+
+           循环里**每个名字都要重新读数组维数**：
+           `int a[3], b[5];` 两维不同，共用一个 farr 会串。 */
+        for (;;) {
+          var fname = this.next().v;
+          var farr = null;
+          while (this.atOp('[')) {
+            this.p++;
+            (farr || (farr = [])).push(this.atOp(']') ? null : this.expr());
+            this.expect('OP', ']');
+          }
+          fields.push({ name: fname, type: ftype, sizes: farr });
+          if (!this.eat('OP', ',')) break;
         }
         this.expect('OP', ';');
-        fields.push({ name: fname, type: ftype, sizes: farr });
       }
       this.expect('OP', '}');
       this.eat('OP', ';');   /* struct 定义后的分号可省，但不能报错 */
@@ -919,7 +989,7 @@
            紧接着 expect(';') 撞到 fin → 报"语法错误：期望 ;"
          用户看到这个完全猜不到是自己用了文件流 ——
          还以为是分号写错了。竞赛里文件读写很常见，必须支持。 */
-      if (this.at('NAME') && isStreamTypeName(this.peek().v)) {
+      if (this.at('NAME') && (isStreamTypeName(this.peek().v) || isStringStreamName(this.peek().v))) {
         var sk = this.next().v;
         if (!this.at('NAME')) throw cerr(sk + ' 后面需要变量名', this.lineOf());
         var sname = this.next().v;
@@ -966,6 +1036,16 @@
         this.expect('OP', ']');
       }
       if (this.eat('OP', '=')) init = this.initOrExpr();
+      /* ⚠ C++11 花括号直接初始化：`vector<int> v{1,2,3};`
+         竞赛里这是**最常用**的写法之一，而此前只认 `= {...}`，
+         于是报"语法错误：期望 ;，实际读到 {"。
+
+         这个措辞最坑：用户看到"期望分号"会以为自己少写了分号，
+         去补一个变成 `v{1,2,3};;` —— 越改越远。
+
+         注意必须放在数组尺寸之后：`int a[3]{1,2,3}` 也是合法 C++，
+         顺序反了会把 `{` 当成数组的下一维。 */
+      else if (this.atOp('{')) init = this.initOrExpr();
       return { name: name, type: type, sizes: arrSizes, init: init };
     },
 
@@ -1056,7 +1136,7 @@
          → 报"语法错误：期望 ;，实际读到 fin"
          用户看到这个只会以为自己分号写错了，猜不到是文件流不支持。
          函数体内的声明走的是这里，不是 funcOrDecl，所以两边都要加。 */
-      if (this.at('NAME') && isStreamTypeName(this.peek().v)) {
+      if (this.at('NAME') && (isStreamTypeName(this.peek().v) || isStringStreamName(this.peek().v))) {
         var sk2 = this.next().v;
         if (!this.at('NAME')) throw cerr(sk2 + ' 后面需要变量名', this.lineOf());
         var sname2 = this.next().v;
@@ -1329,8 +1409,55 @@
         var inner = this.unary();
         return { type: 'Deref', v: inner };
       }
-      if (this.atOp('&')) throw cerr('暂不支持：取地址', this.lineOf());
-      if (this.at('KW', 'sizeof')) throw cerr('暂不支持：sizeof', this.lineOf());
+      /* ⚠ `&x` 取地址：**只在 scanf 里**有明确语义 —— "把结果写回这个变量"。
+         此前一律抛"暂不支持：取地址"，于是
+         `scanf("%d", &x)` 完全用不了，而这是 C 系竞赛选手的默认输入方式
+         （printf/scanf 比 cin/cout 快，卡常时必用）。
+
+         这里解析成 AddrOf 节点，由 scanf 宿主函数消费。
+         **不**把它当真指针：真指针语义（算术、别名）依然明确报错，
+         否则用户会以为我们支持指针，然后在别处撞墙。 */
+      if (this.atOp('&')) {
+        var lnA = this.peek().line;
+        this.p++;
+        var tgt = this.unary();
+        /* ⚠ 变量节点的 type 是 'Name' 而不是 'Var' ——
+           我第一版按 'Var' 写，于是 `&x` 永远走进"只能用于变量"
+           的报错分支。**明明是变量却报"只能用于变量"**，
+           这种自相矛盾的报错最难让人意识到是实现的 bug。 */
+        if (tgt && (tgt.type === 'Name' || tgt.type === 'Var' || tgt.type === 'Index')) {
+          return { type: 'AddrOf', v: tgt, line: lnA };
+        }
+        throw cerr('取地址只能用于变量或数组元素（指针运算暂不支持）', lnA);
+      }
+      /* ⚠ sizeof：竞赛里 memset(a,0,sizeof(a)) 是标准写法，
+         不认它就报"暂不支持：sizeof"，用户只能去手写数字 ——
+         而手写数字写错就是越界，且**不报错**。 */
+      if (this.at('KW', 'sizeof')) {
+        var lnS = this.peek().line;
+        this.p++;
+        if (this.eat('OP', '(')) {
+          /* ⚠ `sizeof(int)` 里的 int 是 **TYPE** token，不是 NAME。
+             直接走 expr() 会报"读到意外的 int" ——
+             而 sizeof(类型) 是 C 里最常见的形式之一。
+             所以先认类型名，认不出再当表达式。 */
+          if (this.at('TYPE')) {
+            var tn = this.next().v;
+            while (this.at('TYPE') && this.peek().v !== 'const') {
+              var nxS = this.peek().v;
+              if (tn === 'long' && (nxS === 'long' || nxS === 'double')) { tn += ' ' + nxS; this.p++; }
+              else if (tn === 'unsigned' && (nxS === 'long' || nxS === 'int' || nxS === 'char' || nxS === 'short')) { tn += ' ' + nxS; this.p++; }
+              else break;
+            }
+            this.expect('OP', ')');
+            return { type: 'SizeOfType', typeName: tn, line: lnS };
+          }
+          var innerS = this.expr();
+          this.expect('OP', ')');
+          return { type: 'SizeOf', arg: innerS, paren: true, line: lnS };
+        }
+        return { type: 'SizeOf', arg: this.unary(), paren: false, line: lnS };
+      }
       if (this.at('KW', 'new')) throw cerr('暂不支持：new', this.lineOf());
       return this.postfix();
     },
@@ -1659,7 +1786,26 @@
       var self = this;
       var g = this.global;
       g.set('cout', { __cout: true });
-      g.set('cin', { __cin: true });
+      /* ⚠ `while (cin >> a >> b)` 是竞赛**最基础**的多组输入写法
+         （读到 EOF 为止）。此前 cin 是个恒真对象，
+         于是循环永远不结束 —— 解释器报"跑满时间预算"。
+
+         这个提示说的是性能，用户会去优化自己的循环、
+         怀疑数据太大，**想不到是流读完没变假**。
+         所以给 cin 一个 __bool：还有未读的 token 才算真。 */
+      /* __bool 必须表示"**上一次读取是否成功**"，不能去"预读"。
+         我第一版让 __bool 去试探 input() 还有没有下一行，
+         结果它把下一行**提前吃掉**读进了缓冲区：
+         `while(cin>>a>>b)` 第二轮的 a、b 确实读到了 3 和 4，
+         但此时缓冲区已空、input 也耗尽，__bool 判假 ——
+         **读到的数据被丢掉，循环提前结束**。
+
+         表现为"多组输入只处理了第一组"，而且**不报错**。
+         这是最坑的一类：结果看起来像"只读了一组"，
+         用户会去查自己的循环条件。
+
+         C++ 的真实语义正是这样：流只在**读取失败后**才变假。 */
+      g.set('cin', { __cin: true, __bool: function () { return self.lastReadOk !== false; } });
       g.set('stdin', { __stdin: true });
       g.set('stdout', { __stdout: true });
 
@@ -1812,6 +1958,37 @@
       this.funcs.puts = { builtin: function (s) { self.out(self.str(s) + '\n'); return 0; } };
       this.funcs.sprintf = { builtin: function () { return 0; } };
       this.funcs.strlen = { builtin: function (s) { return String(s).length; } };
+      /* ⚠ memset(a, 0, sizeof(a)) 是竞赛里清零的**标准写法**。
+         不认它就报"暂不支持的函数：memset"，用户只能手写循环，
+         或者更糟：手写一个错误的长度 —— 越界且**不报错**。
+
+         只实现 0 和 -1 这两个真实高频值：
+           memset(a, 0, n)  → 全 0
+           memset(a, -1, n) → 全 -1（求补集的惯用法）
+         其它值按 C 的真实语义是"按字节填充"，结果依赖字节序，
+         在解释器里给不出可信值 —— **明确报错，不猜**。 */
+      this.funcs.memset = {
+        builtin: function (arr, val, n) {
+          if (!Array.isArray(arr)) throw cerr('memset 的第一个参数要是数组');
+          var cnt = (n === undefined) ? arr.length : Number(n);
+          if (!isFinite(cnt) || cnt < 0) cnt = 0;
+          if (val === 0 || val === -1) {
+            for (var i = 0; i < cnt && i < arr.length; i++) arr[i] = val;
+            return arr;
+          }
+          throw cerr('memset 只支持填 0 或 -1（其它值按字节填充，本环境给不出可信结果）');
+        }
+      };
+      /* 字符分类/转换：字符串题、模拟题高频。
+         不认就报"暂不支持的函数：isdigit"，
+         用户只能手写 c>='0'&&c<='9' —— 而那正是我们该替他做的事。 */
+      this.funcs.tolower = { builtin: function (c) { return typeof c === 'string' ? c.toLowerCase() : c; } };
+      this.funcs.toupper = { builtin: function (c) { return typeof c === 'string' ? c.toUpperCase() : c; } };
+      this.funcs.isdigit = { builtin: function (c) { return typeof c === 'string' ? (c >= '0' && c <= '9' ? 1 : 0) : (c >= 48 && c <= 57 ? 1 : 0); } };
+      this.funcs.isalpha = { builtin: function (c) { return /^[A-Za-z]$/.test(String(typeof c === 'number' ? String.fromCharCode(c) : c)) ? 1 : 0; } };
+      this.funcs.islower = { builtin: function (c) { return /^[a-z]$/.test(String(typeof c === 'number' ? String.fromCharCode(c) : c)) ? 1 : 0; } };
+      this.funcs.isupper = { builtin: function (c) { return /^[A-Z]$/.test(String(typeof c === 'number' ? String.fromCharCode(c) : c)) ? 1 : 0; } };
+      this.funcs.isspace = { builtin: function (c) { return /^\s$/.test(String(typeof c === 'number' ? String.fromCharCode(c) : c)) ? 1 : 0; } };
       this.funcs.abs = { builtin: function (x) { return Math.abs(x); } };
       this.funcs.sqrt = { builtin: Math.sqrt };
       this.funcs.pow = { builtin: Math.pow };
@@ -1820,6 +1997,13 @@
       this.funcs.floor = { builtin: Math.floor };
       this.funcs.ceil = { builtin: Math.ceil };
       this.funcs.round = { builtin: Math.round };
+      /* scanf 不走 builtin —— 见 doScanf。
+         ⚠ 为什么不能用 builtin：
+         builtin 拿到的是**已求值**的实参，而 &x 需要在**调用处的作用域**
+         里写回。求值之后只剩一个值，写不回去。
+         硬在 builtin 里做的话只能写全局，main 里的局部变量就收不到 ——
+         表现为 x 恒为 0，且不报错。
+         所以跟 doCin 一样走 eval 的特殊分支，那里拿得到 scope。 */
       this.funcs.scanf = { builtin: function () { return 0; } };
 
       /* ================= 竞赛常用算法 =================
@@ -1866,12 +2050,29 @@
         }
       };
 
-      /* reverse：与 sort 同级的常用操作 */
+      /* reverse：与 sort 同级的常用操作。
+         ⚠ 必须支持迭代器写法 `reverse(v.begin(), v.end())` ——
+         这是 STL 的标准调用方式，而此前只认数组，
+         于是报"reverse 的参数必须是数组"。
+
+         这个报错特别坑：v 明明是个数组（vector），
+         却说"参数必须是数组" —— 自相矛盾，
+         用户看不出该改什么。 */
       this.funcs.reverse = {
-        builtin: function (a) {
-          if (!Array.isArray(a)) throw cerr('reverse 的参数必须是数组');
-          a.reverse();
-          return a;
+        builtin: function (a, b) {
+          var arr = a;
+          if (a && a.__iter) arr = a.__iter;
+          if (!Array.isArray(arr)) throw cerr('reverse 的参数必须是数组或迭代器');
+          /* 给了 end 就只反转 [begin, end) */
+          if (b && b.__iter === arr && b.__at !== undefined) {
+            var lo = (a && a.__at !== undefined) ? a.__at : 0;
+            var hi = b.__at;
+            var seg = arr.slice(lo, hi).reverse();
+            for (var i = lo; i < hi; i++) arr[i] = seg[i - lo];
+            return arr;
+          }
+          arr.reverse();
+          return arr;
         }
       };
 
@@ -1883,10 +2084,41 @@
          而二分查找错了不会报错，只会给出错误答案。 */
       function boundHelper(a, b, c, inclusive) {
         var arr = a, lo = 0, hi, v;
-        if (Array.isArray(a)) {
+        /* ⚠ 迭代器写法 `lower_bound(v.begin(), v.end(), x)` 必须支持。
+           和 reverse 同一类问题：只认数组时，
+           对 vector 报"第一个参数必须是数组"，自相矛盾。 */
+        if (a && a.__iter) {
+          arr = a.__iter;
+          lo = a.__at || 0;
+          hi = (b && b.__iter === arr && b.__at !== undefined) ? b.__at : arr.length;
+          v = c;
+          /* ⚠ 迭代器写法必须返回**指针替身**而不是裸下标。
+             返回裸下标的话 `*lower_bound(...)` 会报
+             "暂不支持：指针解引用" —— 而这是 STL 的标准用法，
+             用户会以为我们不支持二分查找。
+
+             带 valueOf 是为了让 `cout << *it` 之外的比较也能用
+             （比如 `it != v.end()`）。 */
+          while (lo < hi) {
+            var mid2 = (lo + hi) >> 1;
+            if (inclusive ? (arr[mid2] <= v) : (arr[mid2] < v)) lo = mid2 + 1; else hi = mid2;
+          }
+          return { __ptr: arr, __idx: lo, valueOf: function () { return arr[lo]; } };
+        } else if (Array.isArray(a)) {
           if (c === undefined) { hi = arr.length; v = b; }
-          else { lo = 0; hi = Math.min(b, arr.length); v = c; }
-        } else throw cerr('lower_bound / upper_bound 的第一个参数必须是数组');
+          else {
+            lo = 0;
+            /* ⚠ `lower_bound(a, a+n, v)` 里的 a+n 在本环境算不出数
+               （数组加数字不是合法 JS 运算）→ 结果是 NaN。
+               Math.min(NaN, len) = NaN，于是循环一次不跑、直接返回 0。
+
+               **返回 0 且没有任何报错** —— 二分查找最怕这种：
+               看起来跑通了，位置永远是 0，用户会去查自己的数组。
+               所以 b 不是有效数字时退回整个数组长度。 */
+            hi = isFinite(b) ? Math.min(b, arr.length) : arr.length;
+            v = c;
+          }
+        } else throw cerr('lower_bound / upper_bound 的第一个参数必须是数组或迭代器');
         while (lo < hi) {
           var mid = (lo + hi) >> 1;
           if (inclusive ? (arr[mid] <= v) : (arr[mid] < v)) lo = mid + 1; else hi = mid;
@@ -2407,6 +2639,10 @@
          不做的话对象恒为真值，"文件打不开"的分支永远进不去 ——
          用户会以为自己读到了空文件，而不是文件不存在。 */
       if (v && v.__cppfile) return !!v.__bool();
+      /* stringstream 同理 */
+      if (v instanceof SStream) return !!v.__bool();
+      /* cin / cout 这类流对象：按 C++ 的 operator bool 判定 */
+      if (v && typeof v === 'object' && typeof v.__bool === 'function' && v.__cin) return !!v.__bool();
       if (typeof v === 'boolean') return v;
       if (typeof v === 'number') return v !== 0;
       if (typeof v === 'string') return v.length > 0;
@@ -2535,6 +2771,28 @@
           }
           return arr[ix];
         }
+        /* AddrOf 只在 scanf 里出现（已在 doScanf 里直接读 node），
+           走到这里说明它出现在别处 —— 明确报错而不是给个假指针。 */
+        case 'AddrOf':
+          throw cerr('取地址 & 只能用在 scanf 里（指针暂不支持）', node.line);
+        case 'SizeOfType':
+          return TYPE_SIZES[node.typeName] !== undefined ? TYPE_SIZES[node.typeName] : 4;
+        case 'SizeOf': {
+          /* sizeof：竞赛里 memset(a, 0, sizeof(a)) 是标准写法。
+             不认它就报"暂不支持：sizeof"，用户只能手写数字 ——
+             手写错就是越界，而且**不报错**。 */
+          var sv = this.eval(node.arg, scope);
+          if (node.type === 'SizeOfType') {
+            return TYPE_SIZES[node.typeName] !== undefined ? TYPE_SIZES[node.typeName] : 4;
+          }
+          if (node.paren && node.arg.type === 'Name' && TYPE_SIZES[node.arg.name]) {
+            return TYPE_SIZES[node.arg.name];
+          }
+          if (Array.isArray(sv)) return sv.length;
+          if (sv && typeof sv === 'object' && sv.__cppvec) return sv.length;
+          if (typeof sv === 'string') return sv.length + 1;
+          return 4;
+        }
         case 'Call': return this.doCall(node, scope);
         case 'StreamDecl': return this.doStreamDecl(node, scope);
         case 'Cout': return this.doCout(node, scope);
@@ -2633,6 +2891,14 @@
             }[mk];
             if (mm) return { __bound: mm, __self: obj };
             throw cerr('map 暂不支持的方法：' + mk);
+          }
+          /* stringstream 的成员：.str() 取拼好的字符串。
+             不加这条会落到下面"暂不支持：结构体 / 类成员访问" ——
+             用户看到"结构体/类"会以为自己用错了类型，
+             而实际我们只是没接这一个方法。 */
+          if (obj instanceof SStream) {
+            if (node.name === 'str') return { __bound: function () { return obj.str(); }, __self: obj };
+            throw cerr('stringstream 暂不支持的方法：' + node.name);
           }
           throw cerr('暂不支持：结构体 / 类成员访问（' + node.name + '）');
         }
@@ -2777,6 +3043,19 @@
             /* 整数除零：真机 SIGFPE */
             throw cerr('除零错误（整数除零在真实 C++ 里会导致程序崩溃）', node.line);
           }
+          /* ⚠ `7/2.0` 必须是 3.5，不能是 3。
+             此前只看**运行时值**：2.0 在 JS 里就是 2，
+             Number.isInteger(2) 为真 → 走整数除法 → 得到 3。
+             **差 0.5 就是 WA**，而输出看起来完全合理，用户查不出来。
+
+             必须看**声明类型**或**字面量是否带小数点**，
+             （与上面除零分支用同一套判据，两处必须一致 ——
+              否则会出现"除以 0 时当浮点、除以 2 时当整数"
+              这种同一个表达式两种行为的情况。） */
+          var ctA2 = inferCType(node.l, scope), ctB2 = inferCType(node.r, scope);
+          var isFloatDiv = /double|float/.test(ctA2 || '') || /double|float/.test(ctB2 || '') ||
+                           (node.l && node.l.isFloat) || (node.r && node.r.isFloat);
+          if (isFloatDiv) return a / b;
           /* 两个整数相除按 C 语义取整 */
           if (Number.isInteger(a) && Number.isInteger(b)) {
             /* ⚠ INT_MIN / -1 是 UB（S-126）：结果 2147483648 无法用 int32 表示，
@@ -2904,9 +3183,16 @@
         if (bound && typeof bound === 'object' && typeof bound.__bound === 'function') {
           return bound.__bound.apply(bound.__self, margs);
         }
+        /* stringstream 的 .str()：返回拼好的字符串 */
+        if (bound instanceof SStream && node.callee.name === 'str') return bound.str();
         throw cerr('不是可调用的成员');
       }
       var name = node.callee.type === 'Name' ? node.callee.name : null;
+      /* ⚠ scanf 必须在**求值实参之前**截住。
+         放到 args 求值之后的话，&x 已经被求值成值了，
+         作用域信息丢失，写不回去 ——
+         又变回"恒为 0 且不报错"那个静默 bug。 */
+      if (name === 'scanf') return this.doScanf(node, scope);
       /* 记录实参的**名字**与当前作用域：swap 这类需要按引用改写的函数要用。
          只传值的话 swap 只能改副本，外面看不到变化。 */
       var argNames = node.args.map(function (a) { return (a && a.type === 'Name') ? a.name : null; });
@@ -3042,6 +3328,20 @@
     },
 
     doStreamDecl: function (node, scope) {
+      /* stringstream：字符串 ↔ 数字互转。
+         竞赛里"按行读进来再拆数字""把结果拼成字符串"全靠它。 */
+      if (isStringStreamName(node.kind)) {
+        var ss = new SStream();
+        if (node.args && node.args.length) {
+          ss.buf = this.str(this.eval(node.args[0], scope));
+        }
+        /* ⚠ 是 scope.set 不是 this.setVar ——
+           我第一版写 this.setVar，运行时报
+           "this.setVar is not a function"。
+           这类错语法检查抓不到，只有真跑才暴露。 */
+        scope.set(node.name, ss);
+        return ss;
+      }
       /* ifstream fin("a.txt"); / ofstream fout("b.txt");
          第二个参数 ios::app 之类只在真 C++ 里有意义，这里按模式字符串处理。 */
       var path = node.args.length ? this.eval(node.args[0], scope) : '';
@@ -3057,6 +3357,16 @@
     },
 
     doCout: function (node, scope) {
+      /* stringstream 的 << ：ss << 1 << "ab"
+         不接的话内容永远为空，而 .str() 返回空串 ——
+         用户会以为是自己没写进去。 */
+      if (node.left && node.left.type === 'Name') {
+        var lc = this.eval(node.left, scope);
+        if (lc instanceof SStream && node.right) {
+          lc.buf += this.str(this.eval(node.right, scope));
+          return lc;
+        }
+      }
       /* cout << a << b 左结合成 Cout(Cout(cout,a), b)。
          只求 right 会把 a 整个丢掉 —— 必须先递归跑完左侧链条。
          ⚠ 用左侧的**返回值**判断输出到哪里：
@@ -3087,14 +3397,20 @@
       return w === undefined ? '' : w;
     },
 
+    /* 缓冲区里还有没读完的 token？ */
+    inLeftover: function () {
+      return !!(this.inBuf && this.inBuf.length);
+    },
     nextToken: function () {
       if (this.cinFile && this.__fileDone !== true) return this.nextFileToken();
       if (!this.inBuf || !this.inBuf.length) {
         var line = this.input();
-        if (line === undefined || line === null) return '';
+        if (line === undefined || line === null) { this.lastReadOk = false; return ''; }
         this.inBuf = String(line).trim().split(/\s+/).filter(function (x) { return x !== ''; });
       }
-      return this.inBuf.length ? this.inBuf.shift() : '';
+      if (!this.inBuf.length) { this.lastReadOk = false; return ''; }
+      this.lastReadOk = true;
+      return this.inBuf.shift();
     },
 
     doCin: function (node, scope) {
@@ -3106,12 +3422,51 @@
       /* 左侧是文件流 → 从文件读；是 cin → 从 stdin 读
          （stdin 可能被 freopen 重定向到虚拟文件） */
       var val;
-      if (leftVal && leftVal.__cppfile) val = leftVal._nextToken();
+      /* stringstream 要在这里接：ss >> a >> b。
+         不接的话 ss 读不到任何东西，**但不报错** ——
+         a、b 保持初值 0，用户会以为自己拆分逻辑写错了。 */
+      if (leftVal && leftVal instanceof SStream) val = leftVal.__nextToken();
+      else if (leftVal && leftVal.__cppfile) val = leftVal._nextToken();
       else if (this.cinFile) val = this.nextFileToken();
       else val = this.nextToken();
       var num = Number(val);
       this.assignTo(node.right, val !== '' && isFinite(num) ? num : val, scope);
       return leftVal;
+    },
+
+    /* ============================================================
+       scanf —— 必须真的读输入并写回变量
+       ------------------------------------------------------------
+       此前 this.funcs.scanf 是 `function(){ return 0; }`：
+       什么都不做，于是
+
+           scanf("%d", &x);
+           printf("%d", x * 2);      // 恒为 0
+
+       而**不报任何错**。
+
+       这比报错糟得多：结果是个看似合理的值（0），
+       用户会去查算法、查输入格式，想不到是 scanf 根本没读。
+       **静默返回错误结果是最难发现的一类 bug。**
+
+       为什么必须在这里做而不是 builtin：写回需要调用处的 scope，
+       builtin 只拿得到已求值的值，写不回去。
+       ============================================================ */
+    doScanf: function (node, scope) {
+      var n = 0;
+      for (var i = 1; i < node.args.length; i++) {
+        var a = node.args[i];
+        if (!a || a.type !== 'AddrOf') {
+          /* 没写 & 的实参：C 里这是未定义行为，真编译器也不报错。
+             这里静默跳过会让人以为读到了 —— 所以明确说一下。 */
+          throw cerr('scanf 的第 ' + (i + 1) + ' 个参数要写成 &变量名', node.line);
+        }
+        var w = this.nextToken();
+        var num = Number(w);
+        this.assignTo(a.v, w !== '' && isFinite(num) ? num : w, scope);
+        n++;
+      }
+      return n;
     }
   };
 

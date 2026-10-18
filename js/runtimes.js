@@ -20,7 +20,25 @@
     php: 'PHP', ruby: 'Ruby', cpp: 'C/C++ (Clang)'
   };
 
-  var worker = null;
+  /* ⚠⚠ C++ 真编译器接不上的**根因**就在这里。
+     ------------------------------------------------------------------
+     browsercc 的 cpp-index.js 是**静态 ESM**（源码里就是
+     `import Clang from "./clang.js"`）。静态 ESM 只能在
+     **module worker**（new Worker(url, {type:'module'})）里加载。
+
+     而这里一直是 `new Worker(WORKER)` —— 经典 Worker。
+     清单 api/runtimes.json 里明明写了 `"workerType": "module"`，
+     但**创建 Worker 的代码从来没读过这个字段**。
+     于是 C++ 那 90 MB 下完了也永远起不来，界面上只能写
+     "资源已就位，接线未完成" —— 而缺的就是这一行。
+
+     为什么不能简单粗暴地把唯一的 Worker 改成 module：
+       经典 Worker：有 importScripts（sql.js / pyodide / lua 全靠它），
+                    但**没有**静态 ESM import。
+       module Worker：有 ESM，但 **importScripts 不存在** ——
+                    一调用就 ReferenceError。
+     两者互斥，只能各建一个，按语言选。 */
+  var workers = { classic: null, module: null };
   var pending = null;      // 当前等待的请求
   var seq = 0;             // 请求序号：用来识别过期回调（S-022）
   var supported = null;    // 是否支持 Worker（file:// 下会失败）
@@ -33,31 +51,55 @@
     catch (e) { return false; }
   }
 
-  function ensure() {
-    if (worker) return worker;
-    if (supported === false) return null;
+  /* 语言 → Worker 类型。
+     ⚠ 必须**从清单读**，不能在这里写死 `cpp` 用 module。
+     写死的话，以后再加一个 ESM 运行时（下一个很可能就是），
+     它会静默地用回经典 Worker —— 症状是"下完了跑不起来"，
+     而没有任何一行代码提示你漏了什么。
+     清单里 workerType 缺失即视为 classic（兼容旧清单）。 */
+  function workerTypeOf(lang) {
+    var rt = null;
     try {
-      worker = new Worker(WORKER);
+      if (Code.runtime && Code.runtime.findRt) rt = Code.runtime.findRt(lang);
+    } catch (e) { rt = null; }
+    return (rt && rt.workerType === 'module') ? 'module' : 'classic';
+  }
+
+  function ensure(type) {
+    type = type || 'classic';
+    if (workers[type]) return workers[type];
+    try {
+      /* ⚠ 就是这一行 —— C++ 真编译器等的就是它。
+         经典 Worker 没有静态 ESM import，browsercc 加载不了；
+         module Worker 有 ESM 但没有 importScripts。两者互斥，
+         所以按类型各建一个，不能合并成一个。 */
+      workers[type] = (type === 'module')
+        ? new Worker(WORKER, { type: 'module' })
+        : new Worker(WORKER);
     } catch (e) {
-      supported = false;
       lastWorkerError = (e && e.message) || String(e);
       return null;
     }
-    worker.addEventListener('message', function (e) {
+    var w = workers[type];
+    w.addEventListener('message', function (e) {
       var d = e.data || {};
       if (pending && pending.on && pending.on[d.type]) pending.on[d.type](d);
     });
-    worker.addEventListener('error', function (e) {
+    w.addEventListener('error', function (e) {
       if (pending && pending.on && pending.on.fail) {
         pending.on.fail({ error: 'Worker 错误：' + (e.message || '未知') });
       }
     });
     supported = true;
-    return worker;
+    return w;
   }
 
   function call(msg, on, timeoutMs) {
-    var w = ensure();
+    /* ⚠ 按语言选 Worker 类型。
+       传不进来就退回 classic —— 但 run/prepare/selfTest 都必须传，
+       漏传的话 C++ 会静默走回经典 Worker，又变成"下完了跑不起来"。 */
+    var wtype = workerTypeOf(msg && msg.lang);
+    var w = ensure(wtype);
     if (!w) {
       on.fail && on.fail({
         error: isFileProtocol()
@@ -99,7 +141,12 @@
         if (!pending || pending.token !== token) return;
         pending = null;
         if (w) { try { w.terminate(); } catch (e) { } }
-        w = null;
+        /* ⚠ 必须按**类型**置空，不能只置一个全局 worker。
+           置错的话下次复用的是一个已经被 terminate 的 Worker ——
+           它还在 workers 里、非空，于是 ensure() 直接返回它，
+           而 postMessage 到已终止的 Worker 会**静默丢弃**，
+           界面一直转圈，没有任何报错。 */
+        workers[wtype] = null;
         on.fail && on.fail({ error: msg });
       }, ms);
     }

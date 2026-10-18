@@ -162,5 +162,40 @@ t(!/接线未完成/.test(manifest), '清掉"接线未完成"的旧文案');
 t(cpp && Array.isArray(cpp.caveats) && cpp.caveats.length >= 3,
   '要写上已知限制（异常禁用 / 编译慢 / 无 stdin / 死循环终止）');
 
+/* ============================================================
+   C++ 真编译器最关键的一根线：module Worker
+   ------------------------------------------------------------
+   这是"接线未完成"的**真正根因**，而且它藏得极深：
+   清单里写了 `"workerType": "module"`，
+   但 runtimes.js 一直是 `new Worker(WORKER)` —— 经典 Worker。
+   于是 90 MB 下完了，browsercc 的静态 ESM import 依然加载不了。
+
+   最阴的地方在于：**不报任何跟 Worker 有关的错**。
+   用户看到的只是"编译失败"或"没有输出"，
+   谁也不会想到是 Worker 创建时少了一个参数。
+   ============================================================ */
+t(runtimes.indexOf("new Worker(WORKER, { type: 'module' })") >= 0 ||
+  runtimes.indexOf('new Worker(WORKER, {type:') >= 0,
+  'runtimes.js 必须能创建 module Worker（C++ 真编译器靠它加载 ESM）');
+/* 不能只剩裸的 new Worker(WORKER) 一条路 —— 那等于永远走经典 Worker */
+t(/new Worker\(WORKER\)/.test(runtimes) === true &&
+  /workers\[type\] = \(type === 'module'\)/.test(runtimes),
+  '经典与 module 两种 Worker 要按类型分别创建（importScripts 与 ESM 互斥）');
+t(runtimes.indexOf('function workerTypeOf') >= 0 &&
+  runtimes.indexOf("rt.workerType === 'module'") >= 0,
+  'Worker 类型要**从清单读**，不能写死语言名（否则以后加 ESM 运行时会静默失效）');
+t(runtimes.indexOf("var w = ensure(wtype)") >= 0,
+  'call() 要按语言类型取 Worker');
+/* terminate 后必须按类型置空：
+   置错的话会复用已终止的 Worker，postMessage 静默丢弃，界面永远转圈 */
+t(runtimes.indexOf('workers[wtype] = null') >= 0,
+  '超时 terminate 后要按类型把 Worker 置空（否则复用已终止的实例）');
+/* module Worker 里 importScripts 不存在 —— Worker 脚本顶层绝不能调用它 */
+var topLevelImport = /^(?!.*\/\/).*importScripts\s*\(/.test(w.split('\n').filter(function (l) {
+  return /^\s*importScripts/.test(l);
+}).join('\n'));
+t(!topLevelImport,
+  'rt-worker.js 顶层不能调用 importScripts（module Worker 里它不存在）');
+
 console.log('\n\u901a\u8fc7 ' + P + ' / ' + (P + F));
 process.exit(F ? 1 : 0);

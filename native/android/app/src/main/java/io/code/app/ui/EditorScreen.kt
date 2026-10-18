@@ -51,6 +51,35 @@ fun EditorScreen(
     /* 运行面板状态 */
     val run = rememberRunState()
 
+    /* 判题面板状态 */
+    val judge = rememberJudgeState()
+
+    /* 底部面板页签。
+       ⚠ 用枚举而不是硬编码字符串列表 ——
+       网页端踩过：页签名单写死在别处，加了新页签忘了同步，
+       结果只高亮按钮、内容不显示，看起来像"功能没做完"。
+       这里枚举就是唯一来源，values() 直接遍历，不会漏。 */
+    var panelTab by remember { mutableStateOf(PanelTab.Run) }
+
+    /* 判题引擎。跟 runHost 分开：RunHost 复用引擎实例，
+       而判题必须每组新建（组间会污染），两条路不能共用。 */
+    val judgeRunner = remember { io.code.app.judge.JudgeRunner() }
+    DisposableEffect(Unit) { onDispose { judgeRunner.close() } }
+
+    /* 样例持久化：按文件存，跟网页端一致。
+       不存的话每次打开都要重敲，而重敲容易敲错 ——
+       敲错会得到莫名其妙的 WA，用户会去查自己没错的代码。 */
+    val casesPath = remember(fileName) { casesPathFor(fileName) }
+    LaunchedEffect(fileName) {
+        judge.casesText = TextFieldValue(
+            if (store.exists(casesPath)) store.read(casesPath) else ""
+        )
+        judge.reset()
+    }
+    LaunchedEffect(judge.casesText.text) {
+        runCatching { store.write(casesPath, judge.casesText.text) }
+    }
+
     /* 语言：由**扩展名**决定跑哪个解释器。
        认不出就返回 null —— 那时点运行要给明确提示，
        而不是拿个默认值去跑（跑出来一堆莫名其妙的语法错误，
@@ -63,6 +92,8 @@ fun EditorScreen(
     LaunchedEffect(fileName) {
         run.result = null
         run.running = false
+        /* 判题结果也要清 —— 同上，不能张冠李戴 */
+        judge.reset()
     }
 
     var value by remember {
@@ -151,11 +182,35 @@ fun EditorScreen(
         },
         bottomBar = {
             Column {
+                /* 页签：从枚举遍历，不写死名单 */
+                Row(Modifier.padding(horizontal = 8.dp)) {
+                    PanelTab.values().forEach { tab ->
+                        FilterChip(
+                            selected = panelTab == tab,
+                            onClick = { panelTab = tab },
+                            label = { Text(tab.label, fontSize = 12.sp) },
+                            modifier = Modifier.padding(end = 6.dp)
+                        )
+                    }
+                }
+                /* ⚠ 两个面板用一个 visible 控制会打架：
+                   同时显示会挤掉编辑区，都不显示则点了没反应。
+                   按页签显式切换，且只有当前页 visible=true。 */
+                run.visible = panelTab == PanelTab.Run
+                judge.visible = panelTab == PanelTab.Judge
                 RunPanel(
                     state = run,
                     onRun = { doRun(scope, runHost, run, value.text, fileName, sourceOf, runnerId) },
                     onStop = { runHost.cancel(); run.running = false },
                     onStdinAction = { run.stdin = applyToStdin(run.stdin, it) }
+                )
+                JudgePanel(
+                    state = judge,
+                    onJudge = {
+                        doJudge(scope, judgeRunner, judge, value.text, fileName, sourceOf, runnerId)
+                    },
+                    onStop = { judgeRunner.cancel(); judge.running = false },
+                    onCasesAction = { judge.casesText = applyToCases(judge.casesText, it) }
                 )
                 SaveStatusBar(saveState)
                 // 原生键盘：系统输入法全程不参与
@@ -168,6 +223,13 @@ fun EditorScreen(
                            而输入区永远是空的。他只会以为输入区坏了。 */
                         if (run.stdinFocused) {
                             run.stdin = applyToStdin(run.stdin, act)
+                            return@CodeKeyboard
+                        }
+                        /* 样例区同理。顺序必须在 stdin 之后、其它之前：
+                           两个框都聚焦的情况不该发生，但真发生了要有个确定顺序，
+                           否则按键会同时进两个框。 */
+                        if (judge.casesFocused) {
+                            judge.casesText = applyToCases(judge.casesText, act)
                             return@CodeKeyboard
                         }
                         /* 键盘上有「运行」键。不接线的话它就是个坏按钮：
@@ -358,6 +420,67 @@ internal fun applyToStdin(v: androidx.compose.ui.text.input.TextFieldValue, act:
     /* Escape：键盘切页/收起。输入区里没有"页"的概念，
        吞掉即可 —— 但不能漏，漏了会编译不过。 */
     EditAction.Escape      -> v
+}
+
+/* ============================================================
+   底部面板页签
+   ------------------------------------------------------------
+   枚举是唯一来源，UI 用 values() 遍历 —— 加页签不会漏。
+   网页端就是因为名单写死在别处，加了新页签忘了同步，
+   结果"只高亮按钮、内容不显示"，看起来像功能没做完。
+   ============================================================ */
+internal enum class PanelTab(val label: String) {
+    Run("运行"),
+    Judge("判题")
+}
+
+/**
+ * 跑判题。
+ *
+ * ---------- 为什么样例为空必须拦 ----------
+ * 拿空样例去跑，JudgeRunner 会返回空列表，
+ * 于是"全部通过"——**没测就说通过了**，这是撒谎。
+ * 必须在入口拦掉并明确告诉用户去填样例。
+ */
+internal fun doJudge(
+    scope: kotlinx.coroutines.CoroutineScope,
+    runner: io.code.app.judge.JudgeRunner,
+    state: JudgeState,
+    code: String,
+    fileName: String,
+    sourceOf: (String) -> String,
+    runnerId: String?
+) {
+    if (runnerId == null) {
+        state.error = "这个文件的类型暂时判不了（按扩展名认不出语言）。"
+        return
+    }
+    val cases = state.cases
+    if (cases.isEmpty()) {
+        state.error = "还没有样例。样例为空时不跑 —— 没测就说通过是假的。"
+        return
+    }
+    if (code.isBlank()) {
+        state.error = "编辑器是空的。"
+        return
+    }
+    state.error = null
+    state.reset()
+    state.running = true
+    val script = when (runnerId) { "pylite" -> "pylite"; "js" -> "js"; else -> "cpplite" }
+    val source = sourceOf(script)
+    runner.judge(
+        code = code,
+        cases = cases,
+        script = script,
+        source = source,
+        onProgress = { r -> state.results = state.results + r },
+        onDone = { rep ->
+            state.running = false
+            state.report = rep
+        }
+    )
+    state.visible = true
 }
 
 internal fun doRun(

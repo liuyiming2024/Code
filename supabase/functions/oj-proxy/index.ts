@@ -29,7 +29,12 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
 const CORS = {
   "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
+  /* ⚠ x-session 必须在这里列出。
+     不列的话浏览器预检（OPTIONS）会被拒，
+     而报错是 CORS 相关的一串字 —— 完全看不出真正原因是
+     "自定义头没进白名单"。这类问题极难定位。 */
+  "Access-Control-Allow-Headers":
+    "authorization, x-client-info, apikey, content-type, x-session",
   "Access-Control-Allow-Methods": "POST, OPTIONS",
 };
 
@@ -241,23 +246,75 @@ serve(async (req: Request) => {
      ⚠ 用调用者 token 解析身份，不能只看有没有 Bearer ——
         anon key 也是 Bearer 开头，只检查前缀等于没鉴权。
      ============================================================ */
-  const auth = req.headers.get("authorization") || "";
-  if (!auth.startsWith("Bearer ")) return json({ ok: false, error: "未登录" }, 401);
+  /* ⚠⚠ 两套身份体系并存，必须都试（红队 R3-01 / R4-03）
+     ------------------------------------------------------------
+     本系统真实身份是**自建 sessions**：前端 js/cloud.js 里
+     `CHAT_TOKEN_KEY = 'wxlg_sb_token'`，通过 `x-session` 头传给
+     PostgREST，由数据库侧的 cur_user() 从 GUC 里读出来。
 
+     而上一版这里用 sb.auth.getUser() 解析 **GoTrue** 令牌 ——
+     等于把自建令牌当成 GoTrue 令牌去验，必然失败。
+     后果不是"报错"，是**合法用户带自己的有效令牌被判伪造**，
+     而且我上一轮加鉴权时前端没同步改（仍在传 anon key），
+     于是代提交变成 100% 401 —— 那是我引入的回归。
+
+     修法：两条路都走，先自建会话、再 GoTrue。
+     不写死某一种，是因为只有**真实环境**能确定用的是哪套，
+     写死任何一边都会让另一边的用户全部失败。 */
+
+  const xSession = (req.headers.get("x-session") || "").trim();
+  const auth = req.headers.get("authorization") || "";
+
+  /* ⚠ 用 anon 客户端调 code_oj_who —— 不是 service role。
+     该函数是 security definer，自己以属主权限读 sessions，
+     开放它不等于开放 sessions 表。
+     用 service role 的话，任何人打到这个接口就都能
+     以超级权限读全库 —— 那才是真正的越权。 */
   const sb = createClient(
     Deno.env.get("SUPABASE_URL")!,
     Deno.env.get("SUPABASE_ANON_KEY")!,
-    { global: { headers: { authorization: auth } } },
   );
-  const { data: ud, error: ue } = await sb.auth.getUser();
-  const uid = (!ue && ud && ud.user) ? ud.user.id : null;
-  if (!uid) return json({ ok: false, error: "登录态无效，请重新登录" }, 401);
+
+  let uid: string | null = null;
+  let via = "";
+
+  if (xSession) {
+    const { data: w, error: we } = await sb.rpc("code_oj_who", { p_token: xSession });
+    if (!we && w) { uid = String(w); via = "自建会话"; }
+  }
+
+  /* 回退：GoTrue。只有第一条路没走通才试。 */
+  if (!uid && auth.startsWith("Bearer ")) {
+    const sbU = createClient(
+      Deno.env.get("SUPABASE_URL")!,
+      Deno.env.get("SUPABASE_ANON_KEY")!,
+      { global: { headers: { authorization: auth } } },
+    );
+    const { data: ud, error: ue } = await sbU.auth.getUser();
+    if (!ue && ud && ud.user) { uid = ud.user.id; via = "GoTrue"; }
+  }
+
+  if (!uid) {
+    /* 报错必须区分两条路各自的结果 ——
+       只说"登录态无效"的话，部署者无从判断
+       是令牌类型不对、还是 SQL 没跑、还是函数不存在。 */
+    const detail = xSession
+      ? "已尝试自建会话与 GoTrue 两种令牌，都没能通过。" +
+        "若系统用的是自建会话，请确认已执行 code/supabase/oj_who.sql"
+      : "请求里没有带身份（既无 x-session 也无 authorization）";
+    return json({ ok: false, error: "登录态无效，请重新登录。" + detail }, 401);
+  }
 
   /* ---------- 限流 ----------
      不限制的话，一个账号就能把配额和出口 IP 一起打没。
      判据交给数据库（函数内按 uid 统计），Edge Function 无状态，
      多实例各自计数会各算各的 —— 那是假限流。 */
+  /* ⚠ 显式传 uid，不再让函数内部自己取身份。
+     Edge Function 不经过 PostgREST，GUC 是空的，
+     函数内部调 auth_require() 必然抛异常 → 500"限流检查失败"，
+     而真实原因是身份体系错配，报错完全指不到那儿。 */
   const { data: allowed, error: re } = await sb.rpc("code_oj_rate_allow", {
+    p_uid: uid,
     p_budget: 30,        // 每窗口最多 30 次
     p_window: "1 hour",
   });

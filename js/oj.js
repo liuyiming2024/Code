@@ -26,6 +26,42 @@
   ];
 
   var PROXY = (Code.SUPABASE_URL || '') + '/functions/v1/oj-proxy';
+
+  /* ⚠⚠ 统一令牌来源（红队 R3-01 / R4-03）
+     ------------------------------------------------------------
+     修之前，同一个文件里有**两套**取令牌的写法：
+       · serverGet / serverSet 用 `Code.auth.token()` ——
+         而 Code.auth 在本仓库**根本没有定义**，
+         于是这个表达式恒为假，悄悄回退成 anon key；
+       · post() 直接用 `Code.SUPABASE_KEY` —— 同样是 anon key。
+
+     两套写法殊途同归：**全都只传了 anon key，从没传过用户令牌**。
+     而本系统的真实身份是自建会话（js/cloud.js 的
+     CHAT_TOKEN_KEY='wxlg_sb_token'，走 x-session 头）。
+     anon key 不是任何人的身份 → 服务端必然判"登录态无效"。
+
+     真正的令牌一直就在仓库里：Code.cloud.token()。
+     这里统一成一个函数，三处调用共用 ——
+     不共用的话，"同一文件两套身份"这类问题还会再犯。 */
+  function userToken() {
+    try { if (Code.cloud && Code.cloud.token) return Code.cloud.token() || ''; } catch (e) { }
+    try { if (Code.auth && Code.auth.token) return Code.auth.token() || ''; } catch (e) { }
+    return '';
+  }
+
+  /* 统一的请求头：x-session（自建会话）与 authorization（回退）都带上。
+     服务端两条路都会试，这里不该替它决定用哪条。 */
+  function authHeaders(extra) {
+    var h = {
+      'content-type': 'application/json',
+      'apikey': Code.SUPABASE_KEY || ''
+    };
+    var t = userToken();
+    if (t) { h['x-session'] = t; h['authorization'] = 'Bearer ' + t; }
+    else { h['authorization'] = 'Bearer ' + (Code.SUPABASE_KEY || ''); }
+    if (extra) for (var k in extra) h[k] = extra[k];
+    return h;
+  }
   var KEY = 'code:oj:';
 
   function esc(s) { return U.esc ? U.esc(s) : String(s == null ? '' : s)
@@ -189,11 +225,9 @@
      ============================================================ */
   function serverGet(oj) {
     var url = (Code.SUPABASE_URL || '') + '/functions/v1/oj-cred';
-    var key = Code.SUPABASE_KEY || '';
     return fetch(url, {
       method: 'POST',
-      headers: { 'content-type': 'application/json', apikey: key,
-        authorization: 'Bearer ' + ((Code.auth && Code.auth.token) ? Code.auth.token() : key) },
+      headers: authHeaders(),
       body: JSON.stringify({ action: 'get', oj: oj })
     }).then(function (r) {
       return r.json().then(function (j) {
@@ -206,11 +240,9 @@
      这一档的性质就是这样（服务端能解密），界面上已写明。 */
   function serverSet(oj, plain) {
     var url = (Code.SUPABASE_URL || '') + '/functions/v1/oj-cred';
-    var key = Code.SUPABASE_KEY || '';
     return fetch(url, {
       method: 'POST',
-      headers: { 'content-type': 'application/json', apikey: key,
-        authorization: 'Bearer ' + ((Code.auth && Code.auth.token) ? Code.auth.token() : key) },
+      headers: authHeaders(),
       body: JSON.stringify({ action: 'save', oj: oj, cred: plain || '' })
     }).then(function (r) {
       return r.json().then(function (j) {
@@ -324,8 +356,7 @@
     function post() {
     fetch(PROXY, {
       method: 'POST',
-      headers: { 'content-type': 'application/json',
-        'apikey': Code.SUPABASE_KEY || '', 'authorization': 'Bearer ' + (Code.SUPABASE_KEY || '') },
+      headers: authHeaders(),
       body: JSON.stringify({ oj: state.oj, pid: state.pid, code: code, lang: state.lang, cred: state.cred })
     }).then(function (r) { return r.json(); }).then(function (j) {
       if (!j.ok) return say('bad', j.error || '提交失败');

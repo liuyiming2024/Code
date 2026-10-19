@@ -26,10 +26,19 @@ t('说明了部署者要自己取值比对', /部署者|取出这次生成的值
 t('说明了正常路径必须读不到', /期望 NULL|读不到/.test(canary));
 
 /* ---------- P0-2：oj-proxy 鉴权 ---------- */
-t('校验 Bearer 前缀', /!auth\.startsWith\("Bearer "\)/.test(pc));
-t('未带 token 返回 401', /未登录/.test(pc) && /401/.test(pc));
-/* ⚠ 只检查前缀等于没鉴权：anon key 也是 Bearer 开头 */
-t('用 getUser 解析真实身份（不是只看前缀）', /auth\.getUser\(\)/.test(pc));
+/* ⚠ 这两条原本写的是"校验 Bearer 前缀"和"错误文案含未登录"。
+   现在身份改成双路（x-session 优先、Bearer 回退），
+   旧断言与新设计冲突 —— 但**不能因此就把断言删掉**。
+   真正要守的是更本质的要求，改成检查它： */
+/* 本质 1：不管走哪条路，拿不到 uid 就必须 401 */
+t('拿不到 uid 必须 401', /if \(!uid\)[\s\S]{0,400}?401/.test(pc));
+/* 本质 2：不能"有头就算过" —— anon key 也是 Bearer 开头，
+   只检查头存在等于没鉴权。所以必须真的去解析/换取 uid。 */
+t('必须真的解析身份（不能只看有没有头）',
+  /code_oj_who/.test(pc) && /getUser\(\)/.test(pc));
+/* 两条路都要有：写死任何一边都会让另一边用户全部失败 */
+t('自建会话与 GoTrue 两条路都要有',
+  /x-session/.test(pc) && /authorization/.test(pc));
 t('身份无效时拒绝', /登录态无效/.test(pc));
 t('用调用者 token 建客户端（不用 service role）', /authorization:\s*auth/.test(pc));
 t('没有 SERVICE_ROLE 字样', !/SERVICE_ROLE/i.test(pc));

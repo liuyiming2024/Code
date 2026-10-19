@@ -643,16 +643,34 @@
      放在里面的话 doStreamDecl（原型方法）访问不到它 ——
      运行时直接 ReferenceError: SStream is not defined，
      而这个错在语法检查阶段完全看不出来。 */
-  function SStream() { this.buf = ''; this.tokens = null; }
+  /* ⚠ `ok` 是流状态：**最近一次读取是否成功**。
+     这是 C++ 的真实语义：`while (ss >> x)` 判的是流是否处于 fail 态，
+     而不是"后面还有没有 token"。
+
+     上一版用 `tokens.length > 1` 预判"还剩几个"，差了一个：
+     读完最后一个有效 token 之后流**仍然是 good**（eof 尚未置位），
+     而按旧写法此时已经变假 —— 最后一个数被读出来却**没进循环体**。
+
+     实测（与真 g++ 对照）：
+       stringstream ss("1 2 3"); int x,s=0; while(ss>>x) s+=x;
+       真 g++ → 6      旧实现 → 3
+     **差的一半来自"最后一个数被丢掉"，且不报错** ——
+     用户只会以为自己拆分逻辑写错了。 */
+  function SStream() { this.buf = ''; this.tokens = null; this.ok = true; }
   SStream.prototype.__out = function (s) { this.buf += s; return this; };
-  SStream.prototype.__nextToken = function () {
+  SStream.prototype._ensure = function () {
     if (!this.tokens) {
       this.tokens = String(this.buf).trim().split(/\s+/).filter(function (x) { return x !== ''; });
-      this.tokens.push('');
+      this.tokens.push('');      /* 哨兵：代表"再读就失败" */
     }
+  };
+  SStream.prototype.__nextToken = function () {
+    this._ensure();
     var w = this.tokens.shift();
+    if (w === undefined || w === '') { this.ok = false; return ''; }
+    this.ok = true;
     var num = Number(w);
-    return (w !== '' && isFinite(num)) ? num : w;
+    return isFinite(num) ? num : w;
   };
   SStream.prototype.str = function () { return this.buf; };
   /* ⚠ `while (ss >> x)` 必须能在读完时变假。
@@ -660,11 +678,8 @@
      解释器会报"跑满时间预算"，而这个提示说的是**性能**，
      用户会去优化自己的循环，想不到是流读完没变假。 */
   SStream.prototype.__bool = function () {
-    if (!this.tokens) {
-      this.tokens = String(this.buf).trim().split(/\s+/).filter(function (x) { return x !== ''; });
-      this.tokens.push('');
-    }
-    return this.tokens.length > 1;
+    this._ensure();
+    return this.ok !== false;
   };
 
   /* 基础类型的字节数，给 sizeof(int) 这类用。
@@ -676,6 +691,53 @@
     'long': 8, 'long long': 8, 'float': 4, 'double': 8,
     'unsigned': 4, 'unsigned int': 4, 'unsigned long long': 8
   };
+
+  /* ---------- 重载决议 ----------
+     C++ 里 `f(1)` 选 `f(int)` 而不是 `f(double)`：精确匹配优于需要转换的。
+     分越低越优。不做完整的标准转换序列 —— 竞赛里的重载绝大多数是
+     整型/浮点之间的区分，把这一层做对就够用了。 */
+  function argScore(ptype, val) {
+    var p = String(ptype || '').replace(/\bconst\b/g, '').replace(/&/g, '').trim();
+    var isInt = typeof val === 'number' && Number.isInteger(val);
+    var isNum = typeof val === 'number';
+    if (isInt) {
+      if (p === 'int') return 0;
+      if (p === 'long' || p === 'long long' || p === 'short' || p === 'unsigned' ||
+          p === 'unsigned int' || p === 'unsigned long' || p === 'unsigned long long') return 1;
+      if (p === 'double' || p === 'float') return 2;
+      if (p === 'char' || p === 'signed char' || p === 'unsigned char') return 3;
+      if (p === 'bool') return 4;
+      return 5;
+    }
+    if (isNum) {
+      if (p === 'double') return 0;
+      if (p === 'float') return 1;
+      if (p === 'int' || p === 'long' || p === 'long long') return 2;
+      return 5;
+    }
+    if (typeof val === 'string') {
+      if (p === 'string') return 0;
+      if (p === 'char' && val.length === 1) return 1;
+      return 8;
+    }
+    if (typeof val === 'boolean') return (p === 'bool') ? 0 : (p === 'int' ? 1 : 5);
+    return 5;
+  }
+
+  /* 选最合适的重载。
+     ⚠ 平分时取**后定义的** —— 与旧行为（后定义覆盖先定义）一致，
+     这样"同名重复定义"的情形不会被这次改动意外改变。 */
+  function pickOverload(alts, args) {
+    var best = null, bestSc = Infinity;
+    for (var i = 0; i < alts.length; i++) {
+      var ps = alts[i].args || [];
+      if (ps.length !== args.length) continue;
+      var sc = 0;
+      for (var j = 0; j < ps.length; j++) sc += argScore(ps[j].type, args[j]);
+      if (sc <= bestSc) { bestSc = sc; best = alts[i]; }
+    }
+    return best;
+  }
 
   function isContainerName(v) {
     return v === 'vector' || v === 'map' || v === 'set' || v === 'unordered_map' ||
@@ -2325,7 +2387,17 @@
       var tree = new Parser(tokenize(src)).parse();
       /* 先收集函数 */
       var self = this;
-      tree.body.forEach(function (n) { if (n.type === 'Func') self.funcs[n.name] = { node: n }; });
+      /* ⚠ 同名函数必须**都留下**，不能互相覆盖。
+         旧写法 `funcs[name] = { node: n }` 是单槽，后定义的直接顶掉前面的，
+         于是 `int f(int); int f(double);` 里只剩 double 版 ——
+         `f(1)` 返回 2，而真 g++ 是 1。
+         值看着完全合理，就是错的，且不报错。 */
+      tree.body.forEach(function (n) {
+        if (n.type !== 'Func') return;
+        var slot = self.funcs[n.name];
+        if (!slot) self.funcs[n.name] = { node: n, alts: [n] };
+        else { (slot.alts || (slot.alts = [slot.node])).push(n); slot.node = n; }
+      });
       var main = null;
       tree.body.forEach(function (n) {
         if (n.type === 'Func' && n.name === 'main') main = n;
@@ -2788,7 +2860,21 @@
           if (node.paren && node.arg.type === 'Name' && TYPE_SIZES[node.arg.name]) {
             return TYPE_SIZES[node.arg.name];
           }
-          if (Array.isArray(sv)) return sv.length;
+          /* ⚠ 数组必须返回**字节数**，不是元素个数。
+             旧实现 `return sv.length` 让
+                 int a[5]; sizeof(a)/sizeof(a[0])
+             算成 5/4 = **1**，而真 g++ 是 20/4 = 5。
+             这是竞赛里取数组长度的**标准写法** ——
+             差一个数量级，而且**不报错**，循环次数直接错。 */
+          if (Array.isArray(sv)) {
+            var esz = 4;
+            if (node.arg && node.arg.type === 'Name') {
+              var at = null;
+              try { at = scope.typeOf(node.arg.name); } catch (eSZ) { at = null; }
+              if (at && TYPE_SIZES[at] !== undefined) esz = TYPE_SIZES[at];
+            }
+            return sv.length * esz;
+          }
           if (sv && typeof sv === 'object' && sv.__cppvec) return sv.length;
           if (typeof sv === 'string') return sv.length + 1;
           return 4;
@@ -3229,7 +3315,10 @@
       if (name && this.funcs[name]) {
         var f = this.funcs[name];
         if (f.builtin) return f.builtin.apply(null, args);
-        return this.callFunc(f.node, args, scope, node.args);
+        /* 有多个同名定义时按实参选最合适的。只有一个定义时
+           pickOverload 返回的仍是它本身，行为不变。 */
+        var fn = (f.alts && f.alts.length > 1) ? (pickOverload(f.alts, args) || f.node) : f.node;
+        return this.callFunc(fn, args, scope, node.args);
       }
       /* install() 里用 g.set 注册的宿主函数（freopen / getline / fopen）
          是**裸函数**，而下面的查值只认带 __fn / __builtinFn 标记的**对象**，
@@ -3373,9 +3462,28 @@
            是 cout 就写 stdout，是文件流对象就写该文件的缓冲。 */
       var tgt = node.left ? this.eval(node.left, scope) : null;
       var v = this.eval(node.right, scope);
+      /* ⚠ char 型变量要输出**字符**，不是数字。
+         `char c = 65; cout << c;` 真 g++ 输出 A，我们原来输出 65。
+         值本身是 65（存储正确），缺的是"输出时按声明类型解释"——
+         类型一直存在 scope.t 里（Scope.typeOf），只是这里没查。
+         字符串题里 char 输出是高频操作，错一个字符就是 WA。 */
+      if (node.right && node.right.type === 'Name' && typeof v === 'number') {
+        var ct = null;
+        try { ct = scope.typeOf(node.right.name); } catch (eCH) { ct = null; }
+        if (ct === 'char' || ct === 'unsigned char' || ct === 'signed char') {
+          v = String.fromCharCode(v);
+        }
+      }
       if (v === undefined) return tgt || { __cout: true };
       if (v && (v.__cout || v.__cin)) return tgt || { __cout: true };
       var txt = this.str(v);
+      /* ⚠ 链式写入必须认**左侧求值结果**，不能只认 `Name` 形状的左节点。
+         `ss << "a" << 1` 解析成 Cout(Cout(ss,"a"), 1)，外层左节点是
+         Cout 节点而不是 Name —— 于是走到最后一行 `this.out(txt)`，
+         后面的内容**打到 stdout 而不是流里**。
+         实测：ss<<"a"<<1; cout<<ss.str();  → 输出 "1a"（真 g++ 是 "a1"）
+         数据没丢，但去了错误的地方，而且**不报错**。 */
+      if (tgt instanceof SStream) { tgt.buf += txt; return tgt; }
       if (tgt && tgt.__cppfile && tgt.__isOut) { tgt._writeBuf += txt; return tgt; }
       this.out(txt);
       return tgt || { __cout: true };

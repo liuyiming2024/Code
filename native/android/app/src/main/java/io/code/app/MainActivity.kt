@@ -1,6 +1,7 @@
 package io.code.app
 
 import android.os.Bundle
+import java.io.File
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
@@ -35,14 +36,69 @@ class MainActivity : ComponentActivity() {
        Compose 重组可能多次创建对象，引擎跟着泄漏。
        并且在 onDestroy 里显式释放。 */
     private lateinit var runHost: RunHost
+    private lateinit var store: FileStore
+
+    /* ---------- 导入 / 导出 ----------
+       必须走系统的文件选择器（SAF）：直接往公共目录写文件
+       在 Android 10+ 上被限制，而且需要我们自己申请存储权限 ——
+       而本应用**没有也不该有**存储权限，用户给一个文件 URI
+       就够了。
+
+       ⚠ registerForActivityResult 必须在 Activity **启动前**注册，
+         所以放在这里做属性初始化，不能放到 onCreate 里。
+
+       ⚠ 结果回来后要刷新 Compose 里的文件列表，
+         但回调发生在 Activity 侧、列表状态在 Compose 侧 ——
+         用一个可变引用搭桥（比把 state 提升出 setContent 简单，
+         且不会在重组时被重建）。 */
+    private var onFilesChanged: (() -> Unit)? = null
+
+    private val exportLauncher = registerForActivityResult(
+        androidx.activity.result.contract.ActivityResultContracts.CreateDocument("application/zip")
+    ) { uri ->
+        if (uri == null) return@registerForActivityResult
+        try {
+            contentResolver.openOutputStream(uri)?.use { os ->
+                val tmp = File(cacheDir, "export.zip")
+                store.exportZip(tmp)
+                tmp.inputStream().use { it.copyTo(os) }
+                tmp.delete()
+            }
+            android.widget.Toast.makeText(this, "已导出工程", android.widget.Toast.LENGTH_SHORT).show()
+        } catch (e: Exception) {
+            android.util.Log.e("code_store", "导出失败", e)
+            android.widget.Toast.makeText(
+                this, "导出失败：${'$'}{e.message ?: "未知原因"}", android.widget.Toast.LENGTH_LONG
+            ).show()
+        }
+    }
+
+    private val importLauncher = registerForActivityResult(
+        androidx.activity.result.contract.ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        if (uri == null) return@registerForActivityResult
+        try {
+            val tmp = File(cacheDir, "import-${'$'}{System.currentTimeMillis()}.zip")
+            contentResolver.openInputStream(uri)?.use { it.copyTo(tmp.outputStream()) }
+            val n = store.importZip(tmp)
+            tmp.delete()
+            onFilesChanged?.invoke()
+            android.widget.Toast.makeText(this, "已导入 ${'$'}n 个文件", android.widget.Toast.LENGTH_SHORT).show()
+        } catch (e: Exception) {
+            android.util.Log.e("code_store", "导入失败", e)
+            android.widget.Toast.makeText(
+                this, "导入失败：${'$'}{e.message ?: "未知原因"}", android.widget.Toast.LENGTH_LONG
+            ).show()
+        }
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         runHost = RunHost()
+        store = FileStore(this)
         enableEdgeToEdge()
         setContent {
             CodeApp {
-                val store = remember { FileStore(this) }
                 var current by remember { mutableStateOf("") }
                 var files by remember { mutableStateOf(store.list()) }
                 var drawer by remember { mutableStateOf(false) }
@@ -98,7 +154,15 @@ class MainActivity : ComponentActivity() {
                                     store.delete(p)
                                     files = store.list()
                                 },
-                                onDismiss = { drawer = false }
+                                onDismiss = { drawer = false },
+                                /* ⚠ 导入完成后必须刷新列表并核对当前文件：
+                                   不刷新的话界面仍显示旧列表，
+                                   用户会以为导入失败了。 */
+                                onExport = { exportLauncher.launch("code-project.zip") },
+                                onImport = {
+                                    onFilesChanged = { files = store.list() }
+                                    importLauncher.launch(arrayOf("application/zip", "application/x-zip-compressed"))
+                                }
                             )
                         },
                         content = { }
@@ -106,6 +170,27 @@ class MainActivity : ComponentActivity() {
                 }
             }
         }
+    }
+
+    /* ============================================================
+       释放引擎
+       ------------------------------------------------------------
+       ⚠⚠ 这个方法**必须在 Activity 里**。
+          它上一版被放进了 `PreviewEditor()` —— 一个**顶层** @Composable
+          函数。在那里：
+            · `override` 不合法（只有类成员才能 override）
+            · `super` 不存在
+            · `runHost` 也不在作用域里
+          即：**这段代码根本编译不过**。
+
+          而且后果不止是编译报错：引擎从来没被释放过 ——
+          QuickJS Runtime 每次重建 Activity 都泄漏一个，
+          症状正是下面注释里写的"来回切几次就越来越卡"。
+          注释警告的正是它自己没能生效的这件事。
+       ============================================================ */
+    override fun onDestroy() {
+        super.onDestroy()
+        if (::runHost.isInitialized) runHost.close()
     }
 
     companion object {
@@ -132,13 +217,6 @@ fun CodeApp(content: @Composable () -> Unit) {
 @Composable
 fun PreviewEditor() {
     CodeApp { }
-
-    /* 释放引擎。不调的话 QuickJS Runtime 一直占着内存，
-       症状是"来回切几次就越来越卡"，很难联想到这里。 */
-    override fun onDestroy() {
-        super.onDestroy()
-        if (::runHost.isInitialized) runHost.close()
-    }
 }
 
 /* ============================================================

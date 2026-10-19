@@ -7,6 +7,11 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Close
+/* Share / Download 在 material-icons-extended 里（build.gradle.kts 已引入）。
+   少了这两行会直接编译不过 —— 而且报错是 Unresolved reference，
+   看不出是依赖缺了还是 import 漏了。 */
+import androidx.compose.material.icons.filled.Share
+import androidx.compose.material.icons.filled.Download
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -43,7 +48,12 @@ fun FileDrawer(
     onCreate: (String) -> Unit,
     onRename: (String, String) -> Unit,
     onDelete: (String) -> Unit,
-    onDismiss: () -> Unit
+    onDismiss: () -> Unit,
+    /* 导入/导出由 Activity 提供（要用到系统的文件选择器）。
+       ⚠ 不能在这里直接弹选择器：Composable 里拿不到
+          registerForActivityResult 的生命周期宿主。 */
+    onExport: () -> Unit = {},
+    onImport: () -> Unit = {}
 ) {
     /* 待确认删除的那一条。存路径而不是 Boolean —— 见上面注释 */
     var pendingDelete by remember { mutableStateOf<String?>(null) }
@@ -58,6 +68,15 @@ fun FileDrawer(
             Text("文件", fontSize = 16.sp, modifier = Modifier.weight(1f))
             IconButton(onClick = { showNew = true }) {
                 Icon(Icons.Default.Add, contentDescription = "新建")
+            }
+            /* 导出/导入：没有它们，手机上写的代码**搬不出去也搬不进来**。
+               FileStore.exportZip 早就写了，但全仓零调用 ——
+               写了没接上，等于没有。 */
+            IconButton(onClick = { close(); onExport() }) {
+                Icon(Icons.Default.Share, contentDescription = "导出工程")
+            }
+            IconButton(onClick = { close(); onImport() }) {
+                Icon(Icons.Default.Download, contentDescription = "导入工程")
             }
             IconButton(onClick = { close() }) {
                 Icon(Icons.Default.Close, contentDescription = "关闭")

@@ -170,3 +170,113 @@ fun end(value: TextFieldValue): TextFieldValue {
         selection = androidx.compose.ui.text.TextRange(if (nl < 0) s.length else nl)
     )
 }
+
+/* ============================================================
+   查找 / 替换 —— 纯函数
+   ------------------------------------------------------------
+   为什么必须有（不是"锦上添花"）：
+     手机上没有 Ctrl+F，也没有鼠标滚轮去扫长文件。
+     一个 200 行的竞赛代码，找不到变量在哪就改不动。
+
+   ---------- ⚠⚠ 最关键的一条：偏移量必须**每次重算** ----------
+     查找结果是一堆字符偏移。文本一改，这些偏移**全部失效**。
+     缓存着不重算，替换就会落在**错误的位置**上：
+       用户改了一个变量名 → 点"替换" → 改坏的是别处
+     而且**没有任何报错** —— 这是最难查的一类错。
+
+     所以：FindResult 只在 (text, query, caseSensitive) 三者都相同时
+     才有效，调用方必须把它当"一次性"的用。
+
+   ---------- 为什么 replaceAll 要**从后往前** ----------
+     从前往后替换的话，前面替换完文本长度变了，
+     后面记录的偏移量就整体错位。
+     从后往前则不影响尚未处理的那些偏移（它们都在前面）。
+   ============================================================ */
+
+/** 一次查找的结果。**只在文本没变时有效** —— 见上面注释。 */
+data class FindResult(
+    /** 所有匹配的位置（按出现顺序）。空查询返回空列表。 */
+    val ranges: List<IntRange>,
+    /** ranges 里当前聚焦的那个的下标；无匹配时为 -1。 */
+    val current: Int
+) {
+    val count: Int get() = ranges.size
+    val hasMatch: Boolean get() = ranges.isNotEmpty()
+}
+
+/**
+ * 在 [text] 里查找 [query]。
+ *
+ * - [query] 为空 → 返回空结果（不能当成"匹配全部"，
+ *   否则一进搜索框就把整篇都涂上高亮，看起来像卡住了）。
+ * - [caseSensitive] 为 false 时按小写比较，但返回的仍是**原文**的偏移。
+ */
+fun findAll(text: String, query: String, caseSensitive: Boolean = true): FindResult {
+    if (query.isEmpty()) return FindResult(emptyList(), -1)
+    val hay = if (caseSensitive) text else text.lowercase()
+    val needle = if (caseSensitive) query else query.lowercase()
+    if (needle.isEmpty()) return FindResult(emptyList(), -1)
+
+    val out = ArrayList<IntRange>()
+    var from = 0
+    while (from <= hay.length - needle.length) {
+        val i = hay.indexOf(needle, from)
+        if (i < 0) break
+        out.add(i until (i + needle.length))
+        /* ⚠ 步进必须是 needle.length 而不是 1：
+           用 1 的话，"aa" 里找 "aa" 会在 0 和 1 都命中（重叠），
+           计数翻倍，"第 1/3 个"这种显示就对不上。
+           重叠匹配这里不需要，C++ / Python 的查找也不重叠。 */
+        from = i + needle.length
+    }
+    return FindResult(out, if (out.isEmpty()) -1 else 0)
+}
+
+/** 把 [current] 往后/往前移一个，循环。无匹配时返回 -1。 */
+fun stepMatch(r: FindResult, delta: Int): FindResult {
+    if (!r.hasMatch) return r
+    val n = r.count
+    val i = (((r.current + delta) % n) + n) % n
+    return r.copy(current = i)
+}
+
+/** 把当前匹配项替换成 [replacement]，并把光标放到替换之后。 */
+fun replaceCurrent(
+    value: TextFieldValue,
+    r: FindResult,
+    replacement: String
+): TextFieldValue {
+    if (!r.hasMatch) return value
+    val range = r.ranges[r.current]
+    /* ⚠ 偏移量可能已失效（调用方传了过期的 FindResult）。
+       越界就拒绝，绝不能 clamp —— clamp 会静默改到别处。 */
+    if (range.first < 0 || range.last >= value.text.length) return value
+    val next = value.text.substring(0, range.first) + replacement +
+        value.text.substring(range.last + 1)
+    val caret = range.first + replacement.length
+    return value.copy(text = next, selection = androidx.compose.ui.text.TextRange(caret))
+}
+
+/** 替换全部。**从后往前**，避免前面的替换让后面的偏移错位。 */
+fun replaceAll(
+    value: TextFieldValue,
+    ranges: List<IntRange>,
+    replacement: String
+): TextFieldValue {
+    if (ranges.isEmpty()) return value
+    var s = value.text
+    for (r in ranges.sortedByDescending { it.first }) {
+        if (r.first < 0 || r.last >= s.length) continue
+        s = s.substring(0, r.first) + replacement + s.substring(r.last + 1)
+    }
+    return value.copy(
+        text = s,
+        selection = androidx.compose.ui.text.TextRange(
+            value.selection.start.coerceIn(0, s.length)
+        )
+    )
+}
+
+/** 把第 [i] 个匹配滚动到可见：返回它的起始偏移，越界返回 -1。 */
+fun matchStart(r: FindResult, i: Int): Int =
+    if (i in r.ranges.indices) r.ranges[i].first else -1

@@ -95,6 +95,66 @@ t(cloud.indexOf("h['x-session'] = t") >= 0,
 t(whoSql.indexOf('p_uid    uuid') >= 0, '限流函数要接收 uid 参数');
 t(/if p_uid is null then\s*return false/.test(whoSql),
   'uid 为空必须拒绝，不能退化成不限流');
+
+/* ============================================================
+   红队 R7-01（P0）：限流函数曾是匿名可打的无成本写放大口子
+   ------------------------------------------------------------
+   第一版 (p_uid, ...) 对 anon 开放且接受任意 uid、两条分支都 insert：
+     · 匿名调 31 次别人的 uid → 受害者配额清零（定点耗尽）
+     · 匿名无限调用 → 表只增不减（写放大；清理只有一行注释）
+   本轮要求三件事同时成立，缺一个洞就还在。
+   ============================================================ */
+
+/* ① 必须自校验身份：光有 p_uid 不算，得证明它是自己的 */
+t(/p_token\s+text/.test(whoSql),
+  'R7-01 限流要接收令牌参数（否则无法证明 uid 是自己的）');
+t(/if v_uid is null or v_uid <> p_uid then[\s\S]{0,120}?return false/.test(whoSql),
+  'R7-01 令牌换出的 uid 必须等于 p_uid，不符就拒绝（堵定点耗尽他人配额）');
+/* ⚠ 关键是"不写库"：校验失败仍记账的话，
+   配额耗尽被堵住了，写放大还在 —— 两件事必须一起解决 */
+t(/v_uid <> p_uid then[\s\S]{0,200}?return false/.test(whoSql) &&
+  !/v_uid <> p_uid then[\s\S]{0,200}?insert/.test(whoSql),
+  'R7-01 校验失败不能落账（否则只堵住配额，没堵住写放大）');
+
+/* ② 超限分支必须更新已有行，不能再 insert */
+var bodyNew = whoSql.slice(whoSql.indexOf('p_token  text'),
+                           whoSql.indexOf('兼容旧签名'));
+t(/update public\.oj_submit_log/.test(bodyNew),
+  'R7-01 超限分支要更新已有行而不是 insert（堵写放大）');
+/* ⚠ 必须把范围锁在 `if ... end if;` 之内。
+   第一版用 `{0,200}?` 从 then 往后找 —— 它会一路跨过
+   `return false; end if;` 吃到**正常路径**那句 insert，
+   于是反例（在超限分支加了 insert）根本不报红，断言是摆设。
+   这个坑本项目栽过很多次：范围写松 = 没写。 */
+var overSeg = /if n >= p_budget then([\s\S]*?)end if;/.exec(bodyNew);
+var overBody = overSeg ? overSeg[1] : '';
+t(overBody.length > 0, 'R7-01 能定位到超限分支（定位不到则下面的断言全是空的）');
+t(!/insert into public\.oj_submit_log/.test(overBody),
+  'R7-01 超限分支不能再 insert');
+
+/* ⚠ 更新必须仍留在窗口内（把最老那行推到 now），
+   否则"每次都算第一次"的老问题会回来 */
+t(/set created_at = now\(\)/.test(bodyNew),
+  'R7-01 超限要把最老那行推到当前时间（仍留在窗口内，防止"每次都第一次"）');
+t(/order by created_at asc/.test(bodyNew),
+  'R7-01 更新的是最老那行（不是随便一行）');
+
+/* ③ 清理不能只留注释 */
+t(/cron\.schedule/.test(whoSql) || /delete from public\.oj_submit_log/.test(whoSql),
+  'R7-01 要给出真正能执行的清理方式（原来只有一行注释，表只增不减）');
+/* 全局守卫：近似计数，不能用 count(*) 全表扫 */
+t(/reltuples/.test(whoSql),
+  'R7-01 要有全局行数守卫（用 reltuples 近似计数，不能 count(*) 全表扫）');
+
+/* ④ 调用方必须真的传令牌 ——
+    少了它函数拿不到身份 → 所有人提交都被限死，
+    而报错是"提交太频繁"，完全指不到真正原因 */
+/* ⚠ 必须限定在 **code_oj_rate_allow 的调用块**里。
+   第一版全文搜 `p_token: xSession` —— 而 code_oj_who 那处调用
+   也长这样，于是把限流那处的 p_token 删掉，断言照样通过。
+   典型的"查错对象"：看着在验 A，实际验的是 B。 */
+t(/code_oj_rate_allow",\s*\{[\s\S]{0,300}?p_token/.test(pxC),
+  'R7-01 oj-proxy 调 code_oj_rate_allow 时要传 p_token（不传则全员被限死且报错指不到原因）');
 t(whoSql.indexOf("set_config(\n    'request.headers'") >= 0 ||
   whoSql.indexOf("set_config(\n    'request.headers'") >= 0 ||
   /set_config\(\s*'request\.headers'/.test(whoSql),

@@ -313,7 +313,15 @@ serve(async (req: Request) => {
      Edge Function 不经过 PostgREST，GUC 是空的，
      函数内部调 auth_require() 必然抛异常 → 500"限流检查失败"，
      而真实原因是身份体系错配，报错完全指不到那儿。 */
+  /* ⚠ 必须把令牌一起传过去（红队 R7-01）。
+     限流函数对 anon 开放是因为**oj-proxy 自己就是 anon 客户端** ——
+     收回授权会让这里直接 500，代提交整体挂掉。
+     所以边界挪进函数内部：由它校验"令牌换出的 uid == 要计数的 uid"。
+     这里什么都不传的话，函数拿不到身份 → 返回 false →
+     所有人的提交都被限死，而且报错是"提交太频繁"，
+     完全指不到"少了 p_token"。 */
   const { data: allowed, error: re } = await sb.rpc("code_oj_rate_allow", {
+    p_token: xSession || null,
     p_uid: uid,
     p_budget: 30,        // 每窗口最多 30 次
     p_window: "1 hour",

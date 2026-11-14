@@ -1,0 +1,29 @@
+name: 原生端运行时副本一致性
+
+# js/{cpplite,pylite}.js 修了 bug，Android WebView 用的却是 assets/ 下的旧副本，
+# 两边行为会不一样且没人发现。方向单向：js/ 是唯一源。
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'js/cpplite.js'
+      - 'js/pylite.js'
+      - 'native/android/app/src/main/assets/**'
+      - 'scripts/sync-native-assets.js'
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22'
+      - run: node scripts/sync-native-assets.js --check

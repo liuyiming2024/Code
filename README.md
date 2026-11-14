@@ -324,3 +324,17 @@ MIT，见 `LICENSE`。
 本项目所有代码、图标、配色均为自研，
 未参照任何现有商业产品的名号、设计或素材，
 未引入任何第三方库、字体或图标包。
+
+
+## 开发维护：原生端运行时副本
+
+`js/cpplite.js`、`js/pylite.js` 是权威源，Android WebView 加载的是
+`native/android/app/src/main/assets/` 下的同名副本。改了源要同步过去：
+
+```bash
+node scripts/sync-native-assets.js            # 同步
+node scripts/sync-native-assets.js --check    # 只校验（CI 也跑）
+```
+
+方向是单向的（源 → 副本），不做双向合并。CI 会在相关文件变动时
+挡住"只改了网页版、忘了安卓版"的提交。

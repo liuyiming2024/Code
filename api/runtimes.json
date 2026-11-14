@@ -13,9 +13,13 @@
     "workerType：classic 用 importScripts 注入 UMD；module 用动态 import 注入 ESM。",
     "entry 是入口胶水；其余是它运行要拉的 wasm / stdlib / sysroot。",
     "",
-    "端到端验证状态（2026-10-13）：以下运行时尚未在真机跑通过一次，",
-    "沙箱环境无法访问 Release 下载端点。建议先试体积最小的 sqlite（约 692 KB）。",
-    "清单描述的是「资源确实存在」，不是「已经验证可用」。"
+    "验证状态（历史）：2026-10-13 时六个运行时都还没真机跑过，沙箱访问 Release 下载端点被挡。",
+    "后续进展（2026-10-15~18）：改用 git/blobs API 取到真实文件，在 Node / 模拟 Worker 里",
+    "真跑过探针 —— sqlite / lua / pyodide / php 通过，cpp 端到端编译执行通过；",
+    "ruby 仍未取到 wasm、未真跑。quickjs 资源残缺，标 ready=false。",
+    "⚠ 以上均为开发环境验证，不等于任意浏览器真机可用。ready 字段是扩展中心",
+    "是否置灰的唯一判据（js/ui.js 读 rt.ready === false），改它之前先同步改条款与 README。",
+    "清单描述的是「资源确实存在 + 当前就绪状态」，不是「已经验证全平台可用」。"
   ],
   "runtimes": [
     {

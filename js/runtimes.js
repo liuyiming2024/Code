@@ -26,11 +26,13 @@
      `import Clang from "./clang.js"`）。静态 ESM 只能在
      **module worker**（new Worker(url, {type:'module'})）里加载。
 
-     而这里一直是 `new Worker(WORKER)` —— 经典 Worker。
-     清单 api/runtimes.json 里明明写了 `"workerType": "module"`，
-     但**创建 Worker 的代码从来没读过这个字段**。
-     于是 C++ 那 90 MB 下完了也永远起不来，界面上只能写
-     "资源已就位，接线未完成" —— 而缺的就是这一行。
+     而这里曾经一直是 `new Worker(WORKER)` —— 经典 Worker，
+     清单里写了 `"workerType": "module"` 却没人读，
+     于是 C++ 那 90 MB 下完了也起不来，界面只能写
+     "资源已就位，接线未完成"。
+     ⚠ 这是 2026-10-15 的状态：2026-10-18 已按 workerType 分流
+     （commit cee4aa6d），C++ 也端到端跑通（d8852893）。
+     下面这段「为什么不能简单改」仍是当前实现的设计依据，保留。
 
      为什么不能简单粗暴地把唯一的 Worker 改成 module：
        经典 Worker：有 importScripts（sql.js / pyodide / lua 全靠它），

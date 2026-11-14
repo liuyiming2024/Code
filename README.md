@@ -270,12 +270,18 @@ Python 与 C/C++ 是"**自研 + 可升级**"：子集立刻可用，
   陷入无限循环会卡住页面，需要关闭标签页。
   两个自研子集与 Worker 里的运行时带步数 / 超时上限，能被掐断。
   输出超过 800 行会自动暂停并提示。
-- **按需运行时的执行链路未经真机验证**：六种语言一次都没真跑过
-  （开发环境访问 Release 下载被网络策略挡住，返回 403）。
-  SQLite 与 CPython 用的是公开稳定 API；Lua / Ruby / PHP 的胶水导出形状未在此环境确认，
-  对不上时会报出实际的导出清单而不是静默失败。
+- **按需运行时未经浏览器真机验证**：早期这里曾断言「六种语言都没有真跑过」，
+  那个判断 2026-10-15~18 就过时了 —— 改用 git/blobs API 取到真实文件后，
+  在 Node / 模拟 Worker 里真跑过探针：SQLite、Lua、完整 CPython、PHP（6/6）、
+  **C++ 真 Clang 端到端编译执行**（printf / cout / STL / bits/stdc++.h 全通过）。
+  Ruby 的胶水导出已按源码核对并重写，但 wasm 未在本环境取到、仍未真跑；
+  QuickJS 资源残缺，在 `api/runtimes.json` 里标 `ready: false`，
+  扩展中心会置灰并写明原因。
+  ⚠ **「开发环境跑通探针」不等于「任意浏览器真机都跑得通」**，
+  首次使用建议先装体积最小的 SQLite（约 0.7 MB）跑一次自检。
 - **Ruby 与 C++ 走动态 `import()`**：`ruby-wasi.js` 与 `cpp-index.js` 都是 ESM，
-  `importScripts` 加载不了，改用 Worker 内的动态 `import()`。这两条路径**未真机验证**。
+  `importScripts` 加载不了，按清单的 `workerType` 分流到 module Worker。
+  C++ 这条链路已端到端跑通，Ruby 仍未真机验证。
 - **C++ 首次编译很重**：clang.wasm 43 MB + lld.wasm 23 MB + sysroot.tar 29 MB，
   约 95 MB，且要把 sysroot 解压进内存文件系统。请预留带宽与内存。
 - **用 `file://` 双击打开时 Worker 会被拒绝**，按需下载的几种语言跑不起来。

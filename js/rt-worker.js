@@ -155,7 +155,8 @@ var NEED = {
  *
  * 每个运行时各一行"最小可跑代码"。自检用它真跑一遍，
  * 而不是检查"文件下好了没有" —— 后者恒为真，说明不了任何问题
- * （这正是六个运行时至今一次都没跑通过、却一直显示"可下载"的原因）。
+ * （2026-11-14 复核：这句是 2026-10-15 当时的状态，现已不成立 ——
+ *   下面逐条标注按当时保留，后续进展见本段末尾的复核说明）。
  *
  * ⚠ 探针与期望值的可信度**逐条不同**，必须分开标注 ——
  *   把它们一律写成"已验证"就是撒谎，而撒谎的清单比没有清单更坏。
@@ -168,15 +169,23 @@ var NEED = {
  *               并已据此验证"复用实例时清名字空间"确实有效
  *               （第二次 print(x) 报 NameError，不会残留上次变量）
  *               —— 原缺 pyodide.asm.js 与 pyodide-lock.json，已补齐
- *   🔧 php —— 查出**整套 API 对不上**（用了不存在的 addEventListener 与 .run），
- *              已按源码重写为 ready-Promise + print/printErr + pib_run。
- *              **未真跑**：php-web.js.wasm 16.5 MB 在本环境反复下不到（502/403）
+ *   ✅ php —— 查出**整套 API 对不上**（用了不存在的 addEventListener 与 .run），
+ *              已按源码重写为 ready-Promise + print/printErr + pib_run，
+ *              随后用真实 wasm 在 Node 里真跑通 6/6（commit 712abf14）。
  *   🔧 ruby —— 查出**导出名不对**（只导出 DefaultRubyVM，代码却找 RubyVM），
  *              且签名也不同（要 WebAssembly.Module，返回 {vm,...}）。已重写。
  *              **未真跑**：ruby+stdlib.wasm 33.6 MB 同样下不到
- *   ❓ cpp  —— 未跑过。但已静态核对：compile 确实导出、wasi-shim 的
- *              ConsoleStdout/OpenFile/File/WASI 也确实导出 ——
- *              接线**看着是对的**，只是没跑起来验证过
+ *   ✅ cpp  —— 曾「未跑过，只静态核对过导出」。2026-10-17 取到全部 94 MB 真实文件后
+ *              **端到端编译执行跑通**（printf / cout / STL / bits/stdc++.h），
+ *              2026-10-18 接上 module Worker 分流（commit d8852893 / cee4aa6d）。
+ *
+ * ------------------------------------------------------------------
+ * 2026-11-14 复核（依据 commit 712abf14 / d8852893 / cee4aa6d 与
+ * api/runtimes.json 的 ready 字段）：sql / lua / python / php / cpp 已有
+ * 真实运行证据；ruby 仍未真跑；quickjs 标 ready=false、资源残缺。
+ * 这些结论都是**开发环境**，不等于任意浏览器真机可用。
+ * 下面 PROBES 的代码与期望值本身不变，只校正这段状态说明。
+ * ------------------------------------------------------------------
  */
 /* 清单里的运行时 id 与 PROBES 的语言 key 不同名：
    清单用 pyodide/sqlite，PROBES 用 python/sql —— 抄表必然漂移，这里显式映射。 */

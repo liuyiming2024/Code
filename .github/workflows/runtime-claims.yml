@@ -1,0 +1,31 @@
+name: 运行时可用性声明一致
+
+# 清单 api/runtimes.json 的 ready 字段是扩展中心置灰的唯一判据。
+# 历史教训：代码接通了、文案没跟上，三处口径打架；照旧要求改会改反。
+# 这里挡住「改了 ready 忘了改条款/README」以及「置灰逻辑被改坏」。
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'api/runtimes.json'
+      - 'README.md'
+      - 'TERMS.md'
+      - 'js/ui.js'
+      - 'scripts/check-runtime-claims.js'
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22'
+      - run: node scripts/check-runtime-claims.js

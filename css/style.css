@@ -137,6 +137,14 @@ svg { width: 18px; height: 18px; display: block; }
 .btn svg { width: 14px; height: 14px; }
 .btn.primary { background: var(--accent); color: var(--accent-fg); border-color: transparent; font-weight: 600; }
 .btn.primary:hover { filter: brightness(1.08); }
+/* 下面三个变体在 index.html / judge-ui.js / oj.js 里一直在用，
+   但样式表里从来没有定义过 —— 按钮落到 .btn 默认尺寸，
+   「删除」也没有任何危险色提示。用现成的变量补齐，不引入新配色。 */
+.btn.tiny { height: 22px; padding: 0 7px; font-size: 12px; gap: 4px; }
+.btn.danger { color: var(--danger); border-color: var(--danger); }
+.btn.danger:hover { background: var(--danger); color: var(--accent-fg); }
+.btn.ghost { background: transparent; color: var(--fg); }
+.btn.ghost:hover { background: var(--bg-2); }
 
 /* 页眉账号按钮：登录后昵称可能较长，限宽省略，别把顶栏挤歪 */
 .acct-btn { max-width: 168px; }
@@ -519,10 +527,15 @@ body.has-mb.mb-collapsed #workbench { padding-bottom: 32px; }
 }
 .menu-item:hover { background: var(--bg-3); }
 
-/* ---------- 输出面板 ---------- */
+/* ---------- 输出面板 ----------
+   ⚠ 变量名以本文件 :root / [data-theme] 里的定义为准：
+   是 --danger / --line / --sel / --bg-2 / --bg-3，
+   从来没有 --err / --border / --accent-dim / --bg-1。
+   var() 取不到值会**静默丢弃整条声明**，不报错也不警告。
+   scripts/check-css-vars.py 会把这类漂移挡在 CI 外。 */
 .out { padding: 1px 12px; white-space: pre-wrap; word-break: break-word; font-size: 12.5px; line-height: 1.55; }
 .out.sys { color: var(--fg-3); }
-.out.err { color: var(--err); }
+.out.err { color: var(--danger); }
 .out.warn { color: var(--warn); }
 .out.ret { color: var(--accent); }
 .out.echo { color: var(--fg-3); }
@@ -584,14 +597,14 @@ body.has-mb.mb-collapsed #workbench { padding-bottom: 32px; }
 .ext-list { margin-top: 10px; max-height: 46vh; overflow: auto; }
 .ext-row {
   padding: 11px 12px; margin-bottom: 8px; border-radius: 8px;
-  border: 1px solid var(--border); background: var(--bg-2);
+  border: 1px solid var(--line); background: var(--bg-2);
 }
 .ext-row.busy { opacity: .78; }
 .ext-head { display: flex; align-items: center; gap: 8px; }
 .ext-name { font-weight: 600; font-size: 13px; }
 .ext-tag {
   font-size: 11px; padding: 1px 6px; border-radius: 4px;
-  background: var(--accent-dim); color: var(--accent);
+  background: var(--sel); color: var(--accent);
 }
 .ext-size { margin-left: auto; font-size: 12px; color: var(--fg-3); font-variant-numeric: tabular-nums; }
 .ext-desc { margin: 5px 0 8px; font-size: 12px; color: var(--fg-2); line-height: 1.6; }
@@ -846,7 +859,7 @@ body.has-vkb.vkb-collapsed #workbench { padding-bottom: 42px; }
 }
 .vk-key:active { background: var(--accent); color: var(--accent-fg); }
 .vk-mod {
-  background: var(--bg-1);
+  background: var(--bg-2);
   color: var(--fg-2);
   font-size: 13px;
   font-family: var(--font-ui);
@@ -978,6 +991,9 @@ body.has-vkb .mobile-bar { display: none; }   /* 互斥：有键盘就不显示�
   color:var(--fg,#e6edf3);border:1px solid var(--line,#2a313c);
   border-radius:4px;padding:5px;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12px}
 .judge-result{padding:4px 0}
+/* 结果提示行：.ok/.bad/.warn 的配色在下面已有全局类，
+   这里只补最基础的排版，否则文字贴着容器边、行距也和上面不一致。 */
+.jr-line{padding:4px 8px;font-size:12px;line-height:1.6;color:var(--fg-2)}
 .jr-sum{padding:5px 8px;border-radius:5px;font-size:12px;font-weight:600;margin:4px 0}
 .jr-case{border-left:3px solid var(--line,#2a313c);padding:4px 8px;margin:4px 0;font-size:12px}
 .jr-ch{color:var(--fg-dim,#8b98a9)}

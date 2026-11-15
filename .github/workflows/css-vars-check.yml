@@ -1,0 +1,28 @@
+name: CSS 变量无静默失效
+
+# 只挡一类零误报错误：var(--x) 没有 fallback、而 --x 从未定义。
+# 这类错误浏览器会**静默丢弃整条声明**，页面不报错也不崩，
+# 表现为「明明写了样式却没生效」—— 肉眼和截图都很难发现。
+# 类名/作用域等有误报的检查仍留在 Tool 的报告型工具里，不做阻断。
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'css/**'
+      - 'scripts/check-css-vars.py'
+      - '.github/workflows/css-vars-check.yml'
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: 无兜底的变量必须已定义
+        run: python3 scripts/check-css-vars.py
